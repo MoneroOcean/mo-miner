@@ -3,7 +3,7 @@
 // Same-run Windows LLVM CI state transport. The archive preserves absolute paths and receipts;
 // callers must reconstitute the exact descriptor's external SDK/tool inputs before restore.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto");
-const {fileHash} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash} = require("./build-source-inputs");
 const ciTar = require("./native-ci-tar"),
   ciWindowsLlvm = require("./native-ci-windows-llvm");
 const {buildPhases} = require("./build-native-windows-llvm-sdk");
@@ -118,18 +118,18 @@ function validateManifest(value, expectedSha256) {
     throw new Error("Windows LLVM state manifest is invalid or differs from its external SHA-256 pin");
   }
   const row = /** @type {WindowsLlvmStateManifest} */ (value);
-  if (Object.keys(row).sort().join(",") !== "archive,bindings,producerDeadlineEpoch,producerJob,runDeadlineEpoch,version" ||
+  if (!hasExactBuildFields(row, ["archive", "bindings", "producerDeadlineEpoch", "producerJob", "runDeadlineEpoch", "version"]) ||
       row.version !== 1 ||
       !/^[A-Za-z0-9_-]{1,64}$/.test(row.producerJob || "") ||
       !/^\d{10}$/.test(row.producerDeadlineEpoch || "") || !/^\d{10}$/.test(row.runDeadlineEpoch || "") ||
       !row.archive || typeof row.archive !== "object" || Array.isArray(row.archive) ||
-      Object.keys(row.archive).sort().join(",") !== "bytes,expandedBytes,members,sha256" ||
+      !hasExactBuildFields(row.archive, ["bytes", "expandedBytes", "members", "sha256"]) ||
       !/^[a-f0-9]{64}$/.test(row.archive.sha256 || "") ||
       ![row.archive.bytes, row.archive.expandedBytes, row.archive.members].every(Number.isSafeInteger) ||
       row.archive.bytes < 1 || row.archive.bytes > maxArchiveBytes || row.archive.expandedBytes < 1 ||
       row.archive.expandedBytes > maxExpandedBytes || row.archive.members < 1 || row.archive.members > 500000 ||
       !row.bindings || typeof row.bindings !== "object" || Array.isArray(row.bindings) ||
-      Object.keys(row.bindings).sort().join(",") !== "checkpointSha256,configureReceiptSha256,descriptorSha256,jobDeadlines,runDeadlineSha256" ||
+      !hasExactBuildFields(row.bindings, ["checkpointSha256", "configureReceiptSha256", "descriptorSha256", "jobDeadlines", "runDeadlineSha256"]) ||
       row.bindings.checkpointSha256 !== null && !/^[a-f0-9]{64}$/.test(row.bindings.checkpointSha256 || "") ||
       ![row.bindings.configureReceiptSha256, row.bindings.descriptorSha256, row.bindings.runDeadlineSha256].every(hash => /^[a-f0-9]{64}$/.test(hash || "")) ||
       !Array.isArray(row.bindings.jobDeadlines) || !row.bindings.jobDeadlines.length ||
@@ -138,7 +138,7 @@ function validateManifest(value, expectedSha256) {
   }
   let prior = "";
   for (const job of row.bindings.jobDeadlines) {
-    if (!job || Object.keys(job).sort().join(",") !== "job,sha256" || !/^[A-Za-z0-9_-]{1,64}$/.test(job.job || "") ||
+    if (!job || !hasExactBuildFields(job, ["job", "sha256"]) || !/^[A-Za-z0-9_-]{1,64}$/.test(job.job || "") ||
         !/^[a-f0-9]{64}$/.test(job.sha256 || "") || job.job <= prior) {
       throw new Error("Windows LLVM state manifest has invalid job deadline bindings");
     }

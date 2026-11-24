@@ -10,7 +10,7 @@ const {spawn} = require("node:child_process");
 const ciRelease = require("../native-ci-linux-release"),
   ciSources = require("../native-ci-linux-sources"),
   ciTar = require("../native-ci-tar");
-const {ciSuffix} = require("../native-ci-job");
+const {applicationBuildFiles, applicationBuildName, ciSuffix} = require("../native-ci-job");
 const {fileHash, readBuildJson} = require("../build-source-inputs");
 const {canonicalFile, appendOutputs} = require("./seal");
 
@@ -120,7 +120,7 @@ function assertApplicationReceipts(result, entrypoint, expected) {
 function applicationHandoffPlan(environment) {
   const suffix = ciSuffix(environment), runnerTemp = canonicalRunnerTemp(environment),
     deadline = Number(environment["MOM_NATIVE_APPLICATION_DEADLINE_EPOCH"]), appRoot = path.join("/tmp", "mom-native-linux-application-" + suffix),
-    evidenceName = "native-linux-application-build-" + suffix;
+    evidenceName = applicationBuildName("linux", suffix);
   const plan = {suffix, deadline, appRoot, evidenceName, evidenceRoot: path.join("/tmp", evidenceName),
     archive: path.join(runnerTemp, evidenceName + ".tar"), runtimeDirectory: path.join(runnerTemp, "mom-native-runtime-" + suffix),
     binary: path.join(appRoot, "mom"), receiptPath: path.join(appRoot, "result.json"), entrypointPath: path.join(appRoot, "entrypoint.json"),
@@ -171,7 +171,7 @@ function bindApplicationHandoff(environment = process.env) {
   const handoffFile = path.join(evidenceRoot, "handoff.json");
   fs.writeFileSync(handoffFile, JSON.stringify(handoff, null, 2) + "\n", {flag: "wx", mode: 0o444});
   const handoffSha256 = fileHash(handoffFile), packed = ciTar.packState(archive, "/tmp", [evidenceName], remainingMs(plan.deadline, 5 * 60 * 1000)),
-    expectedMembers = [evidenceName, ...["application-config.json", "entrypoint.json", "handoff.json", "result.json"].map(name => evidenceName + "/" + name)].sort(),
+    expectedMembers = [evidenceName, ...applicationBuildFiles.map(name => evidenceName + "/" + name)].sort(),
     members = ciTar.listState(archive, [evidenceName], remainingMs(plan.deadline, 5 * 60 * 1000)).map(name => name.replace(/\/$/, "")).sort();
   const runtimeStat = fs.lstatSync(binary), outputStat = fs.lstatSync(environment["GITHUB_OUTPUT"] || "");
   if (packed.bytes < 1 || packed.bytes > 128 << 20 || members.join("\0") !== expectedMembers.join("\0") ||

@@ -5,49 +5,8 @@ const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} 
 const local = require("./build-local-native-sdk"), nativeCi = require("./native-ci-windows-llvm"),
   linuxLlvm = require("./build-native-llvm-sdk"), windowsLlvm = require("./build-native-windows-llvm-sdk"),
   sourceArchives = require("./fetch-native-sdk-sources");
-const {fileHash, readBuildJson, readBuildText} = require("./build-source-inputs"), {archiveName, archiveSha256} = require("./native-llvm-sdk");
+const {hasExactBuildFields, requireBuildFields, verifyBuildDirectoryEntries, canonicalBuildDirectory, canonicalBuildFile, verifyStableBuildBytes, fileHash, readBuildJson} = require("./build-source-inputs"), {archiveName, archiveSha256} = require("./native-llvm-sdk");
 const repo = path.resolve(__dirname, ".."), localBuildIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
-
-/** @param {unknown} value @param {string[]} keys @param {string} label */
-function exactObject(value, keys, label) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== keys.slice().sort().join(",")) {
-    throw new Error(label + " has unknown or missing fields");
-  }
-  return /** @type {Record<string, any>} */ (value);
-}
-
-/** @param {string} directory @param {string} label @param {boolean} [allowMissing] */
-function realDirectory(directory, label, allowMissing = false) {
-  const stat = fs.lstatSync(directory, {throwIfNoEntry: false});
-  if (!stat && allowMissing) {return false;}
-  if (!stat?.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {
-    throw new Error(label + " is not a canonical directory: " + directory);
-  }
-  return true;
-}
-
-/** @param {string} file @param {string} label @param {number} [maximum] */
-function regularFile(file, label, maximum = 8 << 20) {
-  const stat = fs.lstatSync(file, {throwIfNoEntry: false});
-  if (!path.isAbsolute(file) || path.resolve(file) !== file || !stat?.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 ||
-      stat.size < 1 || stat.size > maximum || fs.realpathSync(file) !== file) {
-    throw new Error(label + " is not a bounded canonical regular file: " + file);
-  }
-  return stat;
-}
-
-/** Read only the small expected inventory; arbitrary workspace contents are never enumerated unboundedly.
- * @param {string} directory @param {string[]} expected @param {string} label */
-function exactEntries(directory, expected, label) {
-  const found = [], handle = fs.opendirSync(directory);
-  try {
-    for (let entry; (entry = handle.readSync()) !== null;) {
-      found.push(entry.name);
-      if (found.length > expected.length) {throw new Error(label + " contains unknown entries; preserve it for inspection");}
-    }
-  } finally {handle.closeSync();}
-  if (!isDeepStrictEqual(found.sort(), expected.slice().sort())) {throw new Error(label + " is incomplete or contains unknown entries; preserve it for inspection");}
-}
 
 /** @param {string} workspace */
 function localWindowsLlvmSdkPaths(workspace) {
@@ -62,27 +21,27 @@ function localWindowsLlvmSdkPaths(workspace) {
 /** @param {string} root @param {{resultSha256:string,descriptorSha256:string,filesSha256:string,overlaySha256:string}} pins
  * @param {string} workspace */
 function validateWindowsHostSdk(root, pins, workspace) {
-  exactObject(pins, ["resultSha256", "descriptorSha256", "filesSha256", "overlaySha256"], "Local Windows host-SDK pins");
+  requireBuildFields(pins, ["resultSha256", "descriptorSha256", "filesSha256", "overlaySha256"], "Local Windows host-SDK pins");
   if (root !== path.join(workspace, "windows-host-sdk", "sdk") || Object.values(pins).some(hash => !/^[a-f0-9]{64}$/.test(hash || ""))) {
     throw new Error("Local Windows LLVM needs the admitted host-SDK root and exact receipt pins");
   }
-  realDirectory(root, "Local Windows host SDK");
+  canonicalBuildDirectory(root, "Local Windows host SDK");
 }
 
 /** @param {{root:string,localBuildId:string,handoffSha256:string}} hermes */
 function validateHermes(hermes) {
-  exactObject(hermes, ["root", "localBuildId", "handoffSha256"], "Local Windows Hermes input");
+  requireBuildFields(hermes, ["root", "localBuildId", "handoffSha256"], "Local Windows Hermes input");
   if (typeof hermes.root !== "string" || !path.isAbsolute(hermes.root) || path.resolve(hermes.root) !== hermes.root || /[\r\n\0]/.test(hermes.root) ||
       !localBuildIdPattern.test(hermes.localBuildId || "") || !/^[a-f0-9]{64}$/.test(hermes.handoffSha256 || "")) {
     throw new Error("Local Windows LLVM needs the exact local Hermes handoff identity and hash");
   }
-  realDirectory(hermes.root, "Local Windows Hermes handoff");
+  canonicalBuildDirectory(hermes.root, "Local Windows Hermes handoff");
 }
 
 /** Select the actual Intel driver/resource and only LLVM utilities from the admitted Linux SDK.
  * local.localTools has already verified the Intel 2026.2 icx/icpx identities. @param {ReturnType<typeof local.localTools>} tools @param {any} admission */
 function localWindowsLlvmDescriptorTools(tools, admission) {
-  if (!tools || Object.keys(tools).sort().join(",") !== "cc,cmake,cxx,git,ninja,systemdRun" ||
+  if (!tools || !hasExactBuildFields(tools, ["cc", "cmake", "cxx", "git", "ninja", "systemdRun"]) ||
       path.basename(tools.cc) !== "icx" || path.basename(tools.cxx) !== "icpx" ||
       path.dirname(tools.cc) !== path.dirname(tools.cxx) || path.basename(path.dirname(path.dirname(tools.cc))) !== "2026.2") {
     throw new Error("Local Windows LLVM requires the selected Intel oneAPI 2026.2 toolchain");
@@ -111,10 +70,10 @@ function localWindowsLlvmDescriptorTools(tools, admission) {
 
 /** @param {ReturnType<typeof localWindowsLlvmSdkPaths>} paths @param {boolean} allowMissing */
 function checkManagedRoot(paths, allowMissing) {
-  if (!realDirectory(paths.root, "Local Windows LLVM managed output", allowMissing)) {return false;}
-  exactEntries(paths.root, ["descriptor.json", "output", "provenance.json"], "Local Windows LLVM managed output");
-  regularFile(paths.descriptor, "Local Windows LLVM descriptor"); regularFile(paths.provenance, "Local Windows LLVM provenance");
-  realDirectory(paths.output, "Local Windows LLVM SDK output");
+  if (!canonicalBuildDirectory(paths.root, "Local Windows LLVM managed output", allowMissing)) {return false;}
+  verifyBuildDirectoryEntries(paths.root, ["descriptor.json", "output", "provenance.json"], "Local Windows LLVM managed output");
+  canonicalBuildFile(paths.descriptor, "Local Windows LLVM descriptor"); canonicalBuildFile(paths.provenance, "Local Windows LLVM provenance");
+  canonicalBuildDirectory(paths.output, "Local Windows LLVM SDK output");
   return true;
 }
 
@@ -129,9 +88,9 @@ function verifyLocalWindowsLlvmOutput(output, plan, runId) {
     "producer-snapshot.js", "extract.log", "configure.log", "build-state.json", "result-current.json", "admitted.json", "admitted-objects.json",
     ...windowsLlvm.buildPhases.flatMap(phase => ["build-" + phase.name + "-" + runId + ".log", "phase-" + phase.name + "-" + runId + ".json"])].sort();
   if (new Set(expected).size !== expected.length) {throw new Error("Maintained Windows LLVM output inventory has duplicate names");}
-  exactEntries(output, expected, "Local Windows LLVM SDK output");
+  verifyBuildDirectoryEntries(output, expected, "Local Windows LLVM SDK output");
   for (const name of [path.basename(plan.source), path.basename(plan.build)]) {
-    realDirectory(path.join(output, name), "Local Windows LLVM " + name);
+    canonicalBuildDirectory(path.join(output, name), "Local Windows LLVM " + name);
   }
   for (const name of expected.filter(name => ![path.basename(plan.source), path.basename(plan.build)].includes(name))) {
     const file = path.join(output, name), stat = fs.lstatSync(file);
@@ -148,16 +107,6 @@ function jsonBytes(value) {
   return bytes;
 }
 
-/** @param {string} file @param {Buffer} expected @param {string} label */
-function verifyStableJson(file, expected, label) {
-  const before = regularFile(file, label), sha256 = fileHash(file), bytes = Buffer.from(readBuildText(file, 8 << 20)), after = regularFile(file, label);
-  if (before.dev !== after.dev || before.ino !== after.ino || before.nlink !== after.nlink || before.size !== after.size ||
-      before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || sha256 !== fileHash(file) || !bytes.equals(expected)) {
-    throw new Error(label + " is stale or changed; preserve the output for inspection");
-  }
-  return sha256;
-}
-
 /** @param {{workspace:string,windowsHostSdk:{root:string,pins:{resultSha256:string,descriptorSha256:string,filesSha256:string,overlaySha256:string}},
  * hermes:{root:string,localBuildId:string,handoffSha256:string},tools:ReturnType<typeof local.localTools>}} input
  * @param {{verifyScope?:()=>unknown,admitWorkspace?:typeof local.admitWorkspace,resolveTools?:typeof local.localTools,
@@ -171,14 +120,14 @@ function buildLocalNativeWindowsLlvmSdk(input, dependencies = {}) {
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local Windows LLVM SDK production requires Linux x64 (WSL2)");}
   const verifyScope = dependencies.verifyScope || local.verifyCurrentMemoryScope;
   verifyScope();
-  if (!input || Object.keys(input).sort().join(",") !== "hermes,tools,windowsHostSdk,workspace" || typeof input.workspace !== "string") {
+  if (!input || !hasExactBuildFields(input, ["hermes", "tools", "windowsHostSdk", "workspace"]) || typeof input.workspace !== "string") {
     throw new Error("Local Windows LLVM SDK needs one workspace, admitted Windows SDK, Hermes handoff and selected tools");
   }
   const workspace = (dependencies.admitWorkspace || local.admitWorkspace)(input.workspace, repo), paths = localWindowsLlvmSdkPaths(workspace),
-    sdk = /** @type {typeof input.windowsHostSdk} */ (exactObject(input.windowsHostSdk, ["root", "pins"], "Local Windows host-SDK input")),
-    hermes = /** @type {typeof input.hermes} */ (exactObject(input.hermes, ["root", "localBuildId", "handoffSha256"], "Local Windows Hermes input"));
+    sdk = /** @type {typeof input.windowsHostSdk} */ (requireBuildFields(input.windowsHostSdk, ["root", "pins"], "Local Windows host-SDK input")),
+    hermes = /** @type {typeof input.hermes} */ (requireBuildFields(input.hermes, ["root", "localBuildId", "handoffSha256"], "Local Windows Hermes input"));
   validateWindowsHostSdk(sdk.root, sdk.pins, workspace); validateHermes(hermes);
-  const tools = /** @type {ReturnType<typeof local.localTools>} */ (exactObject(input.tools,
+  const tools = /** @type {ReturnType<typeof local.localTools>} */ (requireBuildFields(input.tools,
       ["git", "cmake", "ninja", "systemdRun", "cc", "cxx"], "Selected local tools")),
     jobs = local.localBuildJobs({...process.env, ...(dependencies.environment || {})}),
     environment = {...process.env, ...(dependencies.environment || {}), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs)},
@@ -214,10 +163,10 @@ function buildLocalNativeWindowsLlvmSdk(input, dependencies = {}) {
 
   const existing = checkManagedRoot(paths, true), before = admitInputs();
   if (existing) {
-    const descriptorSha256 = verifyStableJson(paths.descriptor, before.descriptorBytes, "Local Windows LLVM descriptor"),
-      provenanceSha256 = verifyStableJson(paths.provenance, before.provenanceBytes, "Local Windows LLVM provenance"),
+    const descriptorSha256 = verifyStableBuildBytes(paths.descriptor, before.descriptorBytes, "Local Windows LLVM descriptor"),
+      provenanceSha256 = verifyStableBuildBytes(paths.provenance, before.provenanceBytes, "Local Windows LLVM provenance"),
       resultFile = path.join(paths.output, "result.json");
-    regularFile(resultFile, "Local Windows LLVM build receipt");
+    canonicalBuildFile(resultFile, "Local Windows LLVM build receipt");
     const result = readBuildJson(resultFile);
     // The recorded job count is parallelism provenance; the output inventory re-derives its plan with that count.
     if (result?.plan?.output !== paths.output || result.plan.descriptorFile !== paths.descriptor || result.plan.archive !== paths.archive ||
@@ -245,12 +194,12 @@ function buildLocalNativeWindowsLlvmSdk(input, dependencies = {}) {
   for (const phase of windowsLlvm.buildPhases) {buildPhase(paths.output, phase.name, environment);}
   audit(paths.output, environment);
   const admission = verify(paths.output, environment), outputReceiptFile = path.join(paths.output, "result.json");
-  regularFile(outputReceiptFile, "Local Windows LLVM build receipt");
+  canonicalBuildFile(outputReceiptFile, "Local Windows LLVM build receipt");
   verifyOutputInventory(paths.output, readBuildJson(outputReceiptFile));
   const after = admitInputs();
   checkManagedRoot(paths, false);
-  const descriptorSha256 = verifyStableJson(paths.descriptor, before.descriptorBytes, "Local Windows LLVM descriptor"),
-    provenanceSha256 = verifyStableJson(paths.provenance, before.provenanceBytes, "Local Windows LLVM provenance");
+  const descriptorSha256 = verifyStableBuildBytes(paths.descriptor, before.descriptorBytes, "Local Windows LLVM descriptor"),
+    provenanceSha256 = verifyStableBuildBytes(paths.provenance, before.provenanceBytes, "Local Windows LLVM provenance");
   if (!isDeepStrictEqual(before.archiveReceipt, after.archiveReceipt) || !isDeepStrictEqual(before.linux, after.linux) ||
       !isDeepStrictEqual(before.descriptorTools, after.descriptorTools) || !isDeepStrictEqual(before.composed, after.composed)) {
     throw new Error("Local Windows LLVM inputs changed during production; preserve the output and investigate");

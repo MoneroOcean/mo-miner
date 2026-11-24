@@ -3,7 +3,7 @@
 // Transport the verified original Windows runtime/JIT closure, not compiler installations or
 // test executables. The existing adapter producer owns its library order and constructor roots.
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {pins} = require("./native-dpcpp-pins"), {isStaticArchive} = require("./native-audit");
 const {coffSectionPayloads} = require("./native-compiler-isolation");
 const repo = path.resolve(__dirname, "..");
@@ -20,7 +20,7 @@ const absolute = value => typeof value === "string" && path.isAbsolute(value) &&
  * @param {unknown} value @param {boolean} relative @returns {WindowsDpcppLinks} */
 function windowsDpcppLinks(value, relative) {
   const r = /** @type {WindowsDpcppLinks} */ (value);
-  if (!r || Object.keys(r).sort().join(",") !== "libraries,objects,wholeArchives" ||
+  if (!r || !hasExactBuildFields(r, ["libraries", "objects", "wholeArchives"]) ||
       ![r.libraries, r.wholeArchives, r.objects].every(Array.isArray) || r.libraries.length < 64 || r.libraries.length > 512 ||
       r.wholeArchives.length !== 2 || r.objects.length !== 2) {throw new Error("Incomplete Windows DPC++ component link closure");}
   const rows = [...r.libraries, ...r.wholeArchives, ...r.objects];
@@ -40,7 +40,7 @@ function windowsDpcppComponentInputs(root) {
   if (!absolute(root) || fs.realpathSync(root) !== root) {throw new Error("Select a canonical Windows DPC++ component root");}
   const manifest = path.join(root, "component.json");
   if (!fs.lstatSync(manifest).isFile() || fs.realpathSync(manifest) !== manifest) {throw new Error("Windows component receipt must be a regular local file");}
-  const sha256 = fileHash(manifest), r = readBuildJson(manifest);
+  const {value: r, sha256} = readBuildJsonSnapshot(manifest);
   if (r.version !== 1 || r.kind !== "dpcpp-windows" || r.buildOnly !== true || r.publicationQualified !== false || !isDeepStrictEqual(r.pins, pins) || !r.files || typeof r.files !== "object" || Array.isArray(r.files)) {
     throw new Error("Invalid Windows DPC++ component receipt");
   }
@@ -166,7 +166,7 @@ function stageWindowsDpcppComponent(selected, producer, output) {
  * @param {string} producer @param {string} cuda @param {NodeJS.ProcessEnv} [environment] */
 function windowsDpcppProducerInputs(producer, cuda, environment = process.env) {
   if (process.platform !== "linux" || environment["MOM_AOT_BUILD_ONLY"] !== "1" || ![producer, cuda].every(absolute)) {throw new Error("Windows component export requires Linux, explicit roots and MOM_AOT_BUILD_ONLY=1");}
-  const producerSha = fileHash(producer), r = readBuildJson(producer);
+  const {value: r, sha256: producerSha} = readBuildJsonSnapshot(producer);
   if (r.version !== 1 || r.buildOnly !== true || r.executed !== false || r.publicationQualified !== false || !r.recipe || !r.inputs || !r.headers) {throw new Error("Invalid Windows adapter producer receipt");}
   const {adapterSdkInputs, windowsRuntimeLinks} = require("./prepare-native-windows-adapters");
   const before = adapterSdkInputs(r.sdkFile, r.descriptorFile, cuda), bound = /** @type {Record<string, string>} */ ({...r.inputs, ...r.headers, [producer]: producerSha});
@@ -176,7 +176,7 @@ function windowsDpcppProducerInputs(producer, cuda, environment = process.env) {
     const file = row.archive || row.path; if (!absolute(file) || fileHash(file) !== row.sha256) {throw new Error("Windows adapter/driver payload changed");} bound[file] = row.sha256;
   }
   for (const row of r.adapters) {
-    const isolated = readBuildJson(row.isolation); bound[row.isolation] = fileHash(row.isolation);
+    const {value: isolated, sha256: isolationSha256} = readBuildJsonSnapshot(row.isolation); bound[row.isolation] = isolationSha256;
     if (isolated.prefix !== "mom_ur_" + row.kind.replaceAll("-", "_") + "_private_" || !isDeepStrictEqual(isolated.entryPoints, [row.factory]) ||
         isolated.transformed?.length !== 1 || isolated.transformed[0]?.output !== row.archive || isolated.transformed[0]?.sha256 !== row.sha256 ||
         ["memberOrderPreserved", "nonDirectivePayloadsPreserved", "mappedDirectivesPreserved", "symbolOrderPreserved", "auxiliaryRecordsPreserved", "relocationsPreserved"].some(n => isolated.checks?.[n] !== true)) {

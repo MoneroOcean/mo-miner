@@ -7,7 +7,7 @@ const {isDeepStrictEqual} = require("node:util");
 const {Readable, Transform} = require("node:stream"), {pipeline} = require("node:stream/promises");
 const {setTimeout: sleep} = require("node:timers/promises");
 const {sdkComponents, sdkSourceEnvironment} = require("./prepare-native-sdk-sources");
-const {fileHash, sourceInputs, readBuildText} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, sourceInputs, readBuildText} = require("./build-source-inputs");
 const {ioPins} = require("./build-native-io");
 const {archiveName: llvmArchiveName, archiveSha256: llvmArchiveSha256} = require("./native-llvm-sdk");
 const {opensslPin, opensslBuildRecipe} = require("./build-native-openssl");
@@ -269,7 +269,7 @@ async function fetchArchiveCohort(output, environment, allowNetwork, cohort) {
   if (typeof fetchImpl !== "function") {throw new Error(sourceLabel + " fetch needs the built-in HTTPS fetch implementation");}
   const names = Object.keys(specs).sort();
   const fileNames = names.map(name => specs[name]?.fileName);
-  if (!names.length || names.join(",") !== Object.keys(pins).sort().join(",") || names.some(name =>
+  if (!names.length || !hasExactBuildFields(pins, names) || names.some(name =>
     !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name) || !/^[0-9a-f]{64}$/.test(pins[name]?.sha256 || "") ||
     !archiveLeaf(specs[name]?.fileName) || typeof specs[name]?.url !== "string" || !specs[name].url ||
     !Array.isArray(specs[name]?.origins) || specs[name].origins.length === 0 ||
@@ -411,7 +411,7 @@ async function fetchArchiveCohort(output, environment, allowNetwork, cohort) {
  *   recipe?: typeof ioSourceRecipe}} [dependencies] */
 async function fetchIoArchives(output, environment = process.env, allowNetwork = false, dependencies = {}) {
   const pins = /** @type {IoArchivePins} */ (dependencies.pins || ioPins), names = /** @type {(keyof IoArchivePins)[]} */ (Object.keys(ioPins).sort());
-  if (!pins || Object.keys(pins).sort().join(",") !== names.join(",") || names.some(name =>
+  if (!pins || !hasExactBuildFields(pins, names) || names.some(name =>
     pins[name]?.directory !== ioPins[name]?.directory || !/^[0-9a-f]{64}$/.test(pins[name]?.sha256 || ""))) {
     throw new Error("I/O source fetch needs the exact pinned libuv/zlib archive cohort");
   }
@@ -530,7 +530,7 @@ async function fetchNvrtcArchives(platform, output, environment = process.env, a
 function nvrtcArchiveCatalog(platform, hashes, cohort = platform) {
   if (platform !== "linux" && platform !== "windows") {throw new Error("NVRTC vendor input target must be linux or windows");}
   const {nvrtcCohortInfo} = require("./probe-static-nvrtc"), pins = nvrtcCohortInfo(platform, cohort), names = Object.keys(pins.archives).sort();
-  if (hashes && (Object.keys(hashes).sort().join(",") !== names.join(",") ||
+  if (hashes && (!hasExactBuildFields(hashes, names) ||
       names.some(name => !/^[0-9a-f]{64}$/.test(hashes[name]?.sha256 || "")))) {
     throw new Error("NVRTC vendor fetch needs the exact pinned compiler archive cohort");
   }
@@ -547,7 +547,7 @@ function buildArchiveCatalog(hashes) {
   });
   if (!hashes) {return canonical;}
   const names = /** @type {BuildArchiveName[]} */ (Object.keys(canonical).sort());
-  if (Object.keys(hashes).sort().join(",") !== names.join(",") || names.some(name => !/^[0-9a-f]{64}$/.test(hashes[name]?.sha256 || ""))) {
+  if (!hasExactBuildFields(hashes, names) || names.some(name => !/^[0-9a-f]{64}$/.test(hashes[name]?.sha256 || ""))) {
     throw new Error("Native SDK source fetch needs the exact pinned LLVM/OpenSSL archive cohort");
   }
   const result = Object.fromEntries(names.map(name => [name, {...canonical[name], sha256: hashes[name]?.sha256 || ""}]));
@@ -569,7 +569,7 @@ function windowsOpenSslArchiveCatalog(hashes) {
  * @param {ArchiveHashes} [hashes] */
 function ioArchiveCatalog(hashes) {
   const names = /** @type {(keyof IoArchivePins)[]} */ (Object.keys(ioPins).sort());
-  if (hashes && (Object.keys(hashes).sort().join(",") !== names.join(",") ||
+  if (hashes && (!hasExactBuildFields(hashes, names) ||
       names.some(name => !/^[0-9a-f]{64}$/.test(hashes[name]?.sha256 || "")))) {
     throw new Error("I/O source fetch needs the exact pinned libuv/zlib archive cohort");
   }
@@ -620,7 +620,7 @@ function verifyArchiveCohort(output, target, catalog, recipeFor, maximum) {
       receipt.recipe.sha256 !== createHash("sha256").update(JSON.stringify({files: {}, graph})).digest("hex")) {
     throw new Error("Native SDK source receipt has stale builder recipe provenance");
   }
-  if (!receipt.archives || Object.keys(receipt.archives).sort().join(",") !== names.join(",")) {
+  if (!receipt.archives || !hasExactBuildFields(receipt.archives, names)) {
     throw new Error("Native SDK source receipt has an incomplete archive cohort");
   }
 
@@ -817,7 +817,7 @@ function windowsHostSdkArchiveCatalog(hashes) {
   for (const [key, row] of Object.entries(lock.packages)) {rows.set("package." + key, row);}
   for (const [key, row] of Object.entries(lock.cabinets)) {rows.set("cab." + key, row);}
   const names = [...rows.keys()].sort();
-  if (hashes && (Object.keys(hashes).sort().join(",") !== names.join(",") ||
+  if (hashes && (!hasExactBuildFields(hashes, names) ||
       names.some(name => !/^[0-9a-f]{64}$/.test(hashes[name]?.sha256 || "")))) {
     throw new Error("Windows host-SDK fetch needs the exact pinned package/CAB cohort");
   }
@@ -920,7 +920,7 @@ function sysrootSourceRecipe() {
  * @returns {Record<string, {fileName: string, sha256: string, url: string}>} */
 function sysrootArchiveCatalog(hashes) {
   const rows = linuxSysrootPackages.map(row => ({...row, key: row.asset.split("_")[0] || ""})), names = rows.map(row => row.key).sort();
-  if (hashes && (Object.keys(hashes).sort().join(",") !== names.join(",") || names.some(name => !/^[0-9a-f]{64}$/.test(hashes[name]?.sha256 || "")))) {
+  if (hashes && (!hasExactBuildFields(hashes, names) || names.some(name => !/^[0-9a-f]{64}$/.test(hashes[name]?.sha256 || "")))) {
     throw new Error("Linux sysroot fetch needs the exact pinned package cohort");
   }
   return Object.fromEntries(rows.map(row => [row.key, {fileName: row.asset,

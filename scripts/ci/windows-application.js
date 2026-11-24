@@ -6,13 +6,14 @@
 // executable plus compact build evidence. Workflow provisioning and artifact transfer stay in YAML.
 const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson} = require("../build-source-inputs");
-const {ciSuffix, ciBuildJobs} = require("../native-ci-job");
+const {windowsHostSdkEnvironment, windowsHostSdkPaths} = require("../native-ci-windows-llvm");
+const {hasExactBuildFields, fileHash, readCanonicalBuildJson} = require("../build-source-inputs");
+const {applicationBuildFiles, applicationBuildName, ciSuffix, ciBuildJobs} = require("../native-ci-job");
 
 const repo = path.resolve(__dirname, "../.."), intelRoot = "/opt/intel/oneapi/compiler/2026.2",
   profiles = ["acpp-cuda", "acpp-hip", "dpcpp", "dpcpp-opencl", "oneapi"],
-  incomingGpuPinKeys = "bundleSha256,configSha256,handoffSha256,profile,receiptSha256",
-  sealedGpuPinKeys = "configSha256,handoffSha256,profile,receiptSha256",
+  incomingGpuPinKeys = ["bundleSha256", "configSha256", "handoffSha256", "profile", "receiptSha256"],
+  sealedGpuPinKeys = ["configSha256", "handoffSha256", "profile", "receiptSha256"],
   sha256Pattern = /^[a-f0-9]{64}$/,
   restoreReserve = 4n * 1024n ** 3n, GiB = 1024 ** 3, MiB = 1024 ** 2;
 
@@ -59,7 +60,7 @@ function realBuildDependencies() {
 function incomingGpuPin(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {return false;}
   const pin = /** @type {Record<string, unknown>} */ (value);
-  return Object.keys(pin).sort().join(",") === incomingGpuPinKeys && typeof pin["profile"] === "string" &&
+  return hasExactBuildFields(pin, incomingGpuPinKeys) && typeof pin["profile"] === "string" &&
     profiles.includes(pin["profile"]) && [pin["bundleSha256"], pin["configSha256"], pin["handoffSha256"], pin["receiptSha256"]]
     .every(digest => typeof digest === "string" && sha256Pattern.test(digest));
 }
@@ -108,19 +109,6 @@ function remainingMs(deadline, capMs, reserveMs) {
 function assertWorkflowFile(file) {
   const stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {throw new Error("Workflow output is not a canonical regular file");}
-}
-
-/** Host-SDK acquisition inside this job uses the aggregate deadline and fixed CI work-root roots.
- * @param {string} temp @param {string} suffix @param {number} deadline */
-function hostSdkEnvironment(temp, suffix, deadline) {
-  const workRoot = path.join(temp, `mom-native-windows-host-sdk-${suffix}`);
-  return {
-    MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH: String(deadline),
-    MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT: workRoot,
-    MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR: path.join(workRoot, "archives"),
-    MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR: path.join(workRoot, `native-windows-host-sdk-${suffix}`),
-    MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR: path.join(temp, `native-windows-host-sdk-${suffix}-metadata.tar`),
-  };
 }
 
 /** `pins` command: fail fast on malformed external pins before provisioning starts.
@@ -304,7 +292,7 @@ function composeApplication(plan, deps) {
       !/\.lib$/i.test(hipDriverLibrary) || !fs.lstatSync(hipDriverLibrary).isFile()) {
     throw new Error("Windows application did not admit the exact CUDA, HIP or embedded-image include roots");
   }
-  const hostSdkRoot = path.join(temp, `mom-native-windows-host-sdk-${suffix}`, `native-windows-host-sdk-${suffix}`),
+  const hostSdkRoot = windowsHostSdkPaths(temp, suffix).sdkOutput,
     sdkPins = deps.windowsGpu.windowsGpuHostSdkPins(hostSdkRoot, ci.buildWindowsHostSdkSourcesCi()),
     toolRoot = tools.toolRoot, clangCl = path.join(intelRoot, "bin/icx-cl"),
     llvmDescriptor = ci.composeWindowsLlvmSdkDescriptor({windowsSdkRoot: hostSdkRoot, windowsSdkPins: sdkPins, hermesRoot, hermesExpectation,
@@ -355,13 +343,13 @@ function boundedReceipt(stat) {
 /** Prove the producer receipt binds the raw build-only executable at its planned path.
  * @param {string} output @param {string} configFile @param {BuildDependencies} deps */
 function admitBuildOutput(output, configFile, deps) {
-  const {fileHash, readBuildJson} = deps.sourceInputs, executable = path.join(output, "mom.exe"),
+  const {fileHash, readBuildJsonSnapshot} = deps.sourceInputs, executable = path.join(output, "mom.exe"),
     resultFile = path.join(output, "result.json"), entrypoint = path.join(output, "entrypoint.json"),
     resultIdentity = fs.lstatSync(resultFile), entrypointIdentity = fs.lstatSync(entrypoint);
   if (!boundedReceipt(resultIdentity) || !boundedReceipt(entrypointIdentity)) {
     throw new Error("Windows application result and entrypoint receipts are not bounded canonical files");
   }
-  const resultSha256 = fileHash(resultFile), entrypointSha256 = fileHash(entrypoint), receipt = readBuildJson(resultFile),
+  const {value: receipt, sha256: resultSha256} = readBuildJsonSnapshot(resultFile), entrypointSha256 = fileHash(entrypoint),
     stat = fs.lstatSync(executable);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size < 1 || stat.size >= 1 << 30 ||
       fs.realpathSync(executable) !== executable || receipt.target !== "x86_64-pc-windows-msvc" || receipt.nativeRuntime !== true ||
@@ -389,7 +377,7 @@ function runBuild(environment = process.env, deps = realBuildDependencies()) {
     throw new Error("Windows application inputs or fresh output paths differ from the bounded run plan");
   }
   const {pins, gpuPins} = admitPins(environment);
-  Object.assign(environment, hostSdkEnvironment(temp, suffix, deadline));
+  Object.assign(environment, windowsHostSdkEnvironment(temp, suffix, deadline));
   const rows = inputRows(path.join(temp, "incoming"), temp, suffix, pins, gpuPins, {hermes: ci.hermesStatePaths(paths, environment),
       dpcpp: ci.dpcppCudaInputsStatePaths(paths, environment), linuxSource: ci.linuxSourceStatePaths(paths, environment)}),
     inputs = pinInputs(rows, deadline, deps);
@@ -420,7 +408,7 @@ function canonicalRegular(file, label, maximum) {
  * @param {unknown} gpuPins */
 function sealedGpuPinsValid(gpuPins) {
   return Array.isArray(gpuPins) && gpuPins.length === profiles.length && gpuPins.every(pin =>
-    pin && typeof pin === "object" && !Array.isArray(pin) && Object.keys(pin).sort().join(",") === sealedGpuPinKeys &&
+    pin && typeof pin === "object" && !Array.isArray(pin) && hasExactBuildFields(pin, sealedGpuPinKeys) &&
     profiles.includes(pin.profile) &&
     [pin.configSha256, pin.handoffSha256, pin.receiptSha256].every(value => typeof value === "string" && sha256Pattern.test(value))) &&
     new Set(gpuPins.map(pin => pin.profile)).size === profiles.length;
@@ -454,25 +442,25 @@ function runSeal(environment = process.env) {
     buildRoot = path.join(temp, `native-windows-application-output-${suffix}`),
     configFile = path.join(temp, `native-windows-application-config-${suffix}.json`),
     executable = path.join(buildRoot, "mom.exe"), resultFile = path.join(buildRoot, "result.json"),
-    entrypointFile = path.join(buildRoot, "entrypoint.json"), evidenceName = `native-windows-application-build-${suffix}`,
+    entrypointFile = path.join(buildRoot, "entrypoint.json"), evidenceName = applicationBuildName("windows", suffix),
     evidenceRoot = path.join("/tmp", evidenceName), archive = path.join(temp, evidenceName + ".tar"), output = environment["GITHUB_OUTPUT"] || "";
   const deadline = ciDeadline(environment);
   if (fs.realpathSync(temp) !== temp ||
       environment["BUILD_OUTPUT"] !== buildRoot || environment["CONFIG_FILE"] !== configFile || environment["EXECUTABLE"] !== executable ||
       environment["RESULT_FILE"] !== resultFile || environment["ENTRYPOINT_FILE"] !== entrypointFile ||
       fs.existsSync(evidenceRoot) || fs.existsSync(archive)) {throw new Error("Windows application seal paths differ from the CI work-root plan");}
-  const configRecord = canonicalRegular(configFile, "composed config", 8 << 20), config = readBuildJson(configFile),
-    resultRecord = canonicalRegular(resultFile, "producer receipt", 128 << 20), result = readBuildJson(resultFile),
-    entrypointRecord = canonicalRegular(entrypointFile, "release entrypoint receipt", 128 << 20), entrypoint = readBuildJson(entrypointFile),
+  const {value: config, sha256: configSha256} = readCanonicalBuildJson(configFile, 8 << 20, "Windows application composed config"),
+    {value: result, sha256: resultSha256} = readCanonicalBuildJson(resultFile, 8 << 20, "Windows application producer receipt"),
+    {value: entrypoint, sha256: entrypointSha256} = readCanonicalBuildJson(entrypointFile, 8 << 20, "Windows application entrypoint receipt"),
     artifact = canonicalRegular(executable, "runtime executable", (1 << 30) - 1);
   if (!sealedReceiptsValid(config, result, entrypoint, {executable, configFile, resultFile},
-    {configSha256: configRecord.sha256, resultSha256: resultRecord.sha256, artifact}) || fs.existsSync(evidenceRoot)) {
+    {configSha256, resultSha256, artifact}) || fs.existsSync(evidenceRoot)) {
     throw new Error("Windows application receipts, same-run GPU cohort or runtime executable failed sealing");
   }
   fs.mkdirSync(evidenceRoot, {mode: 0o700});
   /** @type {Array<[string, string, string]>} */
-  const evidence = [[configFile, "application-config.json", configRecord.sha256],
-    [resultFile, "result.json", resultRecord.sha256], [entrypointFile, "entrypoint.json", entrypointRecord.sha256]];
+  const evidence = [[configFile, "application-config.json", configSha256],
+    [resultFile, "result.json", resultSha256], [entrypointFile, "entrypoint.json", entrypointSha256]];
   for (const [source, name, sha256] of evidence) {
     const destination = path.join(evidenceRoot, name);
     fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
@@ -480,21 +468,21 @@ function runSeal(environment = process.env) {
   }
   const handoff = {version: 1, format: "mom-windows-application-build-handoff-v1",
       target: "x86_64-pc-windows-msvc", artifact: {file: "mom.exe", bytes: artifact.bytes, sha256: artifact.sha256},
-      config: {file: "application-config.json", sha256: configRecord.sha256},
-      producerReceipt: {file: "result.json", sha256: resultRecord.sha256},
-      entrypointReceipt: {file: "entrypoint.json", sha256: entrypointRecord.sha256},
+      config: {file: "application-config.json", sha256: configSha256},
+      producerReceipt: {file: "result.json", sha256: resultSha256},
+      entrypointReceipt: {file: "entrypoint.json", sha256: entrypointSha256},
       gpuHandoffs: config.application.gpuHandoffs, buildOnly: true, executed: false, publicationQualified: false},
     handoffFile = path.join(evidenceRoot, "handoff.json");
   fs.writeFileSync(handoffFile, JSON.stringify(handoff, null, 2) + "\n", {flag: "wx", mode: 0o444});
   const handoffSha256 = fileHash(handoffFile), packed = ci.packState(archive, "/tmp", [evidenceName], remainingMs(deadline, 5 * 60 * 1000, 0)),
-    expectedMembers = [evidenceName, ...["application-config.json", "entrypoint.json", "handoff.json", "result.json"]
+    expectedMembers = [evidenceName, ...applicationBuildFiles
       .map(name => `${evidenceName}/${name}`)].sort(),
     members = ci.listState(archive, [evidenceName], remainingMs(deadline, 5 * 60 * 1000, 0)).map(name => name.replace(/\/$/, "")).sort();
   if (packed.bytes < 1 || packed.bytes > 128 << 20 || !sha256Pattern.test(handoffSha256) ||
       members.join("\0") !== expectedMembers.join("\0") || fileHash(handoffFile) !== handoffSha256 ||
       artifact.identity.dev !== fs.lstatSync(executable).dev || artifact.identity.ino !== fs.lstatSync(executable).ino ||
-      fileHash(executable) !== artifact.sha256 || fileHash(configFile) !== configRecord.sha256 ||
-      fileHash(resultFile) !== resultRecord.sha256 || fileHash(entrypointFile) !== entrypointRecord.sha256) {
+      fileHash(executable) !== artifact.sha256 || fileHash(configFile) !== configSha256 ||
+      fileHash(resultFile) !== resultSha256 || fileHash(entrypointFile) !== entrypointSha256) {
     throw new Error("Windows application runtime or compact build handoff changed during sealing");
   }
   const bundleSha256 = fileHash(archive);
@@ -507,7 +495,7 @@ function runSeal(environment = process.env) {
   ].join("\n") + "\n");
 }
 
-module.exports = {profiles, admitPins, ciDeadline, hostSdkEnvironment, inputRows, runPins, runBuild, runSeal};
+module.exports = {profiles, admitPins, ciDeadline, inputRows, runPins, runBuild, runSeal};
 
 if (require.main === module) {
   /** @type {Record<string, () => void>} */

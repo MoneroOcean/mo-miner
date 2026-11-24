@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto"),
   {spawnSync} = require("node:child_process"), {test} = require("node:test");
-const job = require("../scripts/ci/windows-application"), {fileHash} = require("../scripts/build-source-inputs");
+const job = require("../scripts/ci/windows-application"), {fileHash, readBuildJsonSnapshot} = require("../scripts/build-source-inputs");
 
 const repo = path.resolve(__dirname, ".."), profiles = job.profiles,
   pinNames = ["CORE_BUNDLE", "CORE_HANDOFF", "DPCPP_COMPONENT_BUNDLE", "DPCPP_COMPONENT_MANIFEST", "HOST_COMPONENT_BUNDLE",
@@ -143,7 +143,7 @@ function fakeBuildDependencies(suffix, temp, manifests) {
     put(path.join(output, "result.json"), JSON.stringify(receipt) + "\n"); put(path.join(output, "entrypoint.json"), "{}\n");
     return {status: 0, signal: null, error: null};
   };
-  const deps = {ci, sourceInputs: {fileHash: hash, readBuildJson: (/** @type {string} */ file) => JSON.parse(fs.readFileSync(file, "utf8"))},
+  const deps = {ci, sourceInputs: {fileHash: hash, readBuildJsonSnapshot},
     linuxLlvmToolHandoffInputs: (/** @type {string} */ root) => ({toolRoot: path.join(root, "bin"), lldLink: path.join(root, "bin/lld-link"),
       llvmNm: path.join(root, "bin/llvm-nm")}),
     windowsControllerHandoffInputs: (/** @type {string} */ root, /** @type {any} */ expected) => ({kind: expected.kind,

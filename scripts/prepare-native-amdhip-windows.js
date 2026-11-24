@@ -43,11 +43,6 @@ function absolute(value) {
 }
 /** @param {unknown} value */
 function provenancePath(value) {return typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\r\n\0]/.test(value);}
-/** @param {unknown} value @param {string[]} keys */
-function exactKeys(value, keys) {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value) &&
-  isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort()));
-}
 /** @param {unknown} value */
 function safeGitPath(value) {
   return typeof value === "string" && value.length > 0 && value.length <= 512 && !value.includes("\\") &&
@@ -86,21 +81,21 @@ function windowsAmdhipCatalog() {
     toolchain: ["llvmRole", "llvmLibAlias", "llvmLibTarget"]};
   /** @param {unknown} value */
   const digest = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value),
-    valid = exactKeys(catalog, ["version", "target", "source", "library", "toolchain"]) && catalog.version === 2 && catalog.target === "windows-amdhip64" &&
-      exactKeys(catalog.source, roles.source) && catalog.source.origin === sourcePins.origins.clr && catalog.source.revision === clr.revision &&
-      exactKeys(catalog.source.definition, roles.definition) && safeGitPath(catalog.source.definition.path) &&
+    valid = sourceIO.hasExactBuildFields(catalog, ["version", "target", "source", "library", "toolchain"]) && catalog.version === 2 && catalog.target === "windows-amdhip64" &&
+      sourceIO.hasExactBuildFields(catalog.source, roles.source) && catalog.source.origin === sourcePins.origins.clr && catalog.source.revision === clr.revision &&
+      sourceIO.hasExactBuildFields(catalog.source.definition, roles.definition) && safeGitPath(catalog.source.definition.path) &&
       /^[a-f0-9]{40}$/.test(catalog.source.definition.blob || "") && Number.isSafeInteger(catalog.source.definition.bytes) &&
       catalog.source.definition.bytes > 0 && catalog.source.definition.bytes <= 64 << 10 &&
       digest(catalog.source.definition.sha256) && Number.isSafeInteger(catalog.source.definition.derivedBytes) &&
       catalog.source.definition.derivedBytes === catalog.source.definition.bytes + Buffer.byteLength("LIBRARY " + catalog.library.dllName + "\n") &&
       digest(catalog.source.definition.derivedSha256) &&
-      exactKeys(catalog.source.license, roles.license) && safeGitPath(catalog.source.license.path) && /^[a-f0-9]{40}$/.test(catalog.source.license.blob || "") &&
+      sourceIO.hasExactBuildFields(catalog.source.license, roles.license) && safeGitPath(catalog.source.license.path) && /^[a-f0-9]{40}$/.test(catalog.source.license.blob || "") &&
       Number.isSafeInteger(catalog.source.license.bytes) && catalog.source.license.bytes > 0 && catalog.source.license.bytes <= 1 << 20 && digest(catalog.source.license.sha256) &&
-      exactKeys(catalog.library, roles.library) && safeLeaf(catalog.library.fileName) && catalog.library.fileName.toLowerCase().endsWith(".lib") &&
+      sourceIO.hasExactBuildFields(catalog.library, roles.library) && safeLeaf(catalog.library.fileName) && catalog.library.fileName.toLowerCase().endsWith(".lib") &&
       safeLeaf(catalog.library.dllName) && catalog.library.dllName.toLowerCase().endsWith(".dll") &&
       path.posix.basename(catalog.source.license.path) !== catalog.library.fileName && path.posix.basename(catalog.source.license.path) !== "sdk.json" &&
       Number.isSafeInteger(catalog.library.bytes) && catalog.library.bytes > 0 && catalog.library.bytes <= maxLibraryBytes && digest(catalog.library.sha256) &&
-      exactKeys(catalog.toolchain, roles.toolchain) && /^[a-z0-9][a-z0-9-]{1,80}$/.test(catalog.toolchain.llvmRole || "") &&
+      sourceIO.hasExactBuildFields(catalog.toolchain, roles.toolchain) && /^[a-z0-9][a-z0-9-]{1,80}$/.test(catalog.toolchain.llvmRole || "") &&
       safeToolPath(catalog.toolchain.llvmLibAlias) && safeLeaf(catalog.toolchain.llvmLibTarget) &&
       catalog.toolchain.llvmLibAlias !== "bin/" + catalog.toolchain.llvmLibTarget &&
       path.posix.basename(catalog.toolchain.llvmLibAlias) !== catalog.toolchain.llvmLibTarget;
@@ -339,7 +334,7 @@ function verifyLocalAmdhipSources(paths, env, git) {
 async function prepareLocalAmdhipWindows(input, environment = process.env, dependencies = {}) {
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local Windows AMD import-library generation requires Linux x64 (WSL2)");}
   if (!environment || environment["MOM_AOT_BUILD_ONLY"] !== "1") {throw new Error("Local Windows AMD generation requires MOM_AOT_BUILD_ONLY=1");}
-  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join(",") !== "llvmLib,llvmOutput,localBuildId,output,sourceRoot") {
+  if (!sourceIO.hasExactBuildFields(input, ["llvmLib", "llvmOutput", "localBuildId", "output", "sourceRoot"])) {
     throw new Error("Local Windows AMD input has unknown or missing fields: " + (input && typeof input === "object" ? Object.keys(input).sort().join(",") : "not an object"));
   }
   if (![input.sourceRoot, input.llvmOutput, input.llvmLib, input.output].every(absolute)) {
@@ -418,48 +413,48 @@ function admitWindowsAmdhip(directory) {
     ciSourceSuffix = path.basename(source?.sourceRoot || "").slice("mom-native-rocm-prerequisites-".length),
     sourceRootValid = localReceipt ? absolute(source?.sourceRoot) && path.basename(source.sourceRoot) === "rocm-sources" :
       validCiSuffix(ciSourceSuffix) && source?.sourceRoot === "/tmp/mom-native-rocm-prerequisites-" + ciSourceSuffix,
-    toolchainIdentityValid = localReceipt ? exactKeys(toolchain, ["role", "sdkOutput", "sdkResultSha256", "llvmLib", "command"]) &&
+    toolchainIdentityValid = localReceipt ? sourceIO.hasExactBuildFields(toolchain, ["role", "sdkOutput", "sdkResultSha256", "llvmLib", "command"]) &&
       absolute(toolchain.sdkOutput) && /^[a-f0-9]{64}$/.test(toolchain.sdkResultSha256 || "") :
-      exactKeys(toolchain, ["role", "handoffRoot", "handoffSha256", "llvmLib", "command"]) && provenancePath(toolchain.handoffRoot) &&
+      sourceIO.hasExactBuildFields(toolchain, ["role", "handoffRoot", "handoffSha256", "llvmLib", "command"]) && provenancePath(toolchain.handoffRoot) &&
       /^[a-f0-9]{64}$/.test(toolchain.handoffSha256 || "");
-  if (writableMode(receiptStat) || !exactKeys(receipt, receiptKeys) || receipt.version !== 2 || receipt.target !== "windows-amdhip64" || receipt.status !== "PASS" ||
+  if (writableMode(receiptStat) || !sourceIO.hasExactBuildFields(receipt, receiptKeys) || receipt.version !== 2 || receipt.target !== "windows-amdhip64" || receipt.status !== "PASS" ||
       receipt.networked !== false || receipt.buildOnly !== true || receipt.compiled !== false || receipt.executed !== false || receipt.vendorPrebuilt !== false ||
       receipt.sourceGenerated !== true || receipt.publicationQualified !== false || receipt.redistributionQualified !== false ||
       !identityValid || !/^[a-f0-9]{64}$/.test(receipt.producerSha256 || "") ||
-      !exactKeys(receipt.recipe, ["sha256", "files"]) || receipt.recipe.sha256 !== createHash("sha256").update(JSON.stringify(recipe)).digest("hex") ||
-      !isDeepStrictEqual(receipt.recipe.files, recipe.graph) || !exactKeys(source, ["origin", "revision", "sourceRoot", "fetchReceiptSha256", "rootsReceiptSha256", "git", "definition", "license"]) ||
+      !sourceIO.hasExactBuildFields(receipt.recipe, ["sha256", "files"]) || receipt.recipe.sha256 !== createHash("sha256").update(JSON.stringify(recipe)).digest("hex") ||
+      !isDeepStrictEqual(receipt.recipe.files, recipe.graph) || !sourceIO.hasExactBuildFields(source, ["origin", "revision", "sourceRoot", "fetchReceiptSha256", "rootsReceiptSha256", "git", "definition", "license"]) ||
       source.origin !== selected.source.origin || source.revision !== selected.source.revision ||
       !sourceRootValid ||
       !/^[a-f0-9]{64}$/.test(source.fetchReceiptSha256 || "") || !/^[a-f0-9]{64}$/.test(source.rootsReceiptSha256 || "") ||
-      !exactKeys(source.git, ["path", "bytes", "sha256"]) || source.git.path !== "/usr/bin/git" || !Number.isSafeInteger(source.git.bytes) ||
+      !sourceIO.hasExactBuildFields(source.git, ["path", "bytes", "sha256"]) || source.git.path !== "/usr/bin/git" || !Number.isSafeInteger(source.git.bytes) ||
       source.git.bytes < 1 || !/^[a-f0-9]{64}$/.test(source.git.sha256 || "") ||
-      !exactKeys(source.definition, ["path", "blob", "bytes", "sha256", "actualSha256"]) ||
+      !sourceIO.hasExactBuildFields(source.definition, ["path", "blob", "bytes", "sha256", "actualSha256"]) ||
       source.definition.path !== selected.source.definition.path || source.definition.blob !== selected.source.definition.blob ||
       source.definition.bytes !== selected.source.definition.bytes || source.definition.sha256 !== selected.source.definition.sha256 || source.definition.actualSha256 !== selected.source.definition.sha256 ||
-      !exactKeys(source.license, ["path", "blob", "bytes", "sha256", "actualSha256", "note"]) ||
+      !sourceIO.hasExactBuildFields(source.license, ["path", "blob", "bytes", "sha256", "actualSha256", "note"]) ||
       source.license.path !== selected.source.license.path || source.license.blob !== selected.source.license.blob ||
       source.license.bytes !== selected.source.license.bytes || source.license.sha256 !== selected.source.license.sha256 || source.license.actualSha256 !== selected.source.license.sha256 ||
       typeof source.license.note !== "string" || source.license.note.length > 256 ||
       !toolchainIdentityValid || toolchain.role !== selected.toolchain.llvmRole ||
-      !exactKeys(toolchain.llvmLib, ["relative", "aliasTarget", "bytes", "sha256"]) || toolchain.llvmLib.relative !== selected.toolchain.llvmLibAlias ||
+      !sourceIO.hasExactBuildFields(toolchain.llvmLib, ["relative", "aliasTarget", "bytes", "sha256"]) || toolchain.llvmLib.relative !== selected.toolchain.llvmLibAlias ||
       toolchain.llvmLib.aliasTarget !== selected.toolchain.llvmLibTarget || !Number.isSafeInteger(toolchain.llvmLib.bytes) || toolchain.llvmLib.bytes < 1 ||
       !/^[a-f0-9]{64}$/.test(toolchain.llvmLib.sha256 || "") ||
       !isDeepStrictEqual(toolchain.command, ["/def:<staging>/amdhip.def", "/machine:x64", "/out:<staging>/" + selected.library.fileName]) ||
-      !exactKeys(def, ["path", "sourceBlob", "sourceSha256", "bytes", "derivedBytes", "derivedSha256", "transformation"]) ||
+      !sourceIO.hasExactBuildFields(def, ["path", "sourceBlob", "sourceSha256", "bytes", "derivedBytes", "derivedSha256", "transformation"]) ||
       def.path !== selected.source.definition.path || def.sourceBlob !== selected.source.definition.blob || def.sourceSha256 !== selected.source.definition.sha256 ||
       def.bytes !== selected.source.definition.bytes || def.derivedBytes !== selected.source.definition.derivedBytes ||
       def.derivedSha256 !== selected.source.definition.derivedSha256 || def.transformation !== "Only a LIBRARY directive is prepended to the unchanged upstream .def bytes." ||
-      !exactKeys(library, ["fileName", "dllName", "bytes", "sha256"]) ||
+      !sourceIO.hasExactBuildFields(library, ["fileName", "dllName", "bytes", "sha256"]) ||
       library.fileName !== selected.library.fileName || library.dllName !== selected.library.dllName || library.bytes !== selected.library.bytes ||
       library.sha256 !== selected.library.sha256 ||
-      !provenancePath(receipt.output) || !exactKeys(receipt.files, [selected.library.fileName, licenseName]) ||
-      !exactKeys(libraryProof, ["kind", "bytes", "sha256", "source"]) || libraryProof.kind !== "file" || libraryProof.bytes !== selected.library.bytes ||
-      libraryProof.sha256 !== selected.library.sha256 || !exactKeys(libraryProof.source, ["kind", "path", "blob", "sha256"]) ||
+      !provenancePath(receipt.output) || !sourceIO.hasExactBuildFields(receipt.files, [selected.library.fileName, licenseName]) ||
+      !sourceIO.hasExactBuildFields(libraryProof, ["kind", "bytes", "sha256", "source"]) || libraryProof.kind !== "file" || libraryProof.bytes !== selected.library.bytes ||
+      libraryProof.sha256 !== selected.library.sha256 || !sourceIO.hasExactBuildFields(libraryProof.source, ["kind", "path", "blob", "sha256"]) ||
       libraryProof.source.kind !== "generated-from-pinned-definition" || libraryProof.source.path !== selected.source.definition.path ||
       libraryProof.source.blob !== selected.source.definition.blob || libraryProof.source.sha256 !== selected.source.definition.sha256 ||
-      !exactKeys(licenseProof, ["kind", "bytes", "sha256", "source"]) || licenseProof.kind !== "file" ||
+      !sourceIO.hasExactBuildFields(licenseProof, ["kind", "bytes", "sha256", "source"]) || licenseProof.kind !== "file" ||
       licenseProof.bytes !== selected.source.license.bytes || licenseProof.sha256 !== selected.source.license.sha256 ||
-      !exactKeys(licenseProof.source, ["kind", "path", "blob"]) || licenseProof.source.kind !== "original-source-license-blob" ||
+      !sourceIO.hasExactBuildFields(licenseProof.source, ["kind", "path", "blob"]) || licenseProof.source.kind !== "original-source-license-blob" ||
       licenseProof.source.path !== selected.source.license.path || licenseProof.source.blob !== selected.source.license.blob ||
       typeof receipt.note !== "string" || receipt.note.length > 512) {throw new Error("Windows AMD receipt is stale, malformed or incomplete");}
   const files = [{name: selected.library.fileName, bytes: selected.library.bytes, sha256: selected.library.sha256},

@@ -262,12 +262,17 @@ Write-Output 'LINK_STATUS_FIXTURE_OK'
   });
 
   test("Windows publication guards precede output mutations", () => {
+    const setup = fs.readFileSync(helper, "utf8").split("function Initialize-MomSyclOutput")[1]?.split("function Get-MomBuildHash")[0] || "";
+    const mkdirAt = setup.indexOf("New-Item -ItemType Directory");
+    const removeAt = setup.indexOf("Remove-Item -LiteralPath $publishedOutput");
+    for (const leaf of ["$out", "$publishedOutput"]) {
+      const guardAt = setup.indexOf(`Assert-MomBuildArtifactPath ${leaf} $buildRoot`);
+      assert(guardAt >= 0 && guardAt < mkdirAt && guardAt < removeAt);
+    }
     for (const name of ["build-sycl-cuda-win.ps1", "build-sycl-adaptivecpp-win.ps1"]) {
       const source = fs.readFileSync(path.join(repo, "scripts", name), "utf8");
-      const outputGuard = source.indexOf("Assert-MomBuildArtifactPath $publishedOutput $buildRoot");
-      assert(outputGuard > 0);
-      assert(outputGuard < source.indexOf("New-Item -ItemType Directory -Force $obj"));
-      assert(outputGuard < source.indexOf("Remove-Item -LiteralPath $publishedOutput"));
+      const outputSetup = source.indexOf("Initialize-MomSyclOutput $obj $OutDir");
+      assert(outputSetup > 0 && outputSetup < source.indexOf("Initialize-MomIncrementalBuild $obj"));
     }
     const source = fs.readFileSync(path.join(repo, "scripts/build-windows-multicompiler.ps1"), "utf8");
     assert(source.indexOf("Assert-MomBuildOutputTree $dest $platformRoot") < source.indexOf("Remove-Item -LiteralPath $dest"));

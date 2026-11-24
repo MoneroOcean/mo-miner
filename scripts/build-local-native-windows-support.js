@@ -4,7 +4,7 @@
 // this adapter admits pinned inputs and reuses only outputs whose public receipts still match.
 const fs = require("node:fs"), path = require("node:path"), {createHash, randomUUID} = require("node:crypto"),
   {spawnSync} = require("node:child_process"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, sourceInputs, readBuildJson, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, requireBuildFields, buildPathsOverlap, fileHash, sourceInputs, readBuildJson, verifySourceInputs} = require("./build-source-inputs");
 const io = require("./build-native-io"), openssl = require("./build-native-openssl"), hermes = require("./build-native-hermes"),
   core = require("./build-native-windows-core"), ciController = require("./native-ci-windows-controller"),
   ciCore = require("./native-ci-windows-core"), {isStaticArchive} = require("./native-audit");
@@ -27,23 +27,10 @@ function regularFile(file, label) {
 }
 /** @param {string} left @param {string} right @param {NodeJS.Platform} [platform] */
 function samePath(left, right, platform = process.platform) {return platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;}
-/** @param {string} a @param {string} b */
-function overlaps(a, b) {
-  /** @param {string} parent @param {string} child */
-  const contains = (parent, child) => {const relative = path.relative(parent, child); return !relative || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));};
-  return contains(a, b) || contains(b, a);
-}
-/** @param {unknown} value @param {string[]} keys @param {string} label */
-function exactObject(value, keys, label) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== [...keys].sort().join(",")) {
-    throw new Error(label + " has unknown or missing fields");
-  }
-  return /** @type {Record<string, string>} */ (value);
-}
 /** @param {string} workspace @param {NodeJS.Platform} targetPlatform */
 function windowsSupportPaths(workspace, targetPlatform = process.platform) {
   if (targetPlatform !== "win32" || !path.isAbsolute(workspace) || path.resolve(workspace) !== workspace || /[\r\n\0]/.test(workspace) ||
-      overlaps(workspace, repo)) {throw new Error("Windows support needs an explicit canonical native workspace outside the checkout");}
+      buildPathsOverlap(workspace, repo)) {throw new Error("Windows support needs an explicit canonical native workspace outside the checkout");}
   return {workspace, marker: path.join(workspace, markerName), artifacts: path.join(workspace, "artifacts"),
     io: path.join(workspace, "artifacts", "io"), openssl: path.join(workspace, "artifacts", "openssl"),
     hermes: path.join(workspace, "artifacts", "hermes"), coreRuns: path.join(workspace, "core-runs"), descriptors: path.join(workspace, "descriptors")};
@@ -52,13 +39,13 @@ function windowsSupportPaths(workspace, targetPlatform = process.platform) {
 /** Exact CI role tables are kept explicit; the caller resolves VS/oneAPI tools before admission. */
 /** @param {WindowsSupportTools} tools @param {NodeJS.Platform} targetPlatform */
 function validateWindowsSupportTools(tools, targetPlatform) {
-  if (!tools || typeof tools !== "object" || Object.keys(tools).sort().join(",") !== "core,hermes,io,openssl") {
+  if (!hasExactBuildFields(tools, ["core", "hermes", "io", "openssl"])) {
     throw new Error("Windows support needs explicit Core, I/O, OpenSSL and Hermes tool tables");
   }
-  const coreTools = /** @type {WindowsSupportTools["core"]} */ (exactObject(tools.core, ["nodeGyp", "msbuild", "dumpbin", "python", "compiler"], "Windows Core tools")),
-    ioTools = /** @type {WindowsSupportTools["io"]} */ (exactObject(tools.io, ["cmake", "cc", "ninja"], "Windows I/O tools")),
-    sslTools = /** @type {WindowsSupportTools["openssl"]} */ (exactObject(tools.openssl, ["ar", "cc", "link", "make", "perl", "rc", "tar"], "Windows OpenSSL tools")),
-    hermesTools = /** @type {WindowsSupportTools["hermes"]} */ (exactObject(tools.hermes, ["git", "cmake", "cc", "cxx", "ninja"], "Windows Hermes tools"));
+  const coreTools = /** @type {WindowsSupportTools["core"]} */ (requireBuildFields(tools.core, ["nodeGyp", "msbuild", "dumpbin", "python", "compiler"], "Windows Core tools")),
+    ioTools = /** @type {WindowsSupportTools["io"]} */ (requireBuildFields(tools.io, ["cmake", "cc", "ninja"], "Windows I/O tools")),
+    sslTools = /** @type {WindowsSupportTools["openssl"]} */ (requireBuildFields(tools.openssl, ["ar", "cc", "link", "make", "perl", "rc", "tar"], "Windows OpenSSL tools")),
+    hermesTools = /** @type {WindowsSupportTools["hermes"]} */ (requireBuildFields(tools.hermes, ["git", "cmake", "cc", "cxx", "ninja"], "Windows Hermes tools"));
   for (const [name, table] of Object.entries({core: coreTools, io: ioTools, openssl: sslTools, hermes: hermesTools})) {
     for (const [key, file] of Object.entries(table)) {regularFile(file, "Windows " + name + " " + key);}
   }
@@ -79,7 +66,7 @@ function validateWindowsSupportTools(tools, targetPlatform) {
 function windowsSupportPlan(options, dependencies = {}) {
   const targetPlatform = dependencies.platform || process.platform, targetArch = dependencies.arch || process.arch,
     paths = windowsSupportPaths(options?.workspace || "", targetPlatform), hash = dependencies.hash || fileHash;
-  if (targetArch !== "x64" || !options?.sources || Object.keys(options.sources).sort().join(",") !== "hermes,libuv,openssl,zlib") {
+  if (targetArch !== "x64" || !options?.sources || !hasExactBuildFields(options.sources, ["hermes", "libuv", "openssl", "zlib"])) {
     throw new Error("Windows support requires x64 plus exact pinned source paths");
   }
   const tools = validateWindowsSupportTools(options.tools, targetPlatform), sources = {
@@ -253,8 +240,8 @@ function admitHermesOutput(plan, deps = {}) {
     buildPlan = hermes.hermesSdkPlan(plan.sources.hermes, output, plan.tools.hermes, jobs, "win32"),
     result = readJson(path.join(output, "result.json")), before = readJson(path.join(output, "before.json")),
     currentRecipe = plan.recipes.hermes, currentTools = plan.hermes.tools;
-  if (Object.keys(result).sort().join(",") !== "artifacts,build,buildOnly,fingerprints,pins,publicationQualified,recipe,source,sources,target,version" ||
-      Object.keys(before).sort().join(",") !== "compile,configure,fingerprints,pins,recipe,sources" ||
+  if (!hasExactBuildFields(result, ["artifacts", "build", "buildOnly", "fingerprints", "pins", "publicationQualified", "recipe", "source", "sources", "target", "version"]) ||
+      !hasExactBuildFields(before, ["compile", "configure", "fingerprints", "pins", "recipe", "sources"]) ||
       !isDeepStrictEqual(Object.keys(result.artifacts || {}).sort(), Object.keys(buildPlan.artifacts).sort()) ||
       result.version !== 1 || result.target !== "win32" || !isDeepStrictEqual(result.pins, hermes.hermesPins) || result.source !== buildPlan.source ||
       result.build !== buildPlan.build || result.buildOnly !== true || result.publicationQualified !== false ||

@@ -3,7 +3,7 @@
 // Build-only GNU target headers for source JIT. Enumerate installed package file lists,
 // not a host include-tree crawl; the emitter pins every staged input.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJson} = require("./build-source-inputs");
 const {validName} = require("./native-jit-headers");
 const maxFiles = 16384;
 const linuxTarget = "x86_64-unknown-linux-gnu", windowsTarget = "x86_64-w64-windows-gnu";
@@ -361,13 +361,6 @@ function capturePackageCopyright(state, packageName, packageVersion) {
     ...(real !== sourcePath ? {resolvedSourcePath: real, ownershipPath} : {})};
 }
 
-/** @param {unknown} value @param {string[]} keys */
-function hasExactKeys(value, keys) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {return false;}
-  const actual = Object.keys(value).sort(), expected = [...keys].sort();
-  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
-}
-
 /** Re-admit a transported target-specific header inventory and its exact package terms.
  * @param {{root:string,target?:"x86_64-unknown-linux-gnu" | "x86_64-w64-windows-gnu"}} state
  * @param {"x86_64-unknown-linux-gnu" | "x86_64-w64-windows-gnu"} [target]
@@ -382,7 +375,7 @@ function auditGnuHeaders(state, target = state.target || linuxTarget) {
     const sourcePath = "/usr/share/doc/" + selected.name + "/copyright",
       destination = path.join(state.root, "licenses", selected.name, "copyright"), alias = notice?.resolvedSourcePath !== undefined,
       aliasSpec = packageCopyrightAlias(selected.name), keys = ["package", "version", "sourcePath", "path", "sha256", ...(alias ? ["resolvedSourcePath", "ownershipPath"] : [])];
-    if (!hasExactKeys(notice, keys) || notice.package !== selected.name || notice.version !== selected.version || notice.sourcePath !== sourcePath ||
+    if (!hasExactBuildFields(notice, keys) || notice.package !== selected.name || notice.version !== selected.version || notice.sourcePath !== sourcePath ||
         notice.path !== destination || !/^[a-f0-9]{64}$/.test(notice.sha256 || "") || !fs.lstatSync(destination).isFile() ||
         fs.realpathSync(destination) !== destination || fs.statSync(destination).size > (2 << 20) || fileHash(destination) !== notice.sha256 ||
         alias && (!aliasSpec || notice.resolvedSourcePath !== aliasSpec.resolvedSourcePath || notice.ownershipPath !== aliasSpec.ownershipPath)) {

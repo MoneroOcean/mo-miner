@@ -3,7 +3,7 @@
 const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const {fileHash} = require("../scripts/build-source-inputs");
-const {zstdPin, toolNames, zstdSdkPlan, validateArchive, sourceInventory, stagedFiles, zstdBuildRecipe,
+const {zstdPin, toolNames, zstdSdkPlan, validateArchive, sourceInventory, readStagedArchive, zstdBuildRecipe,
   verifyZstdArchiveInput, verifyZstdTools, verifyZstdRecipe, verifyZstdOutputs, nativeZstdNoticeInputs, nativeZstdInputs, buildNativeZstd} = require("../scripts/build-native-zstd");
 
 const linuxTools = {ar: "/tools/ar", cc: "/tools/icx", make: "/tools/make", mkdir: "/tools/mkdir", tar: "/tools/tar"};
@@ -124,11 +124,12 @@ test.describe("Pinned static zstd source production and admission", {skip: proce
 
   test("output admission binds the build archive and staged archive to one exact identity", t => {
     const f = sdkFixture(t), result = verifyZstdOutputs(f.root, f.record.buildOutput, f.record.install, f.record.artifacts);
-    assert.equal(Object.keys(result).length, 1); assert.deepEqual(stagedFiles(f.root), result);
+    assert.deepEqual(result, {[f.record.install.path]: f.record.install.sha256});
+    assert.deepEqual(readStagedArchive(f.root), f.record.install);
     const changed = sdkFixture(t); fs.appendFileSync(path.join(changed.root, "build", "static", "libzstd.a"), "changed");
     assert.throws(() => verifyZstdOutputs(changed.root, changed.record.buildOutput, changed.record.install, changed.record.artifacts), /build\/install identity differs|build archive changed/);
     const extra = sdkFixture(t); fs.writeFileSync(path.join(extra.root, "lib", "libzstd.so"), "not admitted");
-    assert.throws(() => stagedFiles(extra.root), /unexpected staged members/);
+    assert.throws(() => readStagedArchive(extra.root), /unexpected staged members/);
   });
 
   test("source inventory binds notices and detects missing, extra, and linked inputs", {skip: process.platform === "win32"}, t => {

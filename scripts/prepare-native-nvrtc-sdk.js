@@ -5,7 +5,7 @@
 const fs = require("node:fs"), path = require("node:path"), {spawn, spawnSync} = require("node:child_process");
 const {Transform} = require("node:stream"), {pipeline} = require("node:stream/promises");
 const {createHash} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildText, sourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildText, sourceInputs} = require("./build-source-inputs");
 const {verifyNvrtcArchives, nvrtcArchiveCatalog, nvrtcSourceRecipe} = require("./fetch-native-sdk-sources");
 const {nvrtcCohortInfo} = require("./probe-static-nvrtc");
 
@@ -260,15 +260,9 @@ function readReceipt(file) {
   return {value, sha256: digest.sha256};
 }
 
-/** @param {unknown} value @param {string[]} names */
-function exactKeys(value, names) {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value) &&
-    isDeepStrictEqual(Object.keys(value).sort(), [...names].sort()));
-}
-
 /** @param {unknown} value @returns {value is SdkReceipt} */
 function isSdkReceipt(value) {
-  if (!exactKeys(value, ["version", "target", "platform", "cohort", "vendorVersion", "status", "networked", "buildOnly", "compiled", "sourceRebuilt",
+  if (!hasExactBuildFields(value, ["version", "target", "platform", "cohort", "vendorVersion", "status", "networked", "buildOnly", "compiled", "sourceRebuilt",
     "vendorPrebuilt", "publicationQualified", "redistributionQualified", "producerSha256", "recipe", "tool", "source", "output", "files"])) {return false;}
   const row = /** @type {Record<string, unknown>} */ (value);
   return row["version"] === 1 && (row["platform"] === "linux" || row["platform"] === "windows") &&
@@ -374,13 +368,13 @@ function admitNvrtcSdk(platform, output, dependencies = {}) {
       receipt.publicationQualified !== false || receipt.redistributionQualified !== false || receipt.output !== directory) {
     throw new Error("NVRTC SDK receipt is not a valid offline vendor-prebuilt assembly");
   }
-  if (!exactKeys(receipt.recipe, ["sha256", "files"]) || receipt.producerSha256 !== fileHash(__filename) || receipt.recipe?.sha256 !== recipeHash ||
+  if (!hasExactBuildFields(receipt.recipe, ["sha256", "files"]) || receipt.producerSha256 !== fileHash(__filename) || receipt.recipe?.sha256 !== recipeHash ||
       !isDeepStrictEqual(receipt.recipe.files, recipe.graph)) {throw new Error("NVRTC SDK receipt has stale producer recipe provenance");}
   const toolKind = platform === "linux" ? "tar" : "unzip", actualTool = toolIdentity(findTool(toolKind), toolKind);
   const toolSnapshots = snapshotPaths([actualTool.path]);
   if (!isDeepStrictEqual(receipt.tool, actualTool)) {throw new Error("NVRTC SDK receipt has stale archive-tool identity");}
   const sourceDirectory = receipt.source?.directory, sourceReceipt = receipt.source?.receipt;
-  if (!exactKeys(receipt.source, ["directory", "receipt", "receiptSha256"]) || typeof sourceDirectory !== "string" ||
+  if (!hasExactBuildFields(receipt.source, ["directory", "receipt", "receiptSha256"]) || typeof sourceDirectory !== "string" ||
       !/^[0-9a-f]{64}$/.test(receipt.source.receiptSha256 || "") || !path.isAbsolute(sourceDirectory) || path.resolve(sourceDirectory) !== sourceDirectory ||
       directory === sourceDirectory || directory.startsWith(sourceDirectory + path.sep)) {throw new Error("NVRTC SDK receipt has an invalid source directory");}
   const sourceReceiptPath = path.join(sourceDirectory, "fetch.json"), sourceArchives = Object.values(nvrtcArchiveCatalog(platform, dependencies.hashes, cohort))
@@ -412,13 +406,13 @@ function admitNvrtcSdk(platform, output, dependencies = {}) {
   for (const row of plan) {
     const savedFile = receipt.files?.[row.output], file = path.join(directory, row.output);
     if ("target" in row) {
-      if (!savedFile || savedFile.kind !== "symlink" || !exactKeys(savedFile, ["kind", "bytes", "target", "source"]) || savedFile.bytes !== 0 || savedFile.target !== row.target ||
+      if (!savedFile || savedFile.kind !== "symlink" || !hasExactBuildFields(savedFile, ["kind", "bytes", "target", "source"]) || savedFile.bytes !== 0 || savedFile.target !== row.target ||
           !isDeepStrictEqual(savedFile.source, {alias: true})) {throw new Error("NVRTC SDK alias receipt is invalid: " + row.output);}
       const stat = fs.lstatSync(file);
       if (!stat.isSymbolicLink() || stat.nlink !== 1 || fs.readlinkSync(file) !== row.target) {throw new Error("NVRTC SDK SONAME alias differs: " + row.output);}
     } else {
       const source = row.source;
-      if (!savedFile || savedFile.kind !== "file" || !exactKeys(savedFile, ["kind", "bytes", "sha256", "source"]) || !isDeepStrictEqual(savedFile.source, source)) {
+      if (!savedFile || savedFile.kind !== "file" || !hasExactBuildFields(savedFile, ["kind", "bytes", "sha256", "source"]) || !isDeepStrictEqual(savedFile.source, source)) {
         throw new Error("NVRTC SDK member receipt is invalid: " + row.output);
       }
       const actual = readonlyHash(file, maxMemberBytes);

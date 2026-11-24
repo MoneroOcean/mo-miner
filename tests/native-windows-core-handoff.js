@@ -88,7 +88,7 @@ test.describe("Windows native Core handoff admission", () => {
 
   test("rejects invalid or oversized producer receipt JSON", t => {
     const invalid = fixture(t); fs.writeFileSync(invalid.receiptFile, "{invalid\n"); rejects(invalid, /invalid JSON/);
-    const oversized = fixture(t); fs.truncateSync(oversized.receiptFile, 8 * 1024 * 1024 + 1); rejects(oversized, /bounded canonical file/);
+    const oversized = fixture(t); fs.truncateSync(oversized.receiptFile, 8 * 1024 * 1024 + 1); rejects(oversized, /bounded canonical regular file/);
   });
 
   test("rejects a changed target", t => {

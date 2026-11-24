@@ -253,6 +253,16 @@ assert.equal(typeof require(${JSON.stringify(path.resolve(__dirname, "../scripts
     assert.equal(f.calls.length, 0);
   });
 
+  test("qualification rejects a producer target that only coerces to a target name", {skip: hostTarget !== "linux"}, t => {
+    const f = fixture(t), malformed = {...f.producer, target: ["linux"]};
+    fs.writeFileSync(f.producerFile, JSON.stringify(malformed));
+    f.record.producerReceipt.sha256 = fileHash(f.producerFile);
+    f.record.componentHashes[f.producerFile] = f.record.producerReceipt.sha256;
+    f.write();
+    assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {audit: assert.fail, spawn: f.spawn}), /producer receipt/i);
+    assert.equal(f.calls.length, 0);
+  });
+
   test("every explicit metadata component must be hash-bound and the producer included", t => {
     const f = fixture(t), extra = path.join(f.root, "gpu-descriptor.json");
     fs.writeFileSync(extra, "{}"); f.record.componentHashes[extra] = "0".repeat(64); f.write();

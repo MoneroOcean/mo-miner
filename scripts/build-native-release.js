@@ -3,7 +3,7 @@
 // Linux native source producer. Reuse the maintained components without executing the result;
 // release qualification and Engineering's direct-Node execution remain separate.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson, sourceInputs, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot, sourceInputs, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
 const {nativeApplicationGpu, nativeApplicationInputs, verifyCudaImageReceiptInputs} = require("./build-native-application");
 const {releaseBuildEnvironment} = require("./build-environment");
 const {nativeDependencies, auditNativeGlibc, auditNativeVersionNeeds, isStaticArchive} = require("./native-audit");
@@ -116,9 +116,9 @@ function nativeSdkConfig(value, repo) {
   if (sdk.cpu.prepareCache !== false && path.resolve(sdk.cpu.cache) !== path.join(repo, "build/cache/oneapi")) {
     throw new Error("Automatic preparation requires the shared Engineering cache; custom completed caches need prepareCache: false");
   }
-  if (sdk.components !== undefined && (!sdk.components || Object.keys(sdk.components).sort().join(",") !== "core,gpu" ||
+  if (sdk.components !== undefined && (!sdk.components || !hasExactBuildFields(sdk.components, ["core", "gpu"]) ||
       !absolutePath(sdk.components.core) || !sdk.components.gpu || typeof sdk.components.gpu !== "object" || Array.isArray(sdk.components.gpu) ||
-      Object.keys(sdk.components.gpu).sort().join(",") !== [...keys].sort().join(",") || !Object.values(sdk.components.gpu).every(absolutePath))) {
+      !hasExactBuildFields(sdk.components.gpu, keys) || !Object.values(sdk.components.gpu).every(absolutePath))) {
     throw new Error("Native component assembly requires an explicit Core and receipt for every GPU profile");
   }
   return {sdk, keys};
@@ -129,8 +129,8 @@ function nativeSdkConfig(value, repo) {
  * @param {SdkSources | undefined} sources */
 function validateSdkSources(sources) {
   if (sources === undefined) {return;}
-  const keys = Object.keys(sources || {}).sort().join(",");
-  if (!sources || !["acpp,hermes,nvrtc,openmpSdk,rocm,zstd", "acpp,cudaImages,hermes,openmpSdk,rocm,zstd"].includes(keys) ||
+  const keys = ["acpp", "hermes", "openmpSdk", "rocm", "zstd"];
+  if (!sources || (!hasExactBuildFields(sources, [...keys, "nvrtc"]) && !hasExactBuildFields(sources, [...keys, "cudaImages"])) ||
       !Object.values(sources).every(absolutePath)) {throw new Error("Native SDK sources require explicit ACPP, Hermes, ROCm, OpenMP, either NVRTC or CUDA images, and zstd SDK roots");}
 }
 
@@ -188,7 +188,7 @@ function nativeSdkSourceInputs(sdk, readers) {
     admittedOpenmp = /** @type {typeof openmp & {notice?: {path: string, sha256: string, bytes: number}}} */ (/** @type {unknown} */ (openmp)),
     openmpNotice = admittedOpenmp.notice;
   const openmpLicenseStat = fs.lstatSync(openmpLicense);
-  if (!openmpNotice || Object.keys(openmpNotice).sort().join(",") !== "bytes,path,sha256" ||
+  if (!openmpNotice || !hasExactBuildFields(openmpNotice, ["bytes", "path", "sha256"]) ||
       openmpNotice.path !== "source/openmp/LICENSE.TXT" || !Number.isSafeInteger(openmpNotice.bytes) || openmpNotice.bytes < 1 ||
       !/^[0-9a-f]{64}$/.test(openmpNotice.sha256 || "") || openmp.files?.[openmpLicense] !== openmpNotice.sha256 ||
       !openmpLicenseStat.isFile() || openmpLicenseStat.isSymbolicLink() || fs.realpathSync(openmpLicense) !== openmpLicense ||
@@ -242,7 +242,7 @@ function nativeSdkSourceInputs(sdk, readers) {
     const admitted = imageReader(bundle, path.resolve(__dirname, ".."));
     const files = admitted?.files, sidecar = bundle + ".json";
     const bundleSha256 = files?.[bundle], sidecarSha256 = files?.[sidecar];
-    if (!files || Object.keys(files).sort().join("\n") !== [bundle, sidecar].sort().join("\n") ||
+    if (!files || !hasExactBuildFields(files, [bundle, sidecar]) ||
         typeof bundleSha256 !== "string" || !/^[0-9a-f]{64}$/.test(bundleSha256) ||
         typeof sidecarSha256 !== "string" || !/^[0-9a-f]{64}$/.test(sidecarSha256) ||
         fileHash(bundle) !== bundleSha256 || fileHash(sidecar) !== sidecarSha256) {
@@ -455,7 +455,7 @@ function buildNativeRelease(configFile, output, environment = process.env) {
   const env = applyLinuxSysrootEnvironment({...releaseBuildEnvironment(environment), MOM_AOT_BUILD_ONLY: "1"});
   const repo = path.resolve(__dirname, "..");
   assertNativeOutputOutsideSources(output, repo);
-  const configHash = fileHash(configFile), {sdk, keys} = nativeSdkConfig(readBuildJson(configFile), repo);
+  const {value, sha256: configHash} = readBuildJsonSnapshot(configFile), {sdk, keys} = nativeSdkConfig(value, repo);
   if (fileHash(configFile) !== configHash) {throw new Error("Native SDK descriptor changed during admission");}
   // Image selection is profile-local and receipt-bound; ambient shell state must not turn an
   // unrelated profile into an image consumer or bypass the descriptor's source admission.

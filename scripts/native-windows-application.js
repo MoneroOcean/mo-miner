@@ -4,12 +4,13 @@
 // This module compiles nothing, loads no GPU driver, and never accepts a partial factory set.
 const fs = require("node:fs"), path = require("node:path");
 const {absolutePath} = require("./build-native-release");
-const {fileHash, readBuildJson, nativeSourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJsonSnapshot, nativeSourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {nativeApplicationGpu} = require("./build-native-application");
 const {isStaticArchive, auditNativeSymbols} = require("./native-audit");
 const {coffSectionPayloads} = require("./native-compiler-isolation");
 const {windowsDpcppSdkInputs} = require("./native-windows-dpcpp-component");
 const {windowsGpuHandoffInputs} = require("./native-windows-gpu-handoff");
+const {cudaKernelSources} = require("./native-gpu-build");
 const nativeCudaImages = require("./native-cuda-images");
 const {admittedJitCacheTag} = require("./native-jit-cache-tag");
 const {assertUniqueHcfIds} = require("./native-hcf");
@@ -21,7 +22,6 @@ const {StringDecoder} = require("node:string_decoder"), {createHash} = require("
  * sdk: {libraries: string[], wholeArchives: string[], objects: string[], includeRoots: string[], nvmlHeader: string, hipDriverLibrary: string, dpcppComponent?: string, hostComponent?: string, nvrtcSdk?: string, cudaImages?: string}}} WindowsApplication */
 
 const embeddedCudaProfiles = new Set(["dpcpp", "acpp-cuda"]);
-const embeddedCudaSources = ["sycl/cn-gpu/cn-gpu.cpp", "sycl/pearlhash/pearlhash.cpp"];
 const staticNvrtcArchiveStems = new Set(["nvrtc_static", "nvrtc-builtins_static", "nvptxcompiler_static"]);
 const staticNvrtcInputs = new Set(["nvrtc.h", "nvptxcompiler.h", "nvrtc-headers.inc"]);
 /** @typedef {{compiled?: Array<{file?: string, flags?: unknown}>,
@@ -41,7 +41,7 @@ function requireEmbeddedCudaReceipt(graph, imageFiles) {
       typeof graph.sdkInputs !== "object" || Array.isArray(graph.sdkInputs)) {
     throw new Error("Embedded CUDA factory receipt lacks compiled-image evidence");
   }
-  for (const source of embeddedCudaSources) {
+  for (const source of cudaKernelSources) {
     const rows = graph.compiled.filter((row) => row && row.file === source);
     const row = rows[0];
     if (rows.length !== 1 || !row || !Array.isArray(row.flags) ||
@@ -85,23 +85,22 @@ function paths(value, label, maximum, empty = false) {
  * @param {unknown} value @param {string} root @returns {WindowsApplication} */
 function validateWindowsApplication(value, root) {
   const app = /** @type {WindowsApplication} */ (value);
-  const appKeys = app && typeof app === "object" ? Object.keys(app).sort().join(",") : "",
-    directKeys = "core,defaultCompiler,gpuReceipts,sdk,tools", handoffKeys = "core,defaultCompiler,gpuHandoffs,gpuReceipts,sdk,tools";
-  if (!app || typeof app !== "object" || ![directKeys, handoffKeys].includes(appKeys) ||
+  const keys = ["core", "defaultCompiler", "gpuReceipts", "sdk", "tools"];
+  if (!app || (!hasExactBuildFields(app, keys) && !hasExactBuildFields(app, [...keys, "gpuHandoffs"])) ||
       !absolutePath(app.core) || !/\.lib$/i.test(app.core)) {throw new Error("Invalid Windows application Core/descriptor");}
   paths(app.gpuReceipts, "GPU receipts", 64);
   const policy = nativeApplicationGpu(fs.readFileSync(path.join(root, "runtime/gpu-dispatch.cpp"), "utf8"), {defaultCompiler: app.defaultCompiler, flags: [], links: []});
   if (Object.hasOwn(app, "gpuHandoffs")) {
     const profiles = new Set(policy.factories.map(factory => factory.slice("mom_native_gpu_".length).replaceAll("_", "-")));
     if (!Array.isArray(app.gpuHandoffs) || app.gpuHandoffs.length !== profiles.size || app.gpuHandoffs.some(pin =>
-      !pin || typeof pin !== "object" || Array.isArray(pin) || Object.keys(pin).sort().join(",") !== "configSha256,handoffSha256,profile,receiptSha256" ||
+      !hasExactBuildFields(pin, ["configSha256", "handoffSha256", "profile", "receiptSha256"]) ||
       typeof pin.profile !== "string" || !profiles.has(pin.profile) ||
       !/^[a-f0-9]{64}$/.test(pin.receiptSha256 || "") || !/^[a-f0-9]{64}$/.test(pin.configSha256 || "") || !/^[a-f0-9]{64}$/.test(pin.handoffSha256 || "")) ||
       new Set(app.gpuHandoffs.map(pin => pin.profile)).size !== profiles.size) {
       throw new Error("Windows application GPU handoffs must pin every maintained profile exactly once");
     }
   }
-  if (!app.tools || Object.keys(app.tools).sort().join(",") !== "llvmAr,llvmObjcopy" || Object.values(app.tools).some(file => !absolutePath(file))) {throw new Error("Invalid Windows application LLVM tools");}
+  if (!app.tools || !hasExactBuildFields(app.tools, ["llvmAr", "llvmObjcopy"]) || Object.values(app.tools).some(file => !absolutePath(file))) {throw new Error("Invalid Windows application LLVM tools");}
   const sdk = app.sdk;
   const sdkKeys = Object.keys(sdk || {}).sort(), sdkShape = sdkKeys.filter(key => !["dpcppComponent", "hostComponent", "nvrtcSdk", "cudaImages"].includes(key)).join(",");
   if (!sdk || sdkShape !== "hipDriverLibrary,includeRoots,libraries,nvmlHeader,objects,wholeArchives" ||
@@ -204,7 +203,13 @@ function windowsApplicationInputs(value, root) {
     if (expected !== undefined && (!/^[0-9a-f]{64}$/.test(expected) || hash !== expected)) {throw new Error("Windows application component hash differs: " + file);}
     files[file] = hash;
   };
-  const coreFile = path.join(path.dirname(app.core), "inputs.json"), core = readBuildJson(coreFile); admit(coreFile);
+  /** @param {string} file */
+  const admitJson = file => {
+    const {value, sha256} = readBuildJsonSnapshot(file);
+    files[file] = sha256;
+    return value;
+  };
+  const core = admitJson(path.join(path.dirname(app.core), "inputs.json"));
   verifySourceInputs(core.sourceState, nativeSourceInputs(root, "cpu"), "Windows application Core");
   if (core.target !== "win32" || core.gpu !== true || core.portable !== true || core.archive?.stubs !== false ||
       !isStaticArchive(app.core) || core.archive?.sha256 !== core.objectSha256 || !Number.isSafeInteger(core.archive?.coffTableCount) || core.archive.coffTableCount < 1 ||
@@ -217,18 +222,18 @@ function windowsApplicationInputs(value, root) {
   for (const file of app.gpuReceipts) {
     const receiptSha256 = gpuHandoffMode ? fileHash(file) : "", matchingPins = gpuHandoffMode ? gpuHandoffPins.filter(pin => pin.receiptSha256 === receiptSha256) : [],
       pin = matchingPins[0], handoff = pin ? windowsGpuHandoffInputs(file, pin) : null,
-      graph = handoff?.graph || (gpuHandoffMode ? null : readBuildJson(file));
+      graph = handoff?.graph || (gpuHandoffMode ? null : admitJson(file));
     if (gpuHandoffMode && !handoff) {throw new Error("Windows application GPU receipt has no matching pinned handoff");}
     if (gpuHandoffMode && matchingPins.length !== 1) {throw new Error("Windows application GPU receipt does not have exactly one handoff pin");}
     for (const [member, hash] of Object.entries(handoff?.files || {})) {
       if (Object.hasOwn(files, member) && files[member] !== hash) {throw new Error("Windows GPU handoff conflicts with an admitted application input: " + member);}
       files[member] = hash;
     }
-    admit(file);
+    if (handoff) {admit(file, receiptSha256);}
     if (!remaining.delete(graph.factory) || graph.factory !== "mom_native_gpu_" + String(graph.profile).replaceAll("-", "_") ||
         !absolutePath(graph.isolation) || !Array.isArray(graph.objects) || !graph.objects.length || graph.objects.length > 128) {throw new Error("Invalid or duplicate Windows application GPU factory");}
     verifySourceInputs(graph.sourceState, current, "Windows application GPU");
-    const isolated = readBuildJson(graph.isolation); admit(graph.isolation);
+    const isolated = admitJson(graph.isolation);
     if (isolated.prefix !== "mom_" + graph.profile.replaceAll("-", "_") + "_gpu_" ||
         JSON.stringify(isolated.entryPoints) !== JSON.stringify([graph.factory]) || JSON.stringify(isolated.outputs) !== JSON.stringify(graph.objects) ||
         ["nonDirectivePayloadsPreserved", "nonDirectiveMetadataPreserved", "comdatSelectionPreserved", "associativeXdataPreserved", "linkerDirectiveReferencesPreserved", "externalUndefinedImportsPreserved", "privateUndefinedReferencesRenamed"]

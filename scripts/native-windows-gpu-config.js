@@ -4,7 +4,7 @@
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto"), childProcess = require("node:child_process"),
   {spawnSync} = childProcess,
   {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot, verifySourceInputs} = require("./build-source-inputs");
 const {currentStaticSyclRecipe} = require("./native-release-sdk-inputs");
 const windowsHostSdkReader = require("./native-windows-host-sdk-inputs"), linuxLlvmToolReader = require("./native-linux-llvm-tools");
 const {windowsHostSdkInputs} = windowsHostSdkReader;
@@ -31,12 +31,6 @@ const windowsSdkVirtualIncludeRoots = Object.freeze([
 /** @typedef {{resourceInclude:string,syclInclude:string,dpcppInclude:string,dpcppSyclInclude:string,urInclude:string,windowsSdkIncludeRoots:string[]}} WindowsGpuIncludePlanInput */
 /** @typedef {WindowsGpuIncludePlanInput} WindowsOneapiIncludePlanInput */
 /** @typedef {{root:string,archiveSha256:string,marker:{path:string,sha256:string},clang:{path:string,sha256:string},clangxx:{path:string,sha256:string},clangVersion:string}} DpcppCompilerRecord */
-
-/** @param {unknown} value @param {string[]} keys */
-function hasExactKeys(value, keys) {
-  return !!value && typeof value === "object" && !Array.isArray(value) &&
-    Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
-}
 
 /** @param {unknown} value @param {string} label */
 function canonicalDirectory(value, label) {
@@ -66,6 +60,15 @@ function stableRegular(file, label, maximum) {
   return {bytes: Number(after.size), sha256};
 }
 
+/** Read the externally pinned bytes before parsing, retaining stable canonical-file checks.
+ * @param {string} file @param {string} label @param {number} maximum @param {string} expectedSha256 */
+function readPinnedRegularJson(file, label, maximum, expectedSha256) {
+  const pin = stableRegular(file, label, maximum), message = label + " differs from its external pin";
+  if (pin.sha256 !== expectedSha256) {throw new Error(message);}
+  const {value} = readBuildJsonSnapshot(file, maximum, {sha256: expectedSha256, message});
+  return {value, pin};
+}
+
 /** @param {string} root @param {string} file @param {string} label */
 function containedFile(root, file, label) {
   const stat = fs.lstatSync(file);
@@ -85,7 +88,7 @@ const maxWindowsAcppSdkArchiveBytes = 16 * 1024 ** 3, maxWindowsAcppSdkExpandedB
  * unchanged same-run ACPP build handoff. The tar SHA is a trusted workflow handoff pin, not publisher authentication.
  * @param {{archive:string,bundleSha256:string,root:string,sourceRoot:string}} input @param {string} suffix */
 function windowsNativeAcppInputs(input, suffix) {
-  if (process.platform !== "linux" || process.arch !== "x64" || !hasExactKeys(input, ["archive", "bundleSha256", "root", "sourceRoot"]) ||
+  if (process.platform !== "linux" || process.arch !== "x64" || !hasExactBuildFields(input, ["archive", "bundleSha256", "root", "sourceRoot"]) ||
       !validCiSuffix(suffix) || !/^[a-f0-9]{64}$/.test(input.bundleSha256 || "")) {
     throw new Error("Windows ACPP inputs require the exact same-run Linux handoff and archive pin");
   }
@@ -251,7 +254,7 @@ function generatedIncludeInventory(root) {
  */
 function windowsNativeGpuIncludePlan(input) {
   const keys = ["resourceInclude", "syclInclude", "dpcppInclude", "dpcppSyclInclude", "urInclude", "windowsSdkIncludeRoots"];
-  if (!hasExactKeys(input, keys)) {throw new Error("Windows GPU include roots do not match the pinned physical and SDK VFS layout");}
+  if (!hasExactBuildFields(input, keys)) {throw new Error("Windows GPU include roots do not match the pinned physical and SDK VFS layout");}
   const physicalRoots = [input.resourceInclude, input.syclInclude, input.dpcppInclude, input.dpcppSyclInclude, input.urInclude];
   if (physicalRoots.some(value => {
     return typeof value !== "string" || !path.isAbsolute(value) || path.resolve(value) !== value || /[\r\n\0]/.test(value);
@@ -285,7 +288,7 @@ function resolveDpcppCompiler(root, record, environment, spawn = spawnSync) {
   const rows = /** @type {Array<[string, DpcppCompilerRecord["marker"]]>} */ ([
     [".mom-toolchain-sha256", record.marker], ["bin/clang", record.clang], ["bin/clang++", record.clangxx]]);
   if (record.root !== root || record.archiveSha256 !== dpcppPins.sdk || typeof record.clangVersion !== "string" || !record.clangVersion ||
-      rows.some(([relative, row]) => !hasExactKeys(row, ["path", "sha256"]) || row.path !== path.join(root, relative) ||
+      rows.some(([relative, row]) => !hasExactBuildFields(row, ["path", "sha256"]) || row.path !== path.join(root, relative) ||
         !/^[a-f0-9]{64}$/.test(row.sha256 || ""))) {throw new Error("DPC++ frontend does not match the admitted SDK record");}
   const inputs = /** @type {Record<string,string>} */ ({});
   for (const [relative, row] of rows) {
@@ -379,8 +382,8 @@ function validateWindowsSdkVfsRoots(host) {
 function windowsNativeGpuConfig(profile, input) {
   const baseInputKeys = ["windowsSdkRoot", "windowsSdkPins", "windowsSourcesFile", "dpcppState", "dpcppManifestSha256",
       "toolsRoot", "toolsExpectation", "compilerRoot", "suffix"], inputKeys = profile === "dpcpp" ? [...baseInputKeys, "cudaImages"] : baseInputKeys;
-  if (!hasExactKeys(input, inputKeys) || typeof input.dpcppManifestSha256 !== "string" ||
-      !/^[a-f0-9]{64}$/.test(input.dpcppManifestSha256) || !hasExactKeys(input.toolsExpectation, ["handoffSha256"]) || !validCiSuffix(input.suffix) ||
+  if (!hasExactBuildFields(input, inputKeys) || typeof input.dpcppManifestSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(input.dpcppManifestSha256) || !hasExactBuildFields(input.toolsExpectation, ["handoffSha256"]) || !validCiSuffix(input.suffix) ||
       typeof input.toolsExpectation.handoffSha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.toolsExpectation.handoffSha256) ||
       typeof input.windowsSdkRoot !== "string" || !path.isAbsolute(input.windowsSdkRoot) ||
       typeof input.windowsSourcesFile !== "string" || !path.isAbsolute(input.windowsSourcesFile) ||
@@ -416,9 +419,8 @@ function windowsNativeGpuConfig(profile, input) {
   }
   const sourceRoot = canonicalDirectory(sources.prepared.dpcpp.root, "Prepared Windows DPC++ source root");
 
-  const manifestPin = stableRegular(state.manifest, "DPC++/CUDA input manifest", 8 << 20);
-  if (manifestPin.sha256 !== input.dpcppManifestSha256) {throw new Error("DPC++/CUDA input manifest differs from its external pin");}
-  const dpcppManifest = readBuildJson(state.manifest);
+  const {value: dpcppManifest, pin: manifestPin} = readPinnedRegularJson(
+    state.manifest, "DPC++/CUDA input manifest", 8 << 20, input.dpcppManifestSha256);
   // This is the maintained same-run audit; do not turn the copied SDK into a second receipt.
   const {auditDpcppCudaInputs} = require("./native-dpcpp-cuda-inputs");
   auditDpcppCudaInputs(state, dpcppManifest, input.dpcppManifestSha256);
@@ -555,10 +557,10 @@ function windowsNativeAcppGpuConfig(profile, input) {
   const commonKeys = ["windowsSdkRoot", "windowsSdkPins", "toolsRoot", "toolsExpectation", "frontendRoot", "frontendExpectation", "acpp", "suffix"],
     cudaKeys = ["dpcppState", "dpcppManifestSha256", "cudaImages"],
     inputKeys = profile === "acpp-cuda" ? [...commonKeys, ...cudaKeys] : [...commonKeys, "hipHeaders"];
-  if (!hasExactKeys(input, inputKeys) || !absolutePath(input.windowsSdkRoot) || !absolutePath(input.toolsRoot) ||
-      !absolutePath(input.frontendRoot) || !hasExactKeys(input.toolsExpectation, ["handoffSha256"]) ||
-      profile === "acpp-hip" && !hasExactKeys(input.hipHeaders, ["root", "handoffSha256"]) ||
-      !hasExactKeys(input.frontendExpectation, ["handoffSha256"]) || !validCiSuffix(input.suffix) ||
+  if (!hasExactBuildFields(input, inputKeys) || !absolutePath(input.windowsSdkRoot) || !absolutePath(input.toolsRoot) ||
+      !absolutePath(input.frontendRoot) || !hasExactBuildFields(input.toolsExpectation, ["handoffSha256"]) ||
+      profile === "acpp-hip" && !hasExactBuildFields(input.hipHeaders, ["root", "handoffSha256"]) ||
+      !hasExactBuildFields(input.frontendExpectation, ["handoffSha256"]) || !validCiSuffix(input.suffix) ||
       !/^[a-f0-9]{64}$/.test(input.toolsExpectation.handoffSha256 || "") ||
       !/^[a-f0-9]{64}$/.test(input.frontendExpectation.handoffSha256 || "")) {
     throw new Error("Windows ACPP config requires exact same-run SDK, tool and frontend inputs");
@@ -656,9 +658,9 @@ function admitAcppCudaInputs(state, expectedManifestSha256, suffix) {
   }
   canonicalDirectory(state.root, "DPC++/CUDA input root"); canonicalDirectory(state.dpcppRoot, "DPC++ SDK root");
   canonicalDirectory(state.cudaRoot, "CUDA SDK root"); canonicalDirectory(state.linux.source, "Linux SDK source root");
-  const manifestPin = stableRegular(state.manifest, "DPC++/CUDA input manifest", 8 << 20);
-  if (manifestPin.sha256 !== expectedManifestSha256) {throw new Error("DPC++/CUDA manifest differs from its external pin");}
-  const manifest = readBuildJson(state.manifest), {auditDpcppCudaInputs} = require("./native-dpcpp-cuda-inputs");
+  const {value: manifest, pin: manifestPin} = readPinnedRegularJson(
+      state.manifest, "DPC++/CUDA input manifest", 8 << 20, expectedManifestSha256),
+    {auditDpcppCudaInputs} = require("./native-dpcpp-cuda-inputs");
   // Preserve acquisition provenance across unrelated CI edits, retaining all payload checks.
   auditDpcppCudaInputs(state, manifest, expectedManifestSha256);
   if (fileHash(state.manifest) !== manifestPin.sha256) {throw new Error("DPC++/CUDA manifest changed during admission");}
@@ -731,7 +733,7 @@ function windowsNativeGpuCudaImages(input, suffix) {
   const runnerTemp = process.env["RUNNER_TEMP"] || "",
     incoming = path.join(runnerTemp, "incoming"), archiveName = "native-linux-cuda-images-" + suffix + ".tar",
     handoffName = "mom-native-cuda-images-handoff-" + suffix;
-  if (!hasExactKeys(input, ["archive", "bundleSha256", "root"]) || !validCiSuffix(suffix) ||
+  if (!hasExactBuildFields(input, ["archive", "bundleSha256", "root"]) || !validCiSuffix(suffix) ||
       !/^[a-f0-9]{64}$/.test(input.bundleSha256 || "") ||
       !path.isAbsolute(runnerTemp) || fs.realpathSync(runnerTemp) !== runnerTemp ||
       fs.realpathSync(incoming) !== incoming || input.archive !== path.join(incoming, archiveName) ||
@@ -764,7 +766,7 @@ function windowsNativeGpuCudaImages(input, suffix) {
     result = readBuildJson(resultFile), expectedOrigin = path.join("/tmp", "mom-native-cuda-images-" + suffix, "bundle", "cuda-images.inc"),
     versions = Array.isArray(result.compilerVersions) ? [...result.compilerVersions].sort() : [],
     manifestImages = admitted.manifest["images"], manifestBytes = admitted.manifest["resourceBytes"];
-  if (!hasExactKeys(result, ["format", "include", "sidecar", "compilerVersions", "plannedImages", "embeddedBytes", "sourceSha256"]) ||
+  if (!hasExactBuildFields(result, ["format", "include", "sidecar", "compilerVersions", "plannedImages", "embeddedBytes", "sourceSha256"]) ||
       result.format !== "mom-cuda-image-build-v1" || result.include !== expectedOrigin || result.sidecar !== expectedOrigin + ".json" ||
       versions.join(",") !== "12.6,13.3" || !Array.isArray(manifestImages) || result.plannedImages !== manifestImages.length ||
       typeof manifestBytes !== "number" || result.embeddedBytes !== manifestBytes ||
@@ -791,9 +793,6 @@ function windowsNativeGpuCudaImages(input, suffix) {
     sidecarSha256: sidecarPin.sha256, resultSha256: resultPin.sha256}};
 }
 
-/** @param {Parameters<typeof windowsNativeGpuConfig>[1]} input */
-function windowsNativeOneapiGpuConfig(input) {return windowsNativeGpuConfig("oneapi", input);}
-
-module.exports = {windowsNativeGpuConfig, composeWindowsDpcppGpuConfig, composeWindowsAcppGpuConfig, windowsNativeAcppInputs, windowsNativeAcppGpuConfig, windowsNativeOneapiGpuConfig, windowsNativeGpuIncludePlan,
+module.exports = {windowsNativeGpuConfig, composeWindowsDpcppGpuConfig, composeWindowsAcppGpuConfig, windowsNativeAcppInputs, windowsNativeAcppGpuConfig, windowsNativeGpuIncludePlan,
   generatedIncludeInventory,
   windowsNativeOneapiIncludePlan, resolveDpcppCompiler, resolveAcppFrontend, windowsNativeGpuCudaImages};

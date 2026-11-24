@@ -3,7 +3,7 @@
 // Build-only CUDA image planning and immutable-resource generation. This module never starts
 // NVRTC itself; callers pass public-API query results and outputs from native-cuda-images.cpp.
 const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {cudaHeaderInputs, collectHeaders, packHeaders} = require("./native-jit-headers");
 
 const maxImageBytes = 64 << 20, maxIncBytes = 512 << 20, maxImages = 2048, maxInputFiles = 4096;
@@ -360,7 +360,7 @@ function generateCudaImageBundle({repo, compilers, artifacts, headerPacks}) {
   }
   const pearlCompilerVersions = [...new Set(plan.filter((job) => job.profile.startsWith("pearl-"))
     .map((job) => versionKey(job.compiler)))].sort();
-  if (!record(headerPacks) || Object.keys(headerPacks).sort().join("\n") !== pearlCompilerVersions.join("\n")) {
+  if (!record(headerPacks) || !hasExactBuildFields(headerPacks, pearlCompilerVersions)) {
     throw new Error("Provide one admitted CUDA JIT header pack for each Pearl compiler version");
   }
   const beforeSources = sourceSnapshot(repo);
@@ -612,7 +612,7 @@ function validateManifest(value, repo) {
     keys.add(key);
   }
   if (keys.size !== expectedKeys.size || [...expectedKeys].some((key) => !keys.has(key)) || total !== resourceBytes ||
-      total > maxImageBytes || Object.keys(rawHeaderPacks).sort().join("\n") !== [...usedPearlVersions].sort().join("\n")) {
+      total > maxImageBytes || !hasExactBuildFields(rawHeaderPacks, [...usedPearlVersions])) {
     throw new Error("CUDA image sidecar resource or header-pack inventory is inconsistent");
   }
   const baseline = compilerByVersion.get("12.6");
@@ -652,7 +652,7 @@ function cudaImageInputs(file, repo = path.resolve(__dirname, "..")) {
   if (incStat.size < 1 || incStat.size > maxIncBytes || sidecarStat.size < 1 || sidecarStat.size > (8 << 20)) {
     throw new Error("CUDA image include or sidecar exceeds bounds");
   }
-  const incSha = fileHash(file), sidecarSha = fileHash(metadata), manifest = readBuildJson(metadata);
+  const incSha = fileHash(file), {value: manifest, sha256: sidecarSha} = readBuildJsonSnapshot(metadata, 8 << 20);
   validateManifest(manifest, repo);
   if (fileHash(file) !== incSha || fileHash(metadata) !== sidecarSha || manifest["sourceSha256"] !== incSha) {
     throw new Error("Incomplete or changed CUDA image bundle; regenerate it with native-cuda-images.js");

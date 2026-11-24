@@ -5,12 +5,16 @@
 const fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {createHash} = require("node:crypto");
-const {fileHash, nativeSourceInputs, verifySourceInputs, buildFileInputs, completeBuildInputs} = require("./build-source-inputs");
+const {fileHash, nativeSourceInputs, verifySourceInputs, buildFileInputs, completeBuildInputs, compilerIncludePaths, containsBuildPath, isBuildIncludeDirectory} = require("./build-source-inputs");
 const {staticSyclInputs} = require("./native-sycl-inputs");
 const {cudaHeaderResources, cudaHeaderInputs} = require("./native-jit-headers");
 const {isolateGpuObjects} = require("./native-gpu-table");
 const {compileNativeObjects} = require("./native-object-cache");
 const {linuxSysrootFlags, requireLinuxSysroot} = require("./native-linux-sysroot");
+
+const pearlhashSource = "sycl/pearlhash/pearlhash.cpp";
+// These translation units consume CUDA kernel images or supply their NVRTC fallback.
+const cudaKernelSources = Object.freeze(["sycl/cn-gpu/cn-gpu.cpp", pearlhashSource]);
 
 /** Keep the original SDK umbrella (including its namespace alias) at its original path.
  * An explicit path avoids both relocated relative includes and Windows case-folding recursion.
@@ -28,41 +32,45 @@ function writeAdaptiveCppUmbrella(source, output) {
  * already captured by nativeSourceInputs, while generated output headers are declared per TU.
  * @param {string[]} args @param {string} repo @param {string} output */
 function nativeIncludeRoots(args, repo, output) {
-  const selected = [];
-  for (let index = 0; index < args.length; index++) {
-    const value = args[index] || "";
-    if (["-I", "-isystem", "-iquote"].includes(value)) {selected.push(args[++index] || "");} else if (value.startsWith("-I") && value.length > 2) {selected.push(value.slice(2));} else if (value.startsWith("--cuda-path=")) {selected.push(path.join(value.slice("--cuda-path=".length), "include"));}
-  }
+  const selected = compilerIncludePaths(args);
   const outputRoot = path.resolve(output), sourceRoot = path.resolve(repo);
-  return [...new Set(selected.filter(Boolean).map(root => path.resolve(repo, root)).filter(root => {
-    const relOutput = path.relative(outputRoot, root), relSource = path.relative(sourceRoot, root);
-    if (!relOutput.startsWith(".." + path.sep) && !path.isAbsolute(relOutput)) {return false;}
-    if (relSource !== "" && (!relSource.startsWith(".." + path.sep) && !path.isAbsolute(relSource))) {return false;}
-    try {return fs.statSync(root).isDirectory();} catch {return false;}
+  return [...new Set(selected.map(root => path.resolve(repo, root)).filter(root => {
+    if (containsBuildPath(outputRoot, root) ||
+        (root !== sourceRoot && containsBuildPath(sourceRoot, root))) {return false;}
+    return isBuildIncludeDirectory(root);
   }))];
+}
+
+/** Both release builders must use the same CUDA source exceptions and HCF namespace.
+ * @param {string} file @param {string} backend @param {boolean} images */
+function adaptiveCppSourceFlags(file, backend, images) {
+  if (!file.startsWith("sycl/") || !file.endsWith(".cpp")) {return [];}
+  const flags = [];
+  if (backend.includes("cuda") && cudaKernelSources.includes(file)) {
+    flags.push("-DMOM_SYCL_HAS_CUDA");
+    if (!images && file === pearlhashSource) {flags.push("-DMOM_EMBEDDED_NVRTC_HEADERS");}
+  }
+  return [...flags, "-mllvm", "-acpp-sscp-hcf-object-id-namespace=acpp-" + backend];
 }
 
 /** Preserve the maintained AdaptiveCpp per-source exceptions in one testable command plan.
  * systemFlags (the glibc sysroot selection) precede both the C and C++ flags.
  * @param {string[]} sourceFiles @param {string} compiler @param {string} repo @param {string} output
- * @param {string[]} compileFlags @param {boolean} cuda @param {string} backend
+ * @param {string[]} compileFlags @param {string} backend
  * @param {boolean} [images] @param {string[]} [systemFlags] */
-function adaptiveCppCompileCommands(sourceFiles, compiler, repo, output, compileFlags, cuda, backend, images = false, systemFlags = []) {
-  if (backend !== "cuda" && backend !== "hip" && backend !== "cuda-hip") {throw new Error("Unknown AdaptiveCpp HCF identity profile");}
+function adaptiveCppCompileCommands(sourceFiles, compiler, repo, output, compileFlags, backend, images = false, systemFlags = []) {
+  const {cuda} = gpuProfile(backend, images);
   return sourceFiles.map((file, index) => {
     const object = path.join(output, `${index}.o`), depfile = path.join(output, `${index}.d`);
     const flags = file.endsWith(".c") ? [...systemFlags, "-x", "c", "-O3", "-ffp-contract=off", "-fPIC"] :
-      [...systemFlags, ...compileFlags, ...(cuda && ["sycl/cn-gpu/cn-gpu.cpp", "sycl/pearlhash/pearlhash.cpp"].includes(file) ? ["-DMOM_SYCL_HAS_CUDA"] : []),
-        ...(cuda && !images && file === "sycl/pearlhash/pearlhash.cpp" ? ["-DMOM_EMBEDDED_NVRTC_HEADERS"] : [])];
-    const hcfNamespace = file.startsWith("sycl/") && file.endsWith(".cpp") ?
-      ["-mllvm", "-acpp-sscp-hcf-object-id-namespace=acpp-" + backend] : [];
+      [...systemFlags, ...compileFlags, ...adaptiveCppSourceFlags(file, backend, images)];
     const generatedInputs = [];
     if (file.startsWith("sycl/") && !file.endsWith(".c")) {generatedInputs.push(path.join(output, "sycl/sycl.hpp"));}
-    if (cuda && !images && ["sycl/cn-gpu/cn-gpu.cpp", "sycl/pearlhash/pearlhash.cpp"].includes(file)) {
+    if (cuda && !images && cudaKernelSources.includes(file)) {
       generatedInputs.push(path.join(output, "nvrtc-api/nvrtc.h"));
+      if (file === pearlhashSource) {generatedInputs.push(path.join(output, "nvrtc-headers.inc"));}
     }
-    if (cuda && !images && file === "sycl/pearlhash/pearlhash.cpp") {generatedInputs.push(path.join(output, "nvrtc-headers.inc"));}
-    return {command: compiler, args: [...flags, ...hcfNamespace, "-MD", "-MF", depfile, "-c", path.join(repo, file), "-o", object],
+    return {command: compiler, args: [...flags, "-MD", "-MF", depfile, "-c", path.join(repo, file), "-o", object],
       source: path.join(repo, file), object, depfile, generatedInputs, timeout: 180000};
   });
 }
@@ -290,11 +298,8 @@ function main() {
     ...inputs.libraries, ...Object.keys(inputs.comgr?.files || {}), ...Object.keys(compilerFiles)]);
   const comgrSourceRoot = inputs.comgr && path.join(path.dirname(fs.realpathSync(inputs.comgr.receipt)), "source");
   const comgrNonCompilerInputs = new Set(Object.keys(inputs.comgr?.files || {}).filter(file => {
-    const inRoot = (/** @type {string} */ root) => {
-      const relative = path.relative(root, file);
-      return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));
-    };
-    return file === inputs.comgr?.receipt || inRoot(repo) || Boolean(comgrSourceRoot && inRoot(comgrSourceRoot));
+    return file === inputs.comgr?.receipt || containsBuildPath(repo, file) ||
+      Boolean(comgrSourceRoot && containsBuildPath(comgrSourceRoot, file));
   }));
   // Generated NVRTC packs and the shared SYCL umbrella are represented per TU; do not make
   // a change to one source's header invalidate the rest of the graph.
@@ -305,7 +310,7 @@ function main() {
   // The same strict-FP host helper is already a separate gyp dependency; it is not a GPU rewrite.
   const sourceFiles = [...sources, "sycl/hoohash/host-math.c", "runtime/driver-library.cpp", "runtime/compiler-gate.cpp"];
   // LLVM clang does not read the Intel configuration file; pass the glibc sysroot explicitly.
-  const commands = adaptiveCppCompileCommands(sourceFiles, inputs.cxx, repo, output, compileFlags, cuda, backend, Boolean(images),
+  const commands = adaptiveCppCompileCommands(sourceFiles, inputs.cxx, repo, output, compileFlags, backend, Boolean(images),
     linuxSysrootFlags(requireLinuxSysroot(process.env)));
   const compiled = compileNativeObjects({repo, output, namespace: `linux/gpu/acpp-${backend}`, commands,
     includeRoots: [output, ...nativeIncludeRoots(commands.flatMap(item => item.args), repo, output)], jobs: 1,
@@ -350,5 +355,5 @@ function main() {
 }
 
 module.exports = {syclSources, gpuProfile, dpcppGpuFlags, dpcppUniquePrefixFlags, dpcppSourceFlags, dpcppDeviceLinkFlags, portableOpenclTranslatorFlags, writeAdaptiveCppUmbrella,
-  cudaBuildHeaders, combinedGpuTargets, nativeIncludeRoots, adaptiveCppCompileCommands};
+  cudaBuildHeaders, cudaKernelSources, pearlhashSource, combinedGpuTargets, nativeIncludeRoots, adaptiveCppCompileCommands, adaptiveCppSourceFlags};
 if (require.main === module) {try {main();} catch (error) {console.error(error); process.exitCode = 1;}}

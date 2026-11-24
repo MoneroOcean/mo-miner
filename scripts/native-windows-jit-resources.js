@@ -3,7 +3,7 @@
 // Build the existing source-JIT resource overlay from admitted same-run producers.
 // This module does not install GNU packages or transport artifacts.
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson, sourceInputs, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, containsBuildPath, fileHash, readBuildJson, readBuildJsonSnapshot, sourceInputs, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
 const {jitSourceInputs, buildJitEmitter} = require("./native-jit-sdk");
 const {prepare: prepareJitResources, verifyJitResources, validateProfile, resourceTarget} = require("./prepare-native-sycl-jit-resources");
 const {auditGnuHeaders} = require("./prepare-native-gnu-headers");
@@ -54,18 +54,6 @@ function directory(directory, label) {
   return directory;
 }
 
-/** @param {string} root @param {string} file */
-function within(root, file) {
-  const relative = path.relative(root, file);
-  return relative === "" || (relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative));
-}
-
-/** @param {unknown} value @param {string[]} keys */
-function exactKeys(value, keys) {
-  return !!value && typeof value === "object" && !Array.isArray(value) &&
-    Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
-}
-
 /** The archive name and all producer roots carry the same CI work-root suffix. @param {string} value */
 function runSuffix(value) {
   if (!validCiSuffix(value)) {throw new Error("Invalid Windows JIT CI work-root suffix");}
@@ -92,8 +80,9 @@ function admitLinuxBase(root, suffix, expectedResultSha256) {
   runRoot(root, suffix, "mom-native-linux-jit-resources");
   const ciResultFile = path.join(root, "ci-result.json");
   regularFile(ciResultFile, "Linux JIT result");
-  if (fileHash(ciResultFile) !== hash(expectedResultSha256, "Linux JIT result")) {throw new Error("Linux JIT result differs from its external pin");}
-  const result = /** @type {LinuxResult} */ (readBuildJson(ciResultFile));
+  /** @type {{value: LinuxResult}} */
+  const {value: result} = readBuildJsonSnapshot(ciResultFile, undefined,
+    {sha256: hash(expectedResultSha256, "Linux JIT result"), message: "Linux JIT result differs from its external pin"});
   if (result?.version !== 1 || result.target !== linuxTarget || result.buildOnly !== true || result.executed !== false || result.publicationQualified !== false) {
     throw new Error("Linux JIT artifact is not the same-run build-only resource producer");
   }
@@ -107,7 +96,7 @@ function admitLinuxBase(root, suffix, expectedResultSha256) {
   if (!Array.isArray(result.inputArchives) || result.inputArchives.length !== expectedArchives.length ||
       result.inputArchives.some((/** @type {InputArchive} */ row, /** @type {number} */ index) => {
         const expected = expectedArchives[index];
-        return !expected || !exactKeys(row, ["role", "name", "root", "sha256"]) || row.role !== expected.role || row.root !== expected.root ||
+        return !expected || !hasExactBuildFields(row, ["role", "name", "root", "sha256"]) || row.role !== expected.role || row.root !== expected.root ||
           row.name !== expected.name || !/^[a-f0-9]{64}$/.test(row.sha256 || "");
       })) {throw new Error("Linux JIT artifact does not bind the exact same-run source, DPC++/CUDA and GNU archives");}
 
@@ -199,13 +188,13 @@ function validateWindowsJitNativeTools(outerRoot, suffix, source) {
   const manifest = readBuildJson(manifestFile), sourceRoot = "mom-native-linux-source-prerequisites-" + suffix,
     linuxRoot = path.join("/tmp", "mom-native-linux-jit-resources-" + suffix), expectedSourceReceipt = path.join("/tmp", sourceRoot, "prepared/compiler/sources.json"),
     expectedBuildRoot = path.join(linuxRoot, "bootstrap/build");
-  if (!exactKeys(manifest, ["version", "kind", "buildOnly", "executed", "publicationQualified", "linux", "source", "files"]) ||
+  if (!hasExactBuildFields(manifest, ["version", "kind", "buildOnly", "executed", "publicationQualified", "linux", "source", "files"]) ||
       manifest.version !== 1 || manifest.kind !== "windows-jit-native-tablegen" ||
       manifest.buildOnly !== true || manifest.executed !== false || manifest.publicationQualified !== false ||
-      !exactKeys(manifest.linux, ["root", "resultSha256", "baseReceiptSha256", "buildRoot"]) ||
+      !hasExactBuildFields(manifest.linux, ["root", "resultSha256", "baseReceiptSha256", "buildRoot"]) ||
       manifest.linux.root !== linuxRoot || !/^[a-f0-9]{64}$/.test(manifest.linux.resultSha256 || "") ||
       !/^[a-f0-9]{64}$/.test(manifest.linux.baseReceiptSha256 || "") || manifest.linux.buildRoot !== expectedBuildRoot ||
-      !exactKeys(manifest.source, ["receiptFile", "receiptSha256", "dpcppCommit"]) || manifest.source.receiptFile !== expectedSourceReceipt ||
+      !hasExactBuildFields(manifest.source, ["receiptFile", "receiptSha256", "dpcppCommit"]) || manifest.source.receiptFile !== expectedSourceReceipt ||
       manifest.source.receiptFile !== source?.receiptFile || manifest.source.receiptSha256 !== source?.receiptSha256 ||
       manifest.source.dpcppCommit !== source?.dpcppCommit || !/^[a-f0-9]{64}$/.test(manifest.source.receiptSha256 || "") ||
       !/^[a-f0-9]{40}$/.test(manifest.source.dpcppCommit || "") || !Array.isArray(manifest.files) || manifest.files.length !== 2) {
@@ -216,7 +205,7 @@ function validateWindowsJitNativeTools(outerRoot, suffix, source) {
   let total = 0;
   for (let index = 0; index < expected.length; index++) {
     const name = expected[index], row = manifest.files[index];
-    if (!row || !exactKeys(row, ["path", "bytes", "mode", "sha256"]) || row.path !== "bin/" + name ||
+    if (!row || !hasExactBuildFields(row, ["path", "bytes", "mode", "sha256"]) || row.path !== "bin/" + name ||
         !Number.isSafeInteger(row.bytes) || row.bytes < 1 || row.bytes > MAX_NATIVE_TOOL_BYTES || row.mode !== 0o755 ||
         !/^[a-f0-9]{64}$/.test(row.sha256 || "")) {throw new Error("Windows JIT native-tools file row is invalid: " + name);}
     const file = path.join(nativeRoot, ...row.path.split("/")), stat = regularFile(file, "Windows JIT native TableGen tool", MAX_NATIVE_TOOL_BYTES);
@@ -300,17 +289,19 @@ function admitEmitter(emitterRoot, dpcppRoot, gnuRoot, gnuHeaders, expectedSha25
   directory(emitterRoot, "Windows JIT emitter root"); directory(dpcppRoot, "Windows DPC++ SDK root");
   const receiptFile = path.join(emitterRoot, "result.json");
   regularFile(receiptFile, "Windows JIT emitter receipt");
-  if (fileHash(receiptFile) !== hash(expectedSha256, "Windows JIT emitter receipt")) {throw new Error("Windows JIT emitter receipt differs from its external pin");}
-  const receipt = /** @type {EmitterReceipt} */ (readBuildJson(receiptFile)), fixture = path.join(emitterRoot, "native-kawpow-source"), compiler = path.join(dpcppRoot, "bin/clang++"),
+  /** @type {{value: EmitterReceipt}} */
+  const {value: receipt} = readBuildJsonSnapshot(receiptFile, undefined,
+    {sha256: hash(expectedSha256, "Windows JIT emitter receipt"), message: "Windows JIT emitter receipt differs from its external pin"});
+  const fixture = path.join(emitterRoot, "native-kawpow-source"), compiler = path.join(dpcppRoot, "bin/clang++"),
     targetHeaders = /** @type {string[]} */ (readBuildJson(path.join(gnuRoot, "target-headers.json")));
-  if (!exactKeys(receipt, ["version", "fixture", "fixtureSha256", "compiler", "compilerSha256", "inputs", "recipe", "targetHeaders",
+  if (!hasExactBuildFields(receipt, ["version", "fixture", "fixtureSha256", "compiler", "compilerSha256", "inputs", "recipe", "targetHeaders",
     "buildOnly", "executed", "publicationQualified", "scope"]) || receipt.version !== 1 || receipt.fixture !== fixture ||
       receipt.compiler !== compiler || receipt.buildOnly !== true || receipt.executed !== false || receipt.publicationQualified !== false ||
       !Array.isArray(targetHeaders) || !isDeepStrictEqual(receipt.targetHeaders, targetHeaders) ||
       targetHeaders.length !== gnuHeaders.files.length || !/^[a-f0-9]{64}$/.test(receipt.fixtureSha256 || "") ||
       !/^[a-f0-9]{64}$/.test(receipt.compilerSha256 || "")) {throw new Error("Windows JIT emitter is not bound to the fresh Windows GNU header set");}
   const fixtureStat = regularFile(fixture, "Windows JIT source fixture", 64 << 20), compilerStat = fs.statSync(compiler, {throwIfNoEntry: false});
-  if (!fixtureStat.size || !compilerStat?.isFile() || !within(dpcppRoot, fs.realpathSync(compiler)) ||
+  if (!fixtureStat.size || !compilerStat?.isFile() || !containsBuildPath(dpcppRoot, fs.realpathSync(compiler)) ||
       fileHash(fixture) !== receipt.fixtureSha256 || fileHash(compiler) !== receipt.compilerSha256) {
     throw new Error("Windows JIT emitter fixture or selected DPC++ compiler changed");
   }
@@ -369,7 +360,7 @@ function composeWindowsJitResourceProfile(input) {
     emitter = admitEmitter(emitterRoot, dpcppRoot, input.windowsGnuRoot, gnu.headers, input.emitterResultSha256);
   if (!path.isAbsolute(output) || path.resolve(output) !== output || fs.lstatSync(output, {throwIfNoEntry: false}) ||
       fs.realpathSync(path.dirname(output)) !== path.dirname(output) ||
-      [base.root, gnu.root, emitter.root, dpcppRoot].some(root => within(root, output) || within(output, root))) {
+      [base.root, gnu.root, emitter.root, dpcppRoot].some(root => containsBuildPath(root, output) || containsBuildPath(output, root))) {
     throw new Error("Windows JIT profile output must be a new canonical same-run sibling outside every input");
   }
   const profile = profileFromAdmissions(base, gnu, emitter);
@@ -415,10 +406,10 @@ function produceWindowsJitResources(input) {
       hash(input.windowsGnuCopyrightsSha256, "Windows GNU copyrights")), targetHeadersPath = path.join(gnu.root, "target-headers.json"),
     targetHeaders = readBuildJson(targetHeadersPath);
   if (!Array.isArray(targetHeaders) || !targetHeaders.length || targetHeaders.length > MAX_RECEIPT_FILES ||
-      targetHeaders.some((/** @type {unknown} */ file) => typeof file !== "string" || !path.isAbsolute(file) || !within(gnu.root, file))) {
+      targetHeaders.some((/** @type {unknown} */ file) => typeof file !== "string" || !path.isAbsolute(file) || !containsBuildPath(gnu.root, file))) {
     throw new Error("Windows JIT emitter requires the admitted Windows GNU target-header list");
   }
-  if (fs.lstatSync(outputRoot, {throwIfNoEntry: false}) || [linux.root, gnu.root, dpcppState.root].some(root => within(root, outputRoot) || within(outputRoot, root))) {
+  if (fs.lstatSync(outputRoot, {throwIfNoEntry: false}) || [linux.root, gnu.root, dpcppState.root].some(root => containsBuildPath(root, outputRoot) || containsBuildPath(outputRoot, root))) {
     throw new Error("Windows JIT resource output must be fresh and outside all admitted input roots");
   }
 

@@ -182,14 +182,14 @@ describe("Local Windows host-component coordinator", {skip: process.platform !==
 
   test("rejects unknown managed output without deleting or overwriting it", async t => {
     const f = fixture(t); fs.mkdirSync(f.paths.root); fs.writeFileSync(path.join(f.paths.root, "operator-data"), "preserve");
-    await assert.rejects(buildLocalNativeWindowsHostComponent(f.input, f.dependencies), /unknown state/);
+    await assert.rejects(buildLocalNativeWindowsHostComponent(f.input, f.dependencies), /unknown entries/);
     assert.equal(fs.readFileSync(path.join(f.paths.root, "operator-data"), "utf8"), "preserve");
     assert.deepEqual(f.calls, ["scope", "tools", "cudart-catalog"]);
   });
 
   test("rejects a partial managed output without repairing it", async t => {
     const f = fixture(t); fs.mkdirSync(f.paths.root); fs.mkdirSync(f.paths.resources);
-    await assert.rejects(buildLocalNativeWindowsHostComponent(f.input, f.dependencies), /incomplete or contains unknown state/);
+    await assert.rejects(buildLocalNativeWindowsHostComponent(f.input, f.dependencies), /incomplete or contains unknown entries/);
     assert.deepEqual(fs.readdirSync(f.paths.root), ["resources"]);
     assert.deepEqual(f.calls, ["scope", "tools", "cudart-catalog"]);
   });

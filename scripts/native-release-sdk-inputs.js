@@ -4,7 +4,7 @@
 // This proves local receipt continuity only; it does not qualify a native release.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson, readBuildText, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJsonSnapshot, readBuildText, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {isStaticArchive} = require("./native-audit");
 const {hermesPins, hermesRecipeFiles, hermesSourceFiles} = require("./build-native-hermes");
 const {comgrSdkInputs} = require("./native-comgr-inputs");
@@ -107,7 +107,7 @@ function nvrtcArchive(file, sdk) {
 /** Read a canonical bounded producer receipt and retain its hash across admission. @param {string} file */
 function readReceipt(file) {
   canonicalPath(file, "SDK receipt");
-  const sha256 = fileHash(file), value = readBuildJson(file);
+  const {sha256, value} = readBuildJsonSnapshot(file);
   if (!record(value)) {throw new Error("SDK receipt must contain a JSON object");}
   return {file, sha256, value};
 }
@@ -121,7 +121,7 @@ function boundedRecord(value, label, maximum = 8192) {
 /** Reject fields not written by the selected producer schema. @param {unknown} value @param {string[]} keys @param {string} label */
 function exactRecord(value, keys, label) {
   const result = boundedRecord(value, label, keys.length);
-  if (Object.keys(result).sort().join("\n") !== [...keys].sort().join("\n")) {throw new Error(`${label} membership differs`);}
+  if (!hasExactBuildFields(result, keys)) {throw new Error(`${label} membership differs`);}
   return result;
 }
 
@@ -218,7 +218,7 @@ function bindOpenmpLinks(links, openmpArchive) {
 function verifyRecipe(value, files, label) {
   const recipe = boundedRecord(value, `${label} recipe`, 2), graph = boundedRecord(recipe.graph, `${label} recipe graph`, 32);
   const sourceFiles = boundedRecord(recipe.files, `${label} source inventory`, 1);
-  if (Object.keys(sourceFiles).length || Object.keys(graph).sort().join("\n") !== [...files].sort().join("\n")) {
+  if (Object.keys(sourceFiles).length || !hasExactBuildFields(graph, files)) {
     throw new Error(`${label} recipe membership differs`);
   }
   verifySourceInputs(value, sourceInputs(repo, [], files), label + " recipe");
@@ -367,8 +367,7 @@ function nativeStaticRuntimeInputs(receiptFile, options = {}) {
   if (!isDeepStrictEqual(admitted, {source: inputs.source, revision: syclRevision})) {throw new Error("AdaptiveCpp source proof differs from its receipt");}
   verifyRecipe(r.recipe, syclRecipe, "AdaptiveCpp SDK"); verifyLinuxSysrootRecord(r["sysroot"], "AdaptiveCpp SDK");
   const planPath = path.join(root, "plan.json"); canonicalPath(planPath, "AdaptiveCpp SDK plan");
-  const planSha256 = fileHash(planPath);
-  const plan = readBuildJson(planPath);
+  const {value: plan, sha256: planSha256} = readBuildJsonSnapshot(planPath);
   if (!record(plan) || plan.version !== "21.1.8" ||
       !isDeepStrictEqual(plan.admitted, {source: inputs.source, revision: syclRevision}) ||
       !Array.isArray(plan.commands) || plan.commands.length !== 2 || plan.commands.some(command => !Array.isArray(command) || !command.length ||
@@ -379,8 +378,8 @@ function nativeStaticRuntimeInputs(receiptFile, options = {}) {
     throw new Error("AdaptiveCpp SDK result differs from its producer plan");
   }
   const hostCompilers = boundedRecord(r.hostCompilers, "AdaptiveCpp host compilers", 4), compilerVersions = boundedRecord(r.compilerVersions, "AdaptiveCpp compiler versions", 4);
-  if (Object.keys(hostCompilers).sort().join(",") !== "cc,cxx" || Object.values(hostCompilers).some(file => !absolutePath(file)) ||
-      Object.keys(compilerVersions).sort().join("\n") !== Object.values(hostCompilers).sort().join("\n")) {throw new Error("AdaptiveCpp compiler identity is incomplete");}
+  if (!hasExactBuildFields(hostCompilers, ["cc", "cxx"]) || Object.values(hostCompilers).some(file => !absolutePath(file)) ||
+      !hasExactBuildFields(compilerVersions, Object.values(hostCompilers))) {throw new Error("AdaptiveCpp compiler identity is incomplete");}
   const hostInputs = boundedRecord(r.hostCompilerInputs, "AdaptiveCpp compiler fingerprints", 8);
   const selectedCompilers = /** @type {Record<string, string>} */ (hostCompilers);
   if (!Object.keys(hostCompilers).every(key => {
@@ -388,7 +387,7 @@ function nativeStaticRuntimeInputs(receiptFile, options = {}) {
     return compiler !== undefined && Object.hasOwn(hostInputs, compiler);
   })) {throw new Error("AdaptiveCpp compiler fingerprints omit a selected compiler");}
   const libraries = /** @type {Record<string, string>} */ (/** @type {unknown} */ (boundedRecord(r.libraries, "AdaptiveCpp library hashes", 512)));
-  if (Object.keys(libraries).sort().join("\n") !== [...libs].sort().join("\n")) {throw new Error("AdaptiveCpp library membership differs from its receipt");}
+  if (!hasExactBuildFields(libraries, libs)) {throw new Error("AdaptiveCpp library membership differs from its receipt");}
   const fingerprints = /** @type {Record<string, string>} */ (/** @type {unknown} */ (boundedRecord(r.fingerprints, "AdaptiveCpp input fingerprints", 8192)));
   if (Object.entries(hostInputs).some(([file, sha]) => fingerprints[file] !== sha) ||
       !Object.hasOwn(fingerprints, inputs.cxx)) {
@@ -474,7 +473,7 @@ function nativeHermesInputs(receipt, options = {}) {
     if (lines.length !== 1 || lines[0]?.[1] !== value) {throw new Error("Hermes CMake cache differs: " + key);}
   }
   const artifactNames = ["compiler", "context", "jsi", "public", "runtime"], artifacts = boundedRecord(r.artifacts, "Hermes artifacts", 8);
-  if (Object.keys(artifacts).sort().join(",") !== artifactNames.join(",")) {throw new Error("Hermes artifact membership differs");}
+  if (!hasExactBuildFields(artifacts, artifactNames)) {throw new Error("Hermes artifact membership differs");}
   const expected = /** @type {Record<string, string>} */ ({compiler: path.join(r.build, "bin/shermes"), context: path.join(r.build, "external/boost/boost_1_86_0/libs/context/libboost_context.a"),
     jsi: path.join(r.build, "jsi/libjsi.a"), public: path.join(r.build, "public/hermes/Public/libhermesPublic.a"), runtime: path.join(r.build, "lib/libhermesvmlean_a.a")});
   const artifactHashes = /** @type {Record<string, string>} */ ({});
@@ -511,7 +510,7 @@ function nativeRocmHostInputs(receipt, options = {}) {
   const sources = boundedRecord(r.sources, "ROCm source snapshot", 2);
   verifySourceInputs(sources, sourceInputs(root, ["source/clr", "source/hip", "source/rocr"], []), "ROCm source snapshots");
   const sourceArchives = boundedRecord(r.sourceArchives, "ROCm source archives", 4);
-  if (Object.keys(sourceArchives).sort().join(",") !== "clr,hip,rocr") {throw new Error("ROCm source archive membership differs");}
+  if (!hasExactBuildFields(sourceArchives, ["clr", "hip", "rocr"])) {throw new Error("ROCm source archive membership differs");}
   const files = /** @type {Record<string, string>} */ ({});
   for (const name of ["clr", "hip", "rocr"]) {
     const item = exactRecord(sourceArchives[name], ["path", "bytes", "sha256"], "ROCm source archive"), expected = path.join(root, `source-${name}.tar`);
@@ -521,8 +520,8 @@ function nativeRocmHostInputs(receipt, options = {}) {
     files[expected] = item.sha256;
   }
   const archives = boundedRecord(r.archivesAfter, "ROCm runtime archives", 8), archiveBefore = boundedRecord(r.archivesBefore, "ROCm pre-install archives", 8);
-  if (Object.keys(archives).sort().join(",") !== Object.keys(rocmArchiveNames).sort().join(",") ||
-      Object.keys(archiveBefore).sort().join(",") !== Object.keys(rocmArchiveNames).sort().join(",")) {throw new Error("ROCm runtime archive membership differs");}
+  if (!hasExactBuildFields(archives, Object.keys(rocmArchiveNames)) ||
+      !hasExactBuildFields(archiveBefore, Object.keys(rocmArchiveNames))) {throw new Error("ROCm runtime archive membership differs");}
   for (const [name, basename] of Object.entries(rocmArchiveNames)) {
     const item = exactRecord(archives[name], ["path", "bytes", "sha256"], "ROCm runtime archive"), expected = path.join(prefix, "lib", basename);
     if (item.path !== expected || !Number.isSafeInteger(item.bytes) || item.bytes < 1 || !digest.test(item.sha256)) {throw new Error("Invalid staged ROCm archive: " + name);}
@@ -532,7 +531,7 @@ function nativeRocmHostInputs(receipt, options = {}) {
   }
   // libelf/libnuma come from the glibc sysroot packages and libdrm from its source-built SDK.
   const dependencies = boundedRecord(r.stagedDependencies, "ROCm staged dependencies", 8), owners = {drm: "libdrm", drmAmdgpu: "libdrm", elf: "libelf-dev", numa: "libnuma-dev"};
-  if (Object.keys(dependencies).sort().join(",") !== Object.keys(owners).sort().join(",")) {throw new Error("ROCm dependency membership differs");}
+  if (!hasExactBuildFields(dependencies, Object.keys(owners))) {throw new Error("ROCm dependency membership differs");}
   for (const [name, owner] of Object.entries(owners)) {
     const item = exactRecord(dependencies[name], ["path", "sha256", "package", "architecture", "version", "status", "staged", "stagedSha256"], "ROCm staged dependency");
     const expectedName = name === "drmAmdgpu" ? "libdrm_amdgpu.a" : `lib${name}.a`;
@@ -557,8 +556,8 @@ function nativeRocmHostInputs(receipt, options = {}) {
   if (!isDeepStrictEqual(r.consumerAdmission, admission)) {throw new Error("ROCm consumer link admission differs from its source receipt");}
   const inputHashes = boundedRecord(r.sdkInputs, "ROCm SDK inputs", 8192), dependencyHashes = boundedRecord(r.dependencies, "ROCm build dependencies", 8192);
   const hostCompilers = boundedRecord(r.hostCompilers, "ROCm host compilers", 4), hostCompilerInputs = boundedRecord(r.hostCompilerInputs, "ROCm compiler hashes", 4);
-  if (Object.keys(hostCompilers).sort().join(",") !== "cc,cxx" || Object.values(hostCompilers).some(file => !absolutePath(file)) ||
-      Object.keys(hostCompilerInputs).sort().join("\n") !== Object.values(hostCompilers).sort().join("\n")) {throw new Error("ROCm compiler fingerprints are incomplete");}
+  if (!hasExactBuildFields(hostCompilers, ["cc", "cxx"]) || Object.values(hostCompilers).some(file => !absolutePath(file)) ||
+      !hasExactBuildFields(hostCompilerInputs, Object.values(hostCompilers))) {throw new Error("ROCm compiler fingerprints are incomplete");}
   const verified = verifyHashMaps([/** @type {Record<string,string>} */ (inputHashes), /** @type {Record<string,string>} */ (dependencyHashes)]);
   if (Object.entries(hostCompilerInputs).some(([file, hash]) => inputHashes[file] !== hash) ||
       Object.entries(comgr.files).some(([file, hash]) => verified.files[file] !== hash) ||

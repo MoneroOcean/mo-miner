@@ -6,7 +6,7 @@ const fs = require("node:fs"), path = require("node:path"), {spawnSync} = requir
 const {isDeepStrictEqual} = require("node:util");
 const {admitSyclSource, cudaRuntimeInputs, rocmInputs, staticSyclInputs} = require("./native-sycl-inputs");
 const {lldInputs} = require("./native-jit-link");
-const {buildFileInputs, fileHash, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, buildPathsOverlap, buildFileInputs, fileHash, sourceInputs, verifySourceInputs, nativeBuildJobs} = require("./build-source-inputs");
 const {absolutePath} = require("./build-native-release");
 const {nativeSdkEnvironment} = require("./build-environment");
 const {requireLinuxSysroot, linuxSysrootRecord} = require("./native-linux-sysroot");
@@ -31,21 +31,11 @@ function cmakeCompilerPath(file) {
  * @param {string} llvm @param {{cc: string, cxx: string} | undefined} selected */
 function selectHostCompilers(llvm, selected) {
   const compilers = selected === undefined ? {cc: path.join(llvm, "bin/clang"), cxx: path.join(llvm, "bin/clang++")} : selected;
-  if (!compilers || typeof compilers !== "object" || Array.isArray(compilers) || Object.keys(compilers).sort().join(",") !== "cc,cxx" ||
+  if (!hasExactBuildFields(compilers, ["cc", "cxx"]) ||
       !cmakeCompilerPath(compilers.cc) || !cmakeCompilerPath(compilers.cxx)) {
     throw new Error("Host C and C++ compilers must be an absolute, literal pair");
   }
   return {cc: compilers.cc, cxx: compilers.cxx};
-}
-
-/** A build may neither overwrite nor contain any source, SDK or compiler input.
- * @param {string} input @param {string} output */
-function pathsOverlap(input, output) {
-  const contains = (/** @type {string} */ root, /** @type {string} */ child) => {
-    const relative = path.relative(root, child);
-    return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));
-  };
-  return contains(input, output) || contains(output, input);
 }
 
 /** Keep Autoconf's deferred $CC expansion to safe command names; quotes injected through
@@ -140,7 +130,7 @@ function staticSyclSdkPlan(source, llvm, cuda, output, jobs, environment = {}, s
   const intelOneApiHostPair = /(?:^|\/)intel\/oneapi\/compiler\/[^/]+\/bin\/icx$/.test(hostCompilers.cc) &&
     hostCompilers.cxx === path.join(path.dirname(hostCompilers.cc), "icpx");
   for (const input of [...roots, ...Object.values(hostCompilers)]) {
-    if (pathsOverlap(input, output)) {throw new Error("Static SDK output must not enter or enclose source, SDK or compiler inputs");}
+    if (buildPathsOverlap(input, output)) {throw new Error("Static SDK output must not enter or enclose source, SDK or compiler inputs");}
   }
   const build = path.join(output, "build"), cxx = hostCompilers.cxx;
   const cache = usesCuda ? ["cudart_static", "culibos"].map(name => `CUDA_${name}_LIBRARY:FILEPATH=${path.join(cuda, "lib64/lib" + name + ".a")}`).join("\n") : "";
@@ -203,14 +193,14 @@ function buildStaticSyclSdk(source, llvm, cuda, output, environment = process.en
     throw new Error("Static SYCL SDK compilation requires Linuxx64 and MOM_AOT_BUILD_ONLY=1; no GPU execution is performed");
   }
   const env = nativeSdkEnvironment(environment), plan = staticSyclSdkPlan(source, llvm, cuda, output,
-    Number(env["MOM_BUILD_JOBS"] || "2"), env, selectedHostCompilers);
+    nativeBuildJobs(env), env, selectedHostCompilers);
   if (fs.existsSync(output)) {throw new Error("Select a new static SDK output; existing SDKs/evidence are never overwritten");}
   const openmp = env["MOM_AOT_OPENMP_LIBRARY"];
   if (!absolutePath(openmp) || !isStaticArchive(openmp)) {throw new Error("Select the matching static OpenMP archive with MOM_AOT_OPENMP_LIBRARY");}
   const canonicalOutput = path.join(fs.realpathSync(path.dirname(output)), path.basename(output));
   const repo = path.resolve(__dirname, ".."), canonicalInputs = [source, llvm, cuda, repo, openmp, ...Object.values(plan.hostCompilers),
     ...(plan.hip ? [plan.hip.rocm, plan.hip.lld, plan.hip.bitcode, plan.hip.comgr] : [])].map(file => fs.realpathSync(file));
-  if (canonicalInputs.some(file => pathsOverlap(file, canonicalOutput))) {throw new Error("Static SDK output overlaps a canonical source, SDK or compiler input");}
+  if (canonicalInputs.some(file => buildPathsOverlap(file, canonicalOutput))) {throw new Error("Static SDK output overlaps a canonical source, SDK or compiler input");}
   Object.assign(env, sdkHostEnvironment(env, plan.hostCompilers), {LLVM_CONFIG: path.join(llvm, "bin/llvm-config")});
   verifyCompilerEnvironment(plan.hostCompilers, env);
   const sysroot = requireLinuxSysroot(env);
@@ -293,4 +283,4 @@ if (require.main === module) {
   } catch (error) {console.error(error instanceof Error ? error.message : "Static SDK build failed"); process.exitCode = 1;}
 }
 module.exports = {staticSyclSdkPlan, sdkStage, buildStaticSyclSdk, admitCudaLibraries, cmakeCompilerPath, selectHostCompilers,
-  pathsOverlap, compilerEnvironment, sdkHostEnvironment, verifyCompilerEnvironment, staticSyclValidationEnvironment, hostCompilerEvidence};
+  compilerEnvironment, sdkHostEnvironment, verifyCompilerEnvironment, staticSyclValidationEnvironment, hostCompilerEvidence};

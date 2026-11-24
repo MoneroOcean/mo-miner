@@ -82,7 +82,7 @@ function runProbeFrontdoor(t, gpu) {
     const file = path.join(cache, name); fs.mkdirSync(path.dirname(file), {recursive: true});
     fs.writeFileSync(file, name.endsWith("base.o") && gpu ? Buffer.from("4243c0de", "hex") : "fixture\n");
   }
-  const receipt = path.join(cache, ".mom-content-state.json"); fs.writeFileSync(receipt, "{}\n");
+  const receipt = path.join(cache, ".mom-content-state.json");
   fs.writeFileSync(path.join(cache, "mom.target.mk"), [
     "OBJS := Release/obj/mom/base.o", "DEFS_Release := -DPROBE_FIXTURE=1", "CFLAGS_Release := -O2",
     "CFLAGS_CC_Release := -fPIC", "INCS_Release := -I .", "",
@@ -90,6 +90,7 @@ function runProbeFrontdoor(t, gpu) {
   const state = {schema: 1, portability: {portable: true, cpuMarch: ""}, files: {}, graph: {},
     generated: {"generated.txt": digest}, links: {"links.txt": digest}, objects: {"Release/obj/mom/base.o": {content: digest}},
     external: {[runtime]: digest}};
+  fs.writeFileSync(receipt, JSON.stringify(state));
   /** @param {string} command @param {string[]} args */
   const fakeSpawn = (command, args) => {
     const tokens = /** @type {string[]} */ (args);
@@ -123,8 +124,10 @@ function runProbeFrontdoor(t, gpu) {
   const source = fs.readFileSync(path.join(repoRoot, "scripts/build-native-core.js"), "utf8"), module = {exports: {}};
   const modules = new Map(/** @type {Array<[string, unknown]>} */ ([
     ["node:fs", fs], ["node:path", path], ["node:child_process", childProcess],
-    ["./build-source-inputs", {fileHash: () => digest, sourceInputs: () => ({}), nativeSourceInputs: () => ({}),
-      verifySourceInputs() { /* Cache provenance is outside this compiler-selection fixture. */ }, readBuildJson: () => state}],
+    ["./build-source-inputs", {...require("../scripts/build-source-inputs"),
+      fileHash: (/** @type {string} */ file) => file === receipt ? fileHash(file) : digest,
+      sourceInputs: () => ({}), nativeSourceInputs: () => ({}),
+      verifySourceInputs() { /* Cache provenance is outside this compiler-selection fixture. */ }}],
     ["./native-object-cache", objectCache],
   ]));
   /** @param {string} name */
@@ -164,6 +167,10 @@ test.describe("Incremental Linux native CPU Core objects", () => {
       "-c", path.join(output, "gpu-unavailable.cpp"), "-o", path.join(output, "gpu-unavailable.o")]);
     const roots = cpuIncludeRoots(cpu, f.repo, output);
     assert.ok(roots.includes(f.repo)); assert.ok(roots.includes(output)); assert.ok(roots.includes(f.sdkInclude));
+    const quote = path.join(f.root, "quote-include"), after = path.join(f.root, "after-include");
+    fs.mkdirSync(quote); fs.mkdirSync(after);
+    const extendedRoots = cpuIncludeRoots([{args: ["-iquote" + quote, "-idirafter", after]}], f.repo, output);
+    assert.ok(extendedRoots.includes(quote)); assert.ok(extendedRoots.includes(after));
   });
 
   test("independent CPU bridge objects batch once and restore a fresh ordered graph", t => {

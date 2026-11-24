@@ -74,6 +74,7 @@ test.describe("Original compiler SDK configuration", {skip: process.platform !==
   test("unknown flags and setup hooks are not accepted", () => {
     assert.throws(() => jitSdkConfig({...config(), flags: "-unsafe"}));
     assert.throws(() => jitSdkConfig({...config(), tools: {...config().tools, shell: "/shell"}}));
+    assert.throws(() => jitSdkConfig({...config(), tools: {"cmake,ninja": "/cmake"}}), /Incomplete/);
   });
   test("unrecognized targets and versions are rejected", () => {
     for (const target of ["darwin", "", null]) {assert.throws(() => jitSdkConfig({...config(), target}));}

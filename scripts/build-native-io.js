@@ -4,7 +4,7 @@
 // shared application library, package-manager state or miner execution is involved.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, sourceInputs, verifySourceInputs, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {nativeSdkEnvironment} = require("./build-environment");
 const {isStaticArchive} = require("./native-audit");
 const {requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
@@ -26,7 +26,7 @@ const literal = value => typeof value === "string" && value.length <= 4096 && pa
  * or rely on PATH to select a compiler/build runner. Linux selects the glibc sysroot toolchain file.
  * @param {string} output @param {IoTools} tools @param {number} jobs @param {NodeJS.Platform} [platform] @param {string} [toolchain] */
 function nativeIoPlan(output, tools, jobs, platform = process.platform, toolchain) {
-  if (!["linux", "win32"].includes(platform) || !tools || Object.keys(tools).sort().join(",") !== "cc,cmake,ninja" ||
+  if (!["linux", "win32"].includes(platform) || !tools || !hasExactBuildFields(tools, ["cc", "cmake", "ninja"]) ||
       ![output, ...Object.values(tools)].every(literal) || !Number.isInteger(jobs) || jobs < 1 || jobs > 16 ||
       (toolchain !== undefined && (platform !== "linux" || !literal(toolchain)))) {
     throw new Error("Native I/O SDK needs Linux/Windows, absolute tools/output and jobs in 1..16");
@@ -108,7 +108,7 @@ function buildNativeIo(archives, output, tools, jobs, environment = process.env)
   const env = nativeSdkEnvironment(environment), sysroot = process.platform === "linux" ? requireLinuxSysroot(env) : null,
     plan = nativeIoPlan(output, tools, jobs, process.platform, sysroot?.toolchain);
   if (fs.lstatSync(output, {throwIfNoEntry: false})) {throw new Error("I/O SDK output must be new");}
-  if (!archives || Object.keys(archives).sort().join(",") !== "libuv,zlib") {throw new Error("Select both pinned I/O archives");}
+  if (!archives || !hasExactBuildFields(archives, ["libuv", "zlib"])) {throw new Error("Select both pinned I/O archives");}
   const inputs = Object.fromEntries(Object.entries(archives).map(([name, file]) => {
     const pin = Reflect.get(ioPins, name);
     if (!literal(file) || !fs.lstatSync(file).isFile() || fileHash(file) !== pin.sha256) {throw new Error("Pinned I/O source hash differs: " + name);}
@@ -155,7 +155,7 @@ function buildNativeIo(archives, output, tools, jobs, environment = process.env)
 function nativeIoInputs(root, platform = process.platform) {
   if (!literal(root)) {throw new Error("Select an absolute native I/O SDK root");}
   root = fs.realpathSync(root);
-  const receipt = path.join(root, "result.json"), receiptSha256 = fileHash(receipt), record = readBuildJson(receipt);
+  const receipt = path.join(root, "result.json"), {value: record, sha256: receiptSha256} = readBuildJsonSnapshot(receipt);
   if (record.version !== 1 || record.target !== platform || record.buildOnly !== true || !isDeepStrictEqual(record.pins, ioPins) ||
       !record.artifacts || typeof record.artifacts !== "object" || Array.isArray(record.artifacts) || Object.keys(record.artifacts).length > 256) {
     throw new Error("Invalid native I/O SDK receipt");

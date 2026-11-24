@@ -158,7 +158,7 @@ test.describe("Local Linux-hosted Windows source-JIT resources", {concurrency: f
 
   test("preserves partial or unknown managed output instead of repairing it", t => {
     const selected = fixture(t); fs.mkdirSync(selected.paths.root); fs.writeFileSync(path.join(selected.paths.root, "unknown"), "preserve\n");
-    assert.throws(() => buildLocalWindowsJitResources(selected.localSdk, selected.tools, selected.dependencies), /incomplete or contains unknown state/);
+    assert.throws(() => buildLocalWindowsJitResources(selected.localSdk, selected.tools, selected.dependencies), /incomplete or contains unknown entries/);
     assert.equal(fs.readFileSync(path.join(selected.paths.root, "unknown"), "utf8"), "preserve\n");
     assert.equal(selected.counts.dpcpp, 0); assert.equal(selected.counts.gnuBuild, 0);
   });

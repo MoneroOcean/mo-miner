@@ -10,50 +10,10 @@ const local = require("./build-local-native-sdk"), localJit = require("./build-l
   windowsIsolation = require("./isolate-native-windows-jit"),
   {dpcppEntries} = require("./native-compiler-isolation"), {jitBuildStages} = require("./native-jit-stages"),
   {vfsFiles} = require("./build-native-windows-controller");
-const {fileHash, readBuildJson, buildFileInputs, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, requireBuildFields, verifyBuildDirectoryEntries, canonicalBuildDirectory, canonicalBuildFile,
+  verifyStableBuildJson, fileHash, readBuildJson, readCanonicalBuildJson, buildFileInputs, verifySourceInputs} = require("./build-source-inputs");
 
 const repo = fs.realpathSync(path.resolve(__dirname, "..")), hashPattern = /^[a-f0-9]{64}$/;
-
-/** @param {unknown} value @param {string[]} keys @param {string} label */
-function exactObject(value, keys, label) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== keys.slice().sort().join(",")) {
-    throw new Error(label + " has unknown or missing fields");
-  }
-  return /** @type {Record<string, any>} */ (value);
-}
-
-/** @param {string} file @param {string} label @param {number} [maximum] */
-function regularFile(file, label, maximum = 8 << 20) {
-  const stat = fs.lstatSync(file, {throwIfNoEntry: false});
-  if (!path.isAbsolute(file) || path.resolve(file) !== file || !stat?.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 ||
-      stat.size < 1 || stat.size > maximum || fs.realpathSync(file) !== file) {
-    throw new Error(label + " is not a bounded canonical regular file: " + file);
-  }
-  return stat;
-}
-
-/** @param {string} directory @param {string} label @param {boolean} [allowMissing] */
-function realDirectory(directory, label, allowMissing = false) {
-  const stat = fs.lstatSync(directory, {throwIfNoEntry: false});
-  if (!stat && allowMissing) {return false;}
-  if (!stat?.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {
-    throw new Error(label + " is not a canonical directory: " + directory);
-  }
-  return true;
-}
-
-/** Read only a bounded direct inventory; interrupted or unknown state is preserved. @param {string} directory
- * @param {string[]} expected @param {string} label */
-function exactEntries(directory, expected, label) {
-  const found = [], handle = fs.opendirSync(directory);
-  try {
-    for (let entry; (entry = handle.readSync()) !== null;) {
-      found.push(entry.name);
-      if (found.length > expected.length) {throw new Error(label + " contains unknown entries; preserve it for inspection");}
-    }
-  } finally {handle.closeSync();}
-  if (!isDeepStrictEqual(found.sort(), expected.slice().sort())) {throw new Error(label + " is incomplete or contains unknown entries; preserve it for inspection");}
-}
 
 /** @param {unknown} value @returns {value is Record<string, any>} */
 function record(value) {return value !== null && typeof value === "object" && !Array.isArray(value);}
@@ -71,11 +31,11 @@ function localWindowsJitSdkPaths(workspace) {
 
 /** @param {ReturnType<typeof localWindowsJitSdkPaths>} paths @param {boolean} allowMissing */
 function checkManagedRoot(paths, allowMissing) {
-  if (!realDirectory(paths.root, "Local Windows JIT managed output", allowMissing)) {return false;}
-  exactEntries(paths.root, ["config.json", "descriptor.json", "compiler-sdk", "isolation", "llvm-tools.json", "provenance.json", "toolchain"],
+  if (!canonicalBuildDirectory(paths.root, "Local Windows JIT managed output", allowMissing)) {return false;}
+  verifyBuildDirectoryEntries(paths.root, ["config.json", "descriptor.json", "compiler-sdk", "isolation", "llvm-tools.json", "provenance.json", "toolchain"],
     "Local Windows JIT managed output");
-  for (const file of [paths.config, paths.descriptor, paths.tools, paths.provenance]) {regularFile(file, "Local Windows JIT " + path.basename(file));}
-  for (const directory of [paths.toolchain, paths.output, paths.isolation]) {realDirectory(directory, "Local Windows JIT " + path.basename(directory));}
+  for (const file of [paths.config, paths.descriptor, paths.tools, paths.provenance]) {canonicalBuildFile(file, "Local Windows JIT " + path.basename(file));}
+  for (const directory of [paths.toolchain, paths.output, paths.isolation]) {canonicalBuildDirectory(directory, "Local Windows JIT " + path.basename(directory));}
   return true;
 }
 
@@ -94,20 +54,13 @@ function localWindowsJitCompilerConfig(support, config) {
 /** @param {unknown} value @returns {Buffer} */
 function jsonBytes(value) {return Buffer.from(JSON.stringify(value, null, 2) + "\n");}
 
-/** @param {string} file @param {unknown} expected @param {string} label */
-function verifyStableJson(file, expected, label) {
-  const bytes = jsonBytes(expected), stat = regularFile(file, label);
-  if (stat.size !== bytes.length || !fs.readFileSync(file).equals(bytes)) {throw new Error(label + " is stale; preserve it for inspection");}
-  return fileHash(file);
-}
-
 /** Verify the generated Windows aliases/toolchain against the public pure plan and its own original receipt.
  * All external inputs named by the original producer are re-hashed; generated files are derived from that plan. @param {string} descriptorFile
  * @param {string} sdk @param {string} nativeTools @param {string} output @param {{cc:string,cxx:string}} hostCompilers */
 function verifyLocalWindowsJitToolchain(descriptorFile, sdk, nativeTools, output, hostCompilers) {
   const resultFile = path.join(output, "result.json"), result = /** @type {any} */ (readBuildJson(resultFile)), plan = windowsToolchain.windowsJitToolchainPlan(
     readBuildJson(descriptorFile), sdk, nativeTools, output, hostCompilers);
-  if (!record(result) || Object.keys(result).sort().join(",") !== "buildOnly,compiled,executed,inputs,publicationQualified,toolchain,version" ||
+  if (!record(result) || !hasExactBuildFields(result, ["buildOnly", "compiled", "executed", "inputs", "publicationQualified", "toolchain", "version"]) ||
       result["version"] !== 1 || result["buildOnly"] !== true || result["compiled"] !== false || result["executed"] !== false ||
       result["publicationQualified"] !== false || result["toolchain"] !== path.join(output, "toolchain.cmake") || !record(result["inputs"])) {
     throw new Error("Windows JIT toolchain producer receipt is incomplete or stale");
@@ -127,14 +80,14 @@ function verifyLocalWindowsJitToolchain(descriptorFile, sdk, nativeTools, output
     }
   }
   const aliases = path.join(output, "bin"), libraries = path.join(output, "lib"), llvmAr = path.join(sdk, "bin/llvm-ar");
-  exactEntries(aliases, ["llvm-lib", "llvm-ranlib"], "Windows JIT LLVM aliases");
+  verifyBuildDirectoryEntries(aliases, ["llvm-lib", "llvm-ranlib"], "Windows JIT LLVM aliases");
   for (const name of ["llvm-lib", "llvm-ranlib"]) {
     const alias = path.join(aliases, name), stat = fs.lstatSync(alias);
     if (!stat.isSymbolicLink() || fs.readlinkSync(alias) !== llvmAr || fs.realpathSync(alias) !== llvmAr) {
       throw new Error("Windows JIT LLVM alias differs from its admitted SDK archiver: " + name);
     }
   }
-  exactEntries(libraries, [...imports.keys()].sort(), "Windows JIT import-library aliases");
+  verifyBuildDirectoryEntries(libraries, [...imports.keys()].sort(), "Windows JIT import-library aliases");
   for (const [name, source] of imports) {
     const alias = path.join(libraries, name), stat = fs.lstatSync(alias);
     if (!stat.isSymbolicLink() || fs.readlinkSync(alias) !== source || fs.realpathSync(alias) !== source) {
@@ -153,7 +106,7 @@ function verifyLocalWindowsJitToolchain(descriptorFile, sdk, nativeTools, output
     }
   }
   for (const [file, contents] of expectedGenerated) {
-    regularFile(file, "Windows JIT generated toolchain file");
+    canonicalBuildFile(file, "Windows JIT generated toolchain file");
     if (fs.readFileSync(file, "utf8") !== contents || result["inputs"][file] !== fileHash(file)) {
       throw new Error("Windows JIT generated toolchain file differs from its public plan: " + file);
     }
@@ -161,7 +114,7 @@ function verifyLocalWindowsJitToolchain(descriptorFile, sdk, nativeTools, output
   const currentInputs = buildFileInputs(Object.keys(result["inputs"]));
   if (!isDeepStrictEqual(currentInputs, result["inputs"])) {throw new Error("Windows JIT toolchain input fingerprints are stale");}
   const expectedEntries = ["bin", "lib", "vfs.json", "heatutils-source-options.cmake", "intel-link-rules.cmake", "toolchain.cmake", "result.json"];
-  exactEntries(output, expectedEntries, "Windows JIT toolchain output");
+  verifyBuildDirectoryEntries(output, expectedEntries, "Windows JIT toolchain output");
   return result;
 }
 
@@ -172,7 +125,7 @@ function localWindowsJitIsolationTools(linuxAdmission) {
   const tools = {llvmAr: path.join(root, "bin/llvm-ar"), llvmNm: path.join(root, "bin/llvm-nm"), llvmObjcopy: path.join(root, "bin/llvm-objcopy")};
   for (const [name, file] of Object.entries(tools)) {
     const row = snapshot["bin/" + path.basename(file)];
-    regularFile(file, "Admitted Linux LLVM " + name, 256 << 20);
+    canonicalBuildFile(file, "Admitted Linux LLVM " + name, 256 << 20);
     if (!row || row.type !== "file" || row.sha256 !== fileHash(file)) {throw new Error("Selected Linux LLVM isolation tool differs from its admission: " + name);}
   }
   return tools;
@@ -195,13 +148,13 @@ function expectedIsolationHandoff(paths, prior, isolation) {
  * @param {ReturnType<typeof localWindowsJitSdkPaths>} paths @param {any} prior */
 function verifyLocalWindowsJitIsolation(paths, prior) {
   const resultFile = path.join(paths.isolation, "result.json"), handoffFile = path.join(paths.isolation, "handoff.json");
-  regularFile(resultFile, "Windows JIT isolation result", 16 << 20); regularFile(handoffFile, "Windows JIT isolation handoff", 16 << 20);
-  const result = /** @type {any} */ (readBuildJson(resultFile)), expectedTools = Object.fromEntries(Object.values(prior.tools).map(file => [file, fileHash(file)])),
+  const {value: result, sha256: outputSha256} = readCanonicalBuildJson(resultFile, 8 << 20, "Windows JIT isolation result"),
+    expectedTools = Object.fromEntries(Object.values(prior.tools).map(file => [file, fileHash(file)])),
     expectedSources = Object.fromEntries(
       [require.resolve("./native-coff-archive"), require.resolve("./native-compiler-isolation"), require.resolve("./build-source-inputs")]
         .map(file => [file, fileHash(file)]));
   if (!record(result) || Object.hasOwn(result, "kind") || result["version"] !== 1 || result["prefix"] !== "mom_dpcpp23_" ||
-      Object.keys(result).sort().join(",") !== "buildOnly,checks,entryPoints,executed,map,mapSha256,prefix,publicationQualified,sourceHashes,symbols,toolHashes,transformed,version" ||
+      !hasExactBuildFields(result, ["buildOnly", "checks", "entryPoints", "executed", "map", "mapSha256", "prefix", "publicationQualified", "sourceHashes", "symbols", "toolHashes", "transformed", "version"]) ||
       !isDeepStrictEqual(result["entryPoints"], dpcppEntries) || !Number.isInteger(result["symbols"]) || result["symbols"] < 1 ||
       result["map"] !== path.join(paths.isolation, "rename.map") || result["mapSha256"] !== fileHash(result["map"]) ||
       !isDeepStrictEqual(result["toolHashes"], expectedTools) || !isDeepStrictEqual(result["sourceHashes"], expectedSources) ||
@@ -211,7 +164,7 @@ function verifyLocalWindowsJitIsolation(paths, prior) {
       result["transformed"].length !== prior.archives.length) {
     throw new Error("Windows JIT isolation result is incomplete or no longer matches the public COFF producer");
   }
-  regularFile(result["map"], "Windows JIT COFF symbol map", 64 << 20);
+  canonicalBuildFile(result["map"], "Windows JIT COFF symbol map", 64 << 20);
   const expectedNames = ["result.json", "handoff.json", "rename.map"];
   for (const [index, input] of prior.archives.entries()) {
     const row = /** @type {any[]} */ (result["transformed"])[index], output = path.join(paths.isolation, path.basename(input));
@@ -221,7 +174,7 @@ function verifyLocalWindowsJitIsolation(paths, prior) {
         fileHash(input) !== row.inputSha256) {
       throw new Error("Windows JIT isolated archive order or original hash changed");
     }
-    regularFile(output, "Windows JIT isolated archive", 256 << 20);
+    canonicalBuildFile(output, "Windows JIT isolated archive", 256 << 20);
     if (fileHash(output) !== row.sha256) {throw new Error("Windows JIT isolated archive bytes changed");}
     expectedNames.push(path.basename(input));
     for (const label of ["definitions-" + index, "isolate-" + index, ...(row.rewrittenMembers ? ["directives-" + index] : [])]) {
@@ -229,14 +182,18 @@ function verifyLocalWindowsJitIsolation(paths, prior) {
     }
   }
   for (let index = 0; index < Object.keys(prior.tools).length; index++) {expectedNames.push("tool-" + index + ".command.json", "tool-" + index + ".log");}
-  exactEntries(paths.isolation, expectedNames, "Windows JIT isolation output");
+  verifyBuildDirectoryEntries(paths.isolation, expectedNames, "Windows JIT isolation output");
   for (const name of expectedNames.filter(name => name.endsWith(".log") || name.endsWith(".command.json"))) {
-    regularFile(path.join(paths.isolation, name), "Windows JIT isolation evidence", 64 << 20);
+    canonicalBuildFile(path.join(paths.isolation, name), "Windows JIT isolation evidence", 64 << 20);
   }
   const expectedHandoff = expectedIsolationHandoff(paths, prior, result);
-  if (!isDeepStrictEqual(readBuildJson(handoffFile), expectedHandoff)) {throw new Error("Windows JIT isolation handoff does not bind the inspected producer and archive transformation");}
-  return {result, handoff: expectedHandoff, handoffSha256: fileHash(handoffFile), outputSha256: fileHash(resultFile),
-    files: expectedNames.slice().sort().map((/** @type {string} */ name) => ({name, sha256: fileHash(path.join(paths.isolation, name))}))};
+  const {value: handoff, sha256: handoffSha256} = readCanonicalBuildJson(handoffFile, 8 << 20, "Windows JIT isolation handoff");
+  const hashes = buildFileInputs(expectedNames.map(name => path.join(paths.isolation, name)));
+  if (!isDeepStrictEqual(handoff, expectedHandoff) || hashes[resultFile] !== outputSha256 || hashes[handoffFile] !== handoffSha256) {
+    throw new Error("Windows JIT isolation handoff does not bind the inspected producer and archive transformation");
+  }
+  return {result, handoff: expectedHandoff, handoffSha256, outputSha256,
+    files: Object.entries(hashes).map(([file, sha256]) => ({name: path.basename(file), sha256}))};
 }
 
 /** @param {unknown} input @param {NodeJS.ProcessEnv} environment @param {ReturnType<typeof local.localTools>} tools
@@ -282,7 +239,7 @@ function admitLocalWindowsJitInputs(input, environment, tools, dependencies) {
   }
   for (const [name, key] of /** @type {Array<[string,string]>} */ ([
     ["clang-tblgen", "clangTableGenSha256"], ["llvm-tblgen", "llvmTableGenSha256"]])) {
-    const file = path.join(nativeToolRoot, name), stat = regularFile(file, "Admitted native " + name, 512 << 20);
+    const file = path.join(nativeToolRoot, name), stat = canonicalBuildFile(file, "Admitted native " + name, 512 << 20);
     if ((stat.mode & 0o777) !== 0o755 || fileHash(file) !== linuxBaseReceipt.build?.[key]) {
       throw new Error("Local Windows JIT native generator differs from its original base receipt: " + name);
     }
@@ -328,14 +285,14 @@ function localWindowsJitProvenance(paths, prior, isolated) {
 async function buildLocalNativeWindowsJitSdk(input, dependencies = {}) {
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local Windows JIT SDK production requires Linux x64 (WSL2)");}
   (dependencies.verifyScope || local.verifyCurrentMemoryScope)();
-  if (!record(input) || Object.keys(input).sort().join(",") !== "hermes,tools,windowsHostSdk,windowsJitResources,windowsLlvm,workspace" ||
+  if (!record(input) || !hasExactBuildFields(input, ["hermes", "tools", "windowsHostSdk", "windowsJitResources", "windowsLlvm", "workspace"]) ||
       typeof input["workspace"] !== "string") {
     throw new Error("Local Windows JIT needs the marked workspace, admitted Windows LLVM/resources, Hermes/host-SDK pins and selected tools");
   }
   const jobs = local.localBuildJobs({...process.env, ...(dependencies.environment || {})}),
     environment = {...process.env, ...(dependencies.environment || {}), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs)},
     resolveTools = dependencies.resolveTools || local.localTools, tools = input["tools"], selectedTools = resolveTools(environment);
-  exactObject(tools, ["cc", "cmake", "cxx", "git", "ninja", "systemdRun"], "Selected local tools");
+  requireBuildFields(tools, ["cc", "cmake", "cxx", "git", "ninja", "systemdRun"], "Selected local tools");
   if (!isDeepStrictEqual(tools, selectedTools)) {throw new Error("Local Windows JIT tools differ from the current pinned selection");}
   const admit = () => admitLocalWindowsJitInputs(input, environment, tools, dependencies), before = admit(), paths = before.paths,
     toolManifestBytes = jsonBytes(before.toolManifest),
@@ -352,7 +309,7 @@ async function buildLocalNativeWindowsJitSdk(input, dependencies = {}) {
     fs.writeFileSync(paths.tools, toolManifestBytes, {flag: "wx", mode: 0o444});
     prepareToolchain(before.descriptorFile, before.sdk, before.nativeTools, paths.toolchain, environment, before.hostCompilers);
   }
-  if (existing) {verifyStableJson(paths.tools, before.toolManifest, "Local Windows JIT LLVM tools manifest");}
+  if (existing) {verifyStableBuildJson(paths.tools, before.toolManifest, "Local Windows JIT LLVM tools manifest");}
   // A warm compiler keeps the job count its config recorded; that count is provenance, not an output input.
   const toolchainResult = verifyToolchain(before.descriptorFile, before.sdk, before.nativeTools, paths.toolchain, before.hostCompilers),
     config = localWindowsJitCompilerConfig(before.support, {version: 1, target: "windows", sources: before.sources, sdk: before.sdk,
@@ -362,8 +319,8 @@ async function buildLocalNativeWindowsJitSdk(input, dependencies = {}) {
     fs.writeFileSync(paths.config, jsonBytes(config), {flag: "wx", mode: 0o444});
     fs.writeFileSync(paths.descriptor, jsonBytes(localWindowsJitDescriptor(paths, before)), {flag: "wx", mode: 0o444});
   } else {
-    const configSha256 = verifyStableJson(paths.config, config, "Local Windows JIT config"),
-      descriptorSha256 = verifyStableJson(paths.descriptor, localWindowsJitDescriptor(paths, before), "Local Windows JIT descriptor");
+    const configSha256 = verifyStableBuildJson(paths.config, config, "Local Windows JIT config"),
+      descriptorSha256 = verifyStableBuildJson(paths.descriptor, localWindowsJitDescriptor(paths, before), "Local Windows JIT descriptor");
     const saved = readBuildJson(paths.provenance);
     if (saved?.descriptorSha256 !== descriptorSha256 || saved.configSha256 !== configSha256 || !hashPattern.test(saved.producerResultSha256 || "")) {
       throw new Error("Local Windows JIT result does not match its original descriptor/config; preserve it");
@@ -376,7 +333,7 @@ async function buildLocalNativeWindowsJitSdk(input, dependencies = {}) {
     for (const phase of jitBuildStages) {await buildPhase(config, paths.output, buildEnv, phase);}
   }
   if (localJit.localJitSdkPhasePrefix(paths.output) !== "link") {throw new Error("Local Windows JIT output is incomplete; preserve it for inspection");}
-  regularFile(path.join(paths.output, "result.json"), "Original Windows JIT result");
+  canonicalBuildFile(path.join(paths.output, "result.json"), "Original Windows JIT result");
   const producerResultSha256 = fileHash(path.join(paths.output, "result.json"));
   if (existing && readBuildJson(paths.provenance).producerResultSha256 !== producerResultSha256) {
     throw new Error("Original Windows JIT result changed after its local handoff; preserve it");
@@ -404,7 +361,7 @@ async function buildLocalNativeWindowsJitSdk(input, dependencies = {}) {
     provenance = localWindowsJitProvenance(paths, checkedPrior, isolated);
   if (!existing) {
     fs.writeFileSync(paths.provenance, jsonBytes(provenance), {flag: "wx", mode: 0o444});
-  } else {verifyStableJson(paths.provenance, provenance, "Local Windows JIT provenance");}
+  } else {verifyStableBuildJson(paths.provenance, provenance, "Local Windows JIT provenance");}
   checkManagedRoot(paths, false);
   return {workspace: before.workspace, root: paths.root, descriptor: paths.descriptor, descriptorSha256, config: paths.config,
     configSha256, toolchain: paths.toolchain, compilerSdk: paths.output, compilerResultSha256: checkedPrior.resultSha256,

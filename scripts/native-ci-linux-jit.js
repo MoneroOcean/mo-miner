@@ -3,7 +3,7 @@
 // Native CI Linux source-JIT resources, SDK phases, runtime proof and the static DPC++ component.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson, readBuildText, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot, readBuildText, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
 const {auditGnuHeaders} = require("./prepare-native-gnu-headers");
 const {verifyPreparedSdkSources} = require("./prepare-native-sdk-sources");
 const {jitSdkPlan} = require("./native-jit-sdk");
@@ -187,7 +187,7 @@ function assertLinuxJitResourceManifest(manifest, required, expectedBaseRows) {
   }
   const requiredObject = required && typeof required === "object" && !Array.isArray(required) ? required : null,
     requiredRows = /** @type {Array<{virtual?:unknown,sha256?:unknown}>} */ (requiredObject ? Object.values(requiredObject) : []);
-  if (!requiredObject || Object.keys(requiredObject).sort().join(",") !== "libdevice,spirv32,spirv64" ||
+  if (!requiredObject || !hasExactBuildFields(requiredObject, ["libdevice", "spirv32", "spirv64"]) ||
       requiredRows.some(row => !row || typeof row !== "object" || Array.isArray(row) ||
         !expectedBaseRows.some(base => base.virtual === row.virtual && base.sha256 === row.sha256))) {
     throw new Error("Linux JIT required device libraries are not present in the admitted base payload");
@@ -515,8 +515,8 @@ function auditLinuxJitCompilerState(output, expectedConfig, phase) {
   }
   if (phase !== "configure") {
     const phases = ["configure", ...jitBuildStages], index = phases.indexOf(phase), previous = phases[index - 1] || "",
-      previousFile = path.join(output, "stage-" + previous + ".json"), prior = readBuildJson(previousFile);
-    if (!previous || current.previousSha256 !== fileHash(previousFile) || current.configuredSha256 !== configure.configuredSha256 ||
+      previousFile = path.join(output, "stage-" + previous + ".json"), {value: prior, sha256} = readBuildJsonSnapshot(previousFile);
+    if (!previous || current.previousSha256 !== sha256 || current.configuredSha256 !== configure.configuredSha256 ||
         current.commandsSha256 !== configure.commandsSha256 || !isDeepStrictEqual(current.libraries, prior.libraries)) {
       throw new Error("Linux source-JIT phase ancestry changed");
     }
@@ -583,7 +583,7 @@ function packLinuxJitRuntimeProofFiles(sourceProof, sourceReceipt, base, name, a
       resultStat.size > 16 * 1024 * 1024) {
     throw new Error("Linux source-JIT runtime proof or original receipt is not a regular executable/file");
   }
-  const proofSha256 = fileHash(sourceProof), resultSha256 = fileHash(sourceReceipt), result = readBuildJson(sourceReceipt);
+  const proofSha256 = fileHash(sourceProof), {value: result, sha256: resultSha256} = readBuildJsonSnapshot(sourceReceipt);
   if (result.version !== 1 || result.kind !== "original-source-jit-sdk" || result.target !== "linux" ||
       result.proof?.path !== sourceProof || result.proof.sha256 !== proofSha256 || result.compiled !== true ||
       result.buildOnly !== true || result.executed !== false || result.publicationQualified !== false) {
@@ -636,12 +636,11 @@ function extractLinuxJitRuntimeProof(archive, base, name, originalProofPath, exp
   extractState(archive, base, [name]);
   const root = path.join(fs.realpathSync(base), name), proof = path.join(root, "native-dpcpp-jit"), receipt = path.join(root, "result.json"),
     entries = fs.readdirSync(root).sort(), proofStat = fs.lstatSync(proof), resultStat = fs.lstatSync(receipt);
+  const message = "Linux source-JIT runtime proof files differ from the same-run outputs";
   if (!isDeepStrictEqual(entries, ["native-dpcpp-jit", "result.json"]) || !proofStat.isFile() || proofStat.isSymbolicLink() ||
       !(proofStat.mode & 0o111) || proofStat.nlink !== 1 || !resultStat.isFile() || resultStat.isSymbolicLink() || resultStat.nlink !== 1 ||
-      fileHash(proof) !== expected.proofSha256 || fileHash(receipt) !== expected.resultSha256) {
-    throw new Error("Linux source-JIT runtime proof files differ from the same-run outputs");
-  }
-  const result = readBuildJson(receipt);
+      fileHash(proof) !== expected.proofSha256) {throw new Error(message);}
+  const {value: result} = readBuildJsonSnapshot(receipt, undefined, {sha256: expected.resultSha256, message});
   if (result.version !== 1 || result.kind !== "original-source-jit-sdk" || result.target !== "linux" ||
       result.proof?.path !== originalProofPath || result.proof.sha256 !== expected.proofSha256 || result.compiled !== true ||
       result.buildOnly !== true || result.executed !== false || result.publicationQualified !== false) {

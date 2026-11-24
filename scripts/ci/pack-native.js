@@ -4,62 +4,26 @@
 // then pack through the existing release API. No compiler, SDK or miner runs here.
 const fs = require("node:fs"), path = require("node:path");
 const ci = require("../native-ci-tar"), {fileHash, readBuildJson} = require("../build-source-inputs");
-const {validCiSuffix} = require("../native-ci-job");
+const {applicationBuildFiles, releaseArtifactNames, sha256Pin, runnerPath, admitReleaseFile} = require("../native-ci-job");
 const {packNativeEntrypoint} = require("../build-release");
 const {prepareNativePackingTool} = require("../prepare-native-packing-tool");
 
-const hashPattern = /^[a-f0-9]{64}$/;
-const metadataFiles = ["application-config.json", "entrypoint.json", "handoff.json", "result.json"];
-
-/** @typedef {{stateRoot: string, ci: Pick<typeof ci, "listState" | "extractState" | "packState">,
+/** @typedef {{stateRoot: string, ci: Pick<typeof ci, "listState" | "extractState" | "packState" | "tarExpandedBytes">,
  *   packNativeEntrypoint: typeof packNativeEntrypoint,
  *   prepareNativePackingTool: (output: string, env: NodeJS.ProcessEnv) => {upx: string, upxSha256: string}}} PackIo */
 
-/** @typedef {{suffix: string, target: "linux" | "win32", platform: string, binary: string, rawSha256: string,
- *   metadataSha256: string, handoffSha256: string, metadataName: string, outputName: string}} PackingPlan */
-
-/** Return one producer SHA-256 pin, or null when it is missing or malformed.
- * @param {NodeJS.ProcessEnv} env @param {string} name */
-function sha256Pin(env, name) {
-  const value = env[name];
-  return value !== undefined && hashPattern.test(value) ? value : null;
-}
-
 /** Derive the exact artifact names and admit the independent producer pins.
  * Artifact names are never inputs: they are fixed by platform and the CI suffix.
- * @param {NodeJS.ProcessEnv} env @returns {PackingPlan} */
+ * @param {NodeJS.ProcessEnv} env */
 function packingPlan(env) {
-  const suffix = env["MOM_NATIVE_CI_SUFFIX"],
-    target = env["NATIVE_PLATFORM"] === "win32" ? "win32" : env["NATIVE_PLATFORM"] === "linux" ? "linux" : null,
+  const artifacts = releaseArtifactNames(env),
     rawSha256 = sha256Pin(env, "NATIVE_RAW_SHA256"), metadataSha256 = sha256Pin(env, "NATIVE_METADATA_SHA256"),
     handoffSha256 = sha256Pin(env, "NATIVE_HANDOFF_SHA256");
-  if (!validCiSuffix(suffix) || target === null ||
+  if (!artifacts ||
       rawSha256 === null || metadataSha256 === null || handoffSha256 === null) {
     throw new Error("Native packing needs the exact raw executable, build metadata and independent SHA-256 pins");
   }
-  const platform = target === "win32" ? "windows" : "linux";
-  return {suffix, target, platform, binary: target === "win32" ? "mom.exe" : "mom", rawSha256, metadataSha256, handoffSha256,
-    metadataName: `native-${platform}-application-build-${suffix}`,
-    outputName: `native-${platform}-packed-build-${suffix}`};
-}
-
-/** Admit one canonical, single-link, bounded regular file whose bytes equal its SHA-256 pin.
- * @param {string} file @param {unknown} pin @param {number} maximum */
-function admitPinnedFile(file, pin, maximum) {
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size < 1 || stat.size > maximum ||
-      fs.realpathSync(file) !== file || typeof pin !== "string" || !hashPattern.test(pin) || fileHash(file) !== pin) {
-    throw new Error("Native packing input differs from its bounded regular-file pin: " + file);
-  }
-  return stat;
-}
-
-/** Read an absolute path that the Actions runner provides through the environment.
- * @param {NodeJS.ProcessEnv} env @param {string} name */
-function runnerPath(env, name) {
-  const value = env[name];
-  if (value === undefined || !path.isAbsolute(value)) {throw new Error(name + " must be an absolute runner path");}
-  return value;
+  return {...artifacts, rawSha256, metadataSha256, handoffSha256};
 }
 
 /** Restore the pinned metadata bundle, bind it to the raw executable, pack, and seal the packed build bundle.
@@ -67,28 +31,33 @@ function runnerPath(env, name) {
  * @param {NodeJS.ProcessEnv} env @param {PackIo} io */
 function packNative(env, io) {
   const plan = packingPlan(env), temp = runnerPath(env, "RUNNER_TEMP"), outputFile = runnerPath(env, "GITHUB_OUTPUT"),
-    metadata = path.join(io.stateRoot, plan.metadataName), archive = path.join(temp, "incoming", plan.metadataName + ".tar"),
-    raw = path.join(temp, "native-raw", plan.binary), output = path.join(io.stateRoot, plan.outputName);
-  admitPinnedFile(archive, plan.metadataSha256, 128 << 20);
-  admitPinnedFile(raw, plan.rawSha256, (1 << 30) - 1);
+    metadata = path.join(io.stateRoot, plan.applicationBuild), archive = path.join(temp, "incoming", plan.applicationBuild + ".tar"),
+    raw = path.join(temp, "native-raw", plan.binary), output = path.join(io.stateRoot, plan.packedBuild);
+  admitReleaseFile(archive, plan.metadataSha256, 128 << 20);
+  const rawInfo = admitReleaseFile(raw, plan.rawSha256, (1 << 30) - 1);
   if (fs.readdirSync(path.dirname(raw)).join() !== plan.binary) {throw new Error("Raw runtime artifact contains unexpected files");}
-  const members = io.ci.listState(archive, [plan.metadataName], 60000).map(name => name.replace(/\/$/, "")).sort(),
-    expected = [plan.metadataName, ...metadataFiles.map(name => plan.metadataName + "/" + name)].sort();
-  if (members.join("\0") !== expected.join("\0")) {throw new Error("Native packing metadata has unexpected members");}
-  io.ci.extractState(archive, io.stateRoot, [plan.metadataName], [plan.metadataName], 60000);
+  const members = io.ci.listState(archive, [plan.applicationBuild], 60000),
+    expected = [plan.applicationBuild, ...applicationBuildFiles.map(name => plan.applicationBuild + "/" + name)].sort();
+  if (members.map(name => name.replace(/\/$/, "")).sort().join("\0") !== expected.join("\0")) {
+    throw new Error("Native packing metadata has unexpected members");
+  }
+  if (io.ci.tarExpandedBytes(archive, members, 60000) > 128 << 20) {
+    throw new Error("Native packing metadata exceeds its bounded expansion limit");
+  }
+  io.ci.extractState(archive, io.stateRoot, [plan.applicationBuild], [plan.applicationBuild], 60000);
   const handoffFile = path.join(metadata, "handoff.json");
-  admitPinnedFile(handoffFile, plan.handoffSha256, 8 << 20);
+  admitReleaseFile(handoffFile, plan.handoffSha256, 8 << 20);
   const handoff = readBuildJson(handoffFile), target = plan.target === "win32" ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
   if (handoff.version !== 1 || handoff.format !== `mom-${plan.platform}-application-build-handoff-v1` ||
       handoff.target !== target || handoff.buildOnly !== true || handoff.executed !== false || handoff.publicationQualified !== false ||
-      handoff.artifact?.file !== plan.binary || handoff.artifact.sha256 !== plan.rawSha256 || handoff.artifact.bytes !== fs.statSync(raw).size) {
+      handoff.artifact?.file !== plan.binary || handoff.artifact.sha256 !== plan.rawSha256 || handoff.artifact.bytes !== rawInfo.bytes) {
     throw new Error("Native packing metadata does not bind this raw candidate and attempt");
   }
   /** @type {Array<[string, string]>} */
   const receipts = [["config", "application-config.json"], ["entrypointReceipt", "entrypoint.json"], ["producerReceipt", "result.json"]];
   for (const [key, name] of receipts) {
     if (handoff[key]?.file !== name) {throw new Error("Native packing metadata has an unexpected receipt name");}
-    admitPinnedFile(path.join(metadata, name), handoff[key].sha256, 128 << 20);
+    admitReleaseFile(path.join(metadata, name), handoff[key].sha256 ?? "", 128 << 20);
   }
   const entrypoint = readBuildJson(path.join(metadata, "entrypoint.json"));
   if (entrypoint.configHash !== handoff.config.sha256) {throw new Error("Native packing descriptor binding differs");}
@@ -99,10 +68,10 @@ function packNative(env, io) {
   const packed = io.packNativeEntrypoint({entrypointPath: path.join(metadata, "entrypoint.json"),
     entrypointSha256: handoff.entrypointReceipt.sha256, sourcePath: raw, sourceSha256: plan.rawSha256, producerReceiptPath: producer,
     target: plan.target, output, upx, upxSha256});
-  admitPinnedFile(archive, plan.metadataSha256, 128 << 20);
-  admitPinnedFile(handoffFile, plan.handoffSha256, 8 << 20);
-  const buildArchive = path.join(temp, plan.outputName + ".tar");
-  io.ci.packState(buildArchive, io.stateRoot, [plan.outputName], 60000);
+  admitReleaseFile(archive, plan.metadataSha256, 128 << 20);
+  admitReleaseFile(handoffFile, plan.handoffSha256, 8 << 20);
+  const buildArchive = path.join(temp, plan.packedBuild + ".tar");
+  io.ci.packState(buildArchive, io.stateRoot, [plan.packedBuild], 60000);
   fs.appendFileSync(outputFile, `executable_artifact_name=native-${plan.platform}-packed-executable-${plan.suffix}\n` +
     `executable_sha256=${packed.artifact.sha256}\nbuild_bundle_sha256=${fileHash(buildArchive)}\n`);
 }

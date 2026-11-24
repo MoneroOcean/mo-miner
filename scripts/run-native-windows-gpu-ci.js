@@ -9,7 +9,7 @@ const ciJob = require("./native-ci-job"),
   ciTar = require("./native-ci-tar"),
   ciWindowsGpu = require("./native-ci-windows-gpu"),
   ciWindowsLlvm = require("./native-ci-windows-llvm"),
-  dpcppInputs = require("./native-dpcpp-cuda-inputs"), {fileHash, readBuildJson} = require("./build-source-inputs");
+  dpcppInputs = require("./native-dpcpp-cuda-inputs"), {fileHash, readBuildJson, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {sdkComponents} = require("./prepare-native-sdk-sources");
 const {linuxLlvmToolHandoffInputs, linuxLlvmAcppFrontendInputs} = require("./native-linux-llvm-tools");
 const {windowsNativeGpuConfig, windowsNativeAcppGpuConfig} = require("./native-windows-gpu-config");
@@ -83,8 +83,7 @@ function windowsGpuCiJobPlan(profile) {
     toolsParent = path.join(paths.runnerTemp, "windows-gpu-tools-" + suffix),
     configSource = path.join(paths.runnerTemp, "windows-gpu-" + profile + "-config-" + suffix + ".json"),
     windowsRootsFile = path.join(paths.runnerTemp, "windows-gpu-" + profile + "-source-roots-" + suffix + ".json"),
-    sdkBase = path.join(paths.runnerTemp, "mom-native-windows-host-sdk-" + suffix),
-    sdkMetadata = path.join(paths.runnerTemp, "native-windows-host-sdk-" + suffix + "-metadata.tar"),
+    {workRoot: sdkBase, metadataTar: sdkMetadata} = ciWindowsLlvm.windowsHostSdkPaths(paths.runnerTemp, suffix),
     imagesName = "mom-native-cuda-images-handoff-" + suffix,
     cudaImages = needsImages ? {archive: path.join(incoming, "native-linux-cuda-images-" + suffix + ".tar"),
       bundleSha256: imagesPin, root: path.join("/tmp", imagesName)} : null;
@@ -161,8 +160,8 @@ function remaining(plan, capMs, reserveMs = 60000) {
  * "sdk_receipt_sha256"|"descriptor_sha256"|"files_provenance_sha256">} producer */
 function windowsGpuHostSdkPins(root, producer) {
   const resultFile = path.join(root, "result.json");
-  if (fileHash(resultFile) !== producer.sdk_receipt_sha256) {throw new Error("Windows GPU SDK receipt changed after its producer");}
-  const result = readBuildJson(resultFile);
+  const {value: result} = readBuildJsonSnapshot(resultFile, undefined,
+    {sha256: producer.sdk_receipt_sha256, message: "Windows GPU SDK receipt changed after its producer"});
   if (result.descriptor?.sha256 !== producer.descriptor_sha256 || result.provenance?.sha256 !== producer.files_provenance_sha256 ||
       !/^[a-f0-9]{64}$/.test(result.overlay?.sha256 || "")) {
     throw new Error("Windows GPU SDK metadata differs from its producer pins");
@@ -174,10 +173,11 @@ function windowsGpuHostSdkPins(root, producer) {
 /** A same-run DPC++ producer must have consumed this exact source artifact, not another tar.
  * @param {string} file @param {string} manifestSha256 @param {string} sourceSha256 */
 function windowsGpuDpcppManifest(file, manifestSha256, sourceSha256) {
-  if (![manifestSha256, sourceSha256].every(pin => /^[a-f0-9]{64}$/.test(pin)) || fileHash(file) !== manifestSha256) {
+  if (![manifestSha256, sourceSha256].every(pin => /^[a-f0-9]{64}$/.test(pin))) {
     throw new Error("DPC++ input manifest differs from its external pin");
   }
-  const manifest = readBuildJson(file);
+  const {value: manifest} = readBuildJsonSnapshot(file, undefined,
+    {sha256: manifestSha256, message: "DPC++ input manifest differs from its external pin"});
   if (manifest.source?.tarSha256 !== sourceSha256) {throw new Error("DPC++ inputs consumed a different source artifact");}
   return manifest;
 }
@@ -248,14 +248,11 @@ function runWindowsGpuCiJob(profile) {
     throw new Error("Bounded Windows GPU source preparation failed", {cause: prepared.error});
   }
   remaining(plan, 25 * 60 * 1000, factoryReserveMs);
-  const sdkBase = plan.sdkBase,
-    sdkRoot = path.join(sdkBase, "native-windows-host-sdk-" + plan.suffix),
-    sdkDeadline = Math.floor(Math.min(Date.now() + 25 * 60 * 1000,
-      Number(plan.deadlineEpoch) * 1000 - factoryReserveMs) / 1000);
-  Object.assign(process.env, {MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT: sdkBase,
-    MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR: path.join(sdkBase, "archives"), MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR: sdkRoot,
-    MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR: plan.sdkMetadata,
-    MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH: String(sdkDeadline)});
+  const sdkDeadline = Math.floor(Math.min(Date.now() + 25 * 60 * 1000,
+    Number(plan.deadlineEpoch) * 1000 - factoryReserveMs) / 1000);
+  const sdkEnvironment = ciWindowsLlvm.windowsHostSdkEnvironment(paths.runnerTemp, plan.suffix, sdkDeadline);
+  const sdkRoot = sdkEnvironment.MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR;
+  Object.assign(process.env, sdkEnvironment);
   const sdkProducer = ciWindowsLlvm.buildWindowsHostSdkSourcesCi();
   // Match standalone compiler queries/builds without borrowing another profile's runtime.
   process.env["LD_LIBRARY_PATH"] = windowsGpuLibraryPath(profile, dpcpp?.dpcppRoot || null);

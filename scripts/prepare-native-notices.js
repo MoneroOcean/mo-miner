@@ -3,6 +3,8 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"),
   {createHash} = require("node:crypto"), {TextDecoder} = require("node:util");
 
+const {hasExactBuildFields} = require("./build-source-inputs");
+
 const noticeName = "THIRD-PARTY-NOTICES.txt", receiptName = "native-notices.json", maximumBytes = 8 << 20, maximumInputs = 128;
 const projectionName = "native-notice-projection.json", maximumArchiveBytes = 1 << 30, maximumEvidenceBytes = 1 << 30,
   maximumProjectionInputsBytes = 2 * (1 << 30), maximumTarListingBytes = 1 << 20, maximumProjectionRuntimeMs = 120000;
@@ -108,7 +110,7 @@ function runTar(args, maximum, deadline) {
 
 /** @param {unknown} row @param {number} index @param {Set<string>} labels */
 function validateProjectionRow(row, index, labels) {
-  if (!row || typeof row !== "object" || Array.isArray(row) || Object.keys(row).sort().join(",") !== "admissionFiles,archive,component,member") {
+  if (!hasExactBuildFields(row, ["admissionFiles", "archive", "component", "member"])) {
     throw new Error("Invalid native notice archive row " + index);
   }
   const item = /** @type {{component:string,archive:{path:string,sha256:string},member:string,admissionFiles:Record<string,string>}} */ (row);
@@ -118,7 +120,7 @@ function validateProjectionRow(row, index, labels) {
   }
   labels.add(item.component.toLowerCase());
   if (!item.archive || typeof item.archive !== "object" || Array.isArray(item.archive) ||
-      Object.keys(item.archive).sort().join(",") !== "path,sha256" || typeof item.archive.path !== "string" ||
+      !hasExactBuildFields(item.archive, ["path", "sha256"]) || typeof item.archive.path !== "string" ||
       typeof item.archive.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(item.archive.sha256)) {
     throw new Error("Invalid pinned archive identity for native notice " + item.component);
   }
@@ -255,7 +257,7 @@ function noticeInputs(value) {
   if (!Array.isArray(value) || value.length < 1 || value.length > maximumInputs) {throw new Error("Notice inputs must be a nonempty bounded ordered array");}
   const seen = new Set(); let total = 0;
   return value.map((row, index) => {
-    if (!row || typeof row !== "object" || Array.isArray(row) || Object.keys(row).sort().join(",") !== "component,path,sha256") {
+    if (!hasExactBuildFields(row, ["component", "path", "sha256"])) {
       throw new Error("Invalid notice input row " + index);
     }
     const input = /** @type {NoticeInput} */ (row);
@@ -391,7 +393,7 @@ function readNativeNoticeReceipt(receiptPath, expectedSha256) {
   let value;
   try {value = JSON.parse(receiptFile.body.toString("utf8"));} catch {throw new Error("Native notice receipt is not valid JSON");}
   if (!value || typeof value !== "object" || Array.isArray(value) ||
-      Object.keys(value).sort().join(",") !== "buildOnly,fingerprint,inputs,notice,publicationQualified,version" ||
+      !hasExactBuildFields(value, ["buildOnly", "fingerprint", "inputs", "notice", "publicationQualified", "version"]) ||
       value.version !== 1 || value.buildOnly !== true || value.publicationQualified !== false ||
       typeof value.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(value.fingerprint) ||
       !Array.isArray(value.inputs) || value.inputs.length < 1 || value.inputs.length > maximumInputs) {
@@ -399,7 +401,7 @@ function readNativeNoticeReceipt(receiptPath, expectedSha256) {
   }
   const rows = /** @type {{component: string, path: string, sha256: string, bytes: number}[]} */ (value.inputs);
   for (const row of rows) {
-    if (!row || typeof row !== "object" || Array.isArray(row) || Object.keys(row).sort().join(",") !== "bytes,component,path,sha256" ||
+    if (!hasExactBuildFields(row, ["bytes", "component", "path", "sha256"]) ||
         !Number.isSafeInteger(row.bytes) || row.bytes < 1 || row.bytes > maximumBytes) {throw new Error("Native notice receipt has an invalid input row");}
   }
   const inputs = noticeInputs(rows.map(({component, path: inputPath, sha256}) => ({component, path: inputPath, sha256})));
@@ -409,7 +411,7 @@ function readNativeNoticeReceipt(receiptPath, expectedSha256) {
   if (fingerprint !== value.fingerprint) {throw new Error("Native notice receipt fingerprint differs");}
   const notice = /** @type {{path: string, sha256: string, bytes: number} | null} */ (value.notice);
   const expectedNoticePath = path.join(path.dirname(receiptPath), noticeName);
-  if (!notice || typeof notice !== "object" || Array.isArray(notice) || Object.keys(notice).sort().join(",") !== "bytes,path,sha256" ||
+  if (!notice || !hasExactBuildFields(notice, ["bytes", "path", "sha256"]) ||
       notice.path !== expectedNoticePath || !/^[a-f0-9]{64}$/.test(notice.sha256) || !Number.isSafeInteger(notice.bytes) ||
       notice.bytes < 1 || notice.bytes > maximumBytes) {throw new Error("Native notice receipt has an invalid notice binding");}
   const body = noticeBody(inputs), noticeFile = readRegularText(notice.path, maximumBytes, "Assembled native notice");

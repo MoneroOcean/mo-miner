@@ -68,14 +68,9 @@ Write-Host "MOM_BUILD_JOBS = $buildJobs"
 
 $variant = if ($PortableOpencl) { 'portable' } elseif ($withCuda) { 'cuda' } else { 'spir64' }
 $obj = Join-Path $RepoRoot "build\.incremental\sycl-dpcpp-$variant"
-$publishedOutput = Resolve-MomBuildPath (Join-Path $OutDir 'sycl.dll')
-$out = Join-Path $obj 'sycl.dll'
-$buildRoot = Resolve-MomBuildPath 'build'
-Assert-MomBuildArtifactPath $out $buildRoot
-Assert-MomBuildArtifactPath $publishedOutput $buildRoot
-New-Item -ItemType Directory -Force $obj, (Split-Path -Parent $publishedOutput) | Out-Null
-$publishSeparate = (Resolve-MomBuildPath $publishedOutput) -ne (Resolve-MomBuildPath $out)
-if ($publishSeparate) { Remove-Item -LiteralPath $publishedOutput -Force -ErrorAction SilentlyContinue }
+$dll = Initialize-MomSyclOutput $obj $OutDir
+$out = $dll.Out
+$publishedOutput = $dll.Published
 $buildContext = Initialize-MomIncrementalBuild $obj @($clang, $clangc, $lld, $PSCommandPath,
   (Join-Path $RepoRoot 'scripts\windows-incremental-build.ps1'),
   (Join-Path $RepoRoot 'scripts\windows-install-helpers.ps1')) @($ToolchainDir, $CudaPath, $env:VCToolsInstallDir, $env:WindowsSdkDir)
@@ -191,8 +186,8 @@ function Invoke-ClangTasks {
   }
 }
 
-# Main SYCL TUs -> spir64 + nvptx. Keep stable object names for the linker while source paths follow
-# the algorithm directories used by binding.gyp.
+# Main SYCL TUs -> spir64 + nvptx. The shared source list names linked objects consistently
+# across the DPC++ and AdaptiveCpp builders.
 $main = Get-MomWindowsSyclSources
 $objs = @()
 $compileTasks = @()
@@ -237,6 +232,6 @@ if ($PortableOpencl) {
 Invoke-MomIncrementalLink $clang ($linkArgs + @('-shared') + $objs + @('-o', $out)) $objs $out (Join-Path $obj 'link.json') $buildContext
 Remove-MomObsoleteCompileOutputs $obj $objs
 if (-not (Test-Path $out)) { throw "sycl.dll was not produced at $out." }
-if ($publishSeparate) { Copy-Item -LiteralPath $out -Destination $publishedOutput -Force }
+if ($dll.PublishSeparate) { Copy-Item -LiteralPath $out -Destination $publishedOutput -Force }
 $profile = if ($PortableOpencl) { 'portable OpenCL/Level Zero' } else { $targets }
 Write-Host ("Built unified sycl.dll ({0:N1} MB, $profile)" -f ((Get-Item $out).Length/1MB))

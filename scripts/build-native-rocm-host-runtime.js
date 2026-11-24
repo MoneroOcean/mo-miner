@@ -3,8 +3,8 @@
 // Build the original pinned ROCr and CLR/HIP static runtime with an explicitly selected host
 // compiler. ROCr also builds its embedded OpenCL image kernels; this producer never initializes a GPU.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
-const {fileHash, sourceInputs, verifySourceInputs, buildFileInputs, completeBuildInputs, readBuildJson, readBuildText} = require("./build-source-inputs");
-const {sdkStage, selectHostCompilers, sdkHostEnvironment, verifyCompilerEnvironment, pathsOverlap, hostCompilerEvidence} = require("./build-native-sycl-sdk");
+const {hasExactBuildFields, buildPathsOverlap, fileHash, sourceInputs, verifySourceInputs, buildFileInputs, completeBuildInputs, readBuildJson, readBuildText, nativeBuildJobs} = require("./build-source-inputs");
+const {sdkStage, selectHostCompilers, sdkHostEnvironment, verifyCompilerEnvironment, hostCompilerEvidence} = require("./build-native-sycl-sdk");
 const {absolutePath} = require("./build-native-release");
 const {isStaticArchive} = require("./native-audit");
 const {comgrSdkInputs} = require("./native-comgr-inputs");
@@ -26,9 +26,9 @@ const recipeFiles = ["scripts/build-native-rocm-host-runtime.js", "scripts/build
   "scripts/native-comgr-inputs.js", "scripts/prepare-native-sdk-sources.js", "scripts/build-native-release.js", "scripts/build-source-inputs.js",
   "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js",
   "scripts/native-linux-sysroot.js", "scripts/build-native-libdrm.js"];
-const configKeys = "comgrReceipt,dependencies,hostCompilers,libdrm,pkgConfigDir,sources,tools,version";
-const sourceKeys = "clr,hip,rocr", toolKeys = "ar,cmake,dpkgQuery,git,llvmObjcopy,ninja,perl,pkgConfig,python3,ranlib,tar,xxd";
-const dependencyKeys = "drm,drmAmdgpu,elf,numa";
+const configKeys = ["comgrReceipt", "dependencies", "hostCompilers", "libdrm", "pkgConfigDir", "sources", "tools", "version"];
+const sourceKeys = ["clr", "hip", "rocr"], toolKeys = ["ar", "cmake", "dpkgQuery", "git", "llvmObjcopy", "ninja", "perl", "pkgConfig", "python3", "ranlib", "tar", "xxd"];
+const dependencyKeys = ["drm", "drmAmdgpu", "elf", "numa"];
 const xxdPin = Object.freeze({path: "/usr/bin/xxd", package: "xxd", packageVersion: "2:9.1.0016-1ubuntu7.20",
   version: "xxd 2023-10-25 by Juergen Weigert et al."});
 const hipPchScript = "hipamd/src/hip_embed_pch.sh";
@@ -111,11 +111,9 @@ function patchExportedRocrDeviceLibPath(sourceRoot) {
 /** @param {unknown} input */
 function validateConfig(input) {
   const c = /** @type {RocmHostConfig | null} */ (input);
-  if (!c || c.version !== 1 || Object.keys(c).sort().join(",") !== configKeys ||
-      !c.sources || Object.keys(c.sources).sort().join(",") !== sourceKeys ||
-      !c.tools || Object.keys(c.tools).sort().join(",") !== toolKeys ||
-      !c.dependencies || Object.keys(c.dependencies).sort().join(",") !== dependencyKeys ||
-      !c.hostCompilers || Object.keys(c.hostCompilers).sort().join(",") !== "cc,cxx" ||
+  if (!c || c.version !== 1 || !hasExactBuildFields(c, configKeys) ||
+      !hasExactBuildFields(c.sources, sourceKeys) || !hasExactBuildFields(c.tools, toolKeys) ||
+      !hasExactBuildFields(c.dependencies, dependencyKeys) || !hasExactBuildFields(c.hostCompilers, ["cc", "cxx"]) ||
       c.tools.python3 !== pythonPin.executable || c.tools.xxd !== xxdPin.path ||
       ![c.comgrReceipt, c.libdrm, c.pkgConfigDir, ...Object.values(c.sources), ...Object.values(c.tools),
         ...Object.values(c.dependencies), ...Object.values(c.hostCompilers)].every(literalPath)) {
@@ -168,7 +166,7 @@ function rocmHostPlan(input, output, jobs, sdkRoots = /** @type {RocmSdkRoots} *
   const inputPaths = [...Object.values(sources), ...Object.values(tools), ...Object.values(c.dependencies), c.comgrReceipt,
     c.pkgConfigDir, ...Object.values(hostCompilers), imageLlvmRoot, imageLlvmPackage,
     ...(sdkRoots.llvm ? [sdkRoots.llvm, comgrPackage, device, comgrPrefix, clangPackage, deviceLibPath] : []), repo];
-  if (inputPaths.some(inputPath => pathsOverlap(inputPath, output))) {throw new Error("ROCm output must not overlap a source, tool, SDK, receipt or repository input");}
+  if (inputPaths.some(inputPath => buildPathsOverlap(inputPath, output))) {throw new Error("ROCm output must not overlap a source, tool, SDK, receipt or repository input");}
   const common = ["-G", "Ninja", "-DCMAKE_MAKE_PROGRAM=" + tools.ninja, "-DCMAKE_BUILD_TYPE=Release",
     "-DCMAKE_C_COMPILER=" + hostCompilers.cc, "-DCMAKE_CXX_COMPILER=" + hostCompilers.cxx,
     "-DCMAKE_TOOLCHAIN_FILE=" + sysroot.toolchain, "-DPython3_EXECUTABLE=" + tools.python3,
@@ -427,11 +425,12 @@ function compileDepfiles(build, entries) {
 
 /** @param {string} file @param {string} build @param {ReturnType<typeof rocmHostPlan>["hostCompilers"]} compilers */
 function readCompileDatabase(file, build, compilers) {
+  const maximum = 32 << 20;
   const stat = fs.lstatSync(file, {throwIfNoEntry: false});
-  if (!stat?.isFile() || fs.realpathSync(file) !== file || stat.size < 2 || stat.size > (32 << 20)) {
+  if (!stat?.isFile() || fs.realpathSync(file) !== file || stat.size < 2 || stat.size > maximum) {
     throw new Error("Missing or excessive ROCm compile database: " + file);
   }
-  const entries = /** @type {unknown} */ (JSON.parse(fs.readFileSync(file, "utf8")));
+  const entries = /** @type {unknown} */ (readBuildJson(file, maximum));
   const depfiles = compileDepfiles(build, entries);
   for (const row of /** @type {unknown[]} */ (entries)) {
     if (!row || typeof row !== "object" || Array.isArray(row)) {throw new Error("Invalid ROCm compiler command");}
@@ -469,7 +468,7 @@ function buildRocmHostRuntime(input, output, environment = process.env, configFi
   const configuredRoots = [...Object.values(c.sources), ...Object.values(c.tools).map(file => path.dirname(file)),
     ...Object.values(c.dependencies).map(file => path.dirname(file)), c.pkgConfigDir, path.dirname(c.hostCompilers.cc),
     path.dirname(c.hostCompilers.cxx), path.dirname(c.comgrReceipt), ...(configFile ? [configFile] : []), repo];
-  if (configuredRoots.some(inputPath => pathsOverlap(inputPath, destination))) {
+  if (configuredRoots.some(inputPath => buildPathsOverlap(inputPath, destination))) {
     throw new Error("ROCm output or source roots overlap a configured input");
   }
   for (const source of Object.values(c.sources)) {realDirectory(source, "source root");}
@@ -486,14 +485,14 @@ function buildRocmHostRuntime(input, output, environment = process.env, configFi
   }
   const comgr = comgrSdkInputs(c.comgrReceipt), llvm = comgr.roots.llvm;
   const comgrPackage = path.join(path.dirname(comgr.archive), "lib/cmake/amd_comgr");
-  const plan = rocmHostPlan(c, destination, Number(environment["MOM_BUILD_JOBS"] || "2"),
+  const plan = rocmHostPlan(c, destination, nativeBuildJobs(environment),
     {llvm, comgrPackage, device: comgr.roots.device}, {root: sysroot.root, toolchain: sysroot.toolchain});
   const protectedRoots = [...Object.values(c.sources), ...Object.values(c.tools).map(file => path.dirname(file)),
     ...Object.values(c.dependencies).map(file => path.dirname(file)), c.pkgConfigDir,
     path.dirname(c.hostCompilers.cc), path.dirname(c.hostCompilers.cxx), path.dirname(comgr.receipt),
     comgr.roots.llvm, comgr.roots.lld, comgr.roots.device, plan.imageLlvmPackage, repo].map(file => fs.realpathSync(file));
-  if (protectedRoots.some(inputPath => pathsOverlap(inputPath, destination)) ||
-      Object.values(c.sources).some((root, index, rows) => rows.slice(index + 1).some(other => pathsOverlap(root, other)))) {
+  if (protectedRoots.some(inputPath => buildPathsOverlap(inputPath, destination)) ||
+      Object.values(c.sources).some((root, index, rows) => rows.slice(index + 1).some(other => buildPathsOverlap(root, other)))) {
     throw new Error("ROCm output or source roots overlap a canonical input");
   }
   realDirectory(plan.deviceLibPath, "admitted COMGR device-library bitcode directory");

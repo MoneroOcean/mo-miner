@@ -4,42 +4,30 @@
 // bundle and original build handoff, then package and audit through the existing release APIs.
 // The candidate is never executed and nothing is rebuilt.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
-const ci = require("../native-ci-tar"), {fileHash, readBuildJson} = require("../build-source-inputs");
-const {validCiSuffix} = require("../native-ci-job");
+const ci = require("../native-ci-tar"), {hasExactBuildFields, hasBuildDirectoryEntries, fileHash, readBuildJson} = require("../build-source-inputs");
+const {applicationBuildFiles, releaseArtifactNames, sha256Pin, runnerPath, admitReleaseFile} = require("../native-ci-job");
 const {auditNativeRelease} = require("../check-native-release"), {packageNativeRelease} = require("../package-native-release");
 const {checkNativeNoticeReview} = require("../check-native-notices");
 
 const hashPattern = /^[a-f0-9]{64}$/;
 const packedFiles = ["entrypoint.json", "result.json", "pack.log", "integrity.log", "restore.log"];
-const originalFiles = ["application-config.json", "entrypoint.json", "handoff.json", "result.json"];
 
 /** @typedef {{version: number, notice: {bytes: number, sha256: string}, dependencies: unknown}} NoticeReview */
 /** @typedef {{stateRoot: string, workspace: string, ci: Pick<typeof ci, "listState" | "extractState" | "packState" | "tarExpandedBytes">,
  *   checkNativeNoticeReview: (manifestPath?: string, noticePath?: string) => NoticeReview,
  *   auditNativeRelease: typeof auditNativeRelease, packageNativeRelease: typeof packageNativeRelease}} PackageIo */
-/** @typedef {{bytes: number, mode: number, sha256: string}} AdmittedFile */
-
-/** Return one producer SHA-256 pin, or null when it is missing or malformed.
- * @param {NodeJS.ProcessEnv} env @param {string} name */
-function sha256Pin(env, name) {
-  const value = env[name];
-  return value !== undefined && hashPattern.test(value) ? value : null;
-}
 
 /** Derive the exact platform, names and producer pins; nothing here touches artifacts.
  * @param {NodeJS.ProcessEnv} env */
 function packagePlan(env) {
-  const suffix = env["MOM_NATIVE_CI_SUFFIX"], target = env["NATIVE_PLATFORM"],
+  const artifacts = releaseArtifactNames(env),
     packedBundleSha256 = sha256Pin(env, "PACKED_BUILD_BUNDLE_SHA256"), rawSha256 = sha256Pin(env, "RAW_EXECUTABLE_SHA256"),
     originalBundleSha256 = sha256Pin(env, "ORIGINAL_BUILD_BUNDLE_SHA256"), originalHandoffSha256 = sha256Pin(env, "ORIGINAL_HANDOFF_SHA256");
-  if (!validCiSuffix(suffix) || (target !== "linux" && target !== "win32") ||
+  if (!artifacts ||
       packedBundleSha256 === null || rawSha256 === null || originalBundleSha256 === null || originalHandoffSha256 === null) {
     return null;
   }
-  const platform = target === "win32" ? "windows" : "linux";
-  return {suffix, target, platform, binary: target === "win32" ? "mom.exe" : "mom",
-    packedRoot: `native-${platform}-packed-build-${suffix}`, originalRoot: `native-${platform}-application-build-${suffix}`,
-    packedBundleSha256, rawSha256, originalBundleSha256, originalHandoffSha256};
+  return {...artifacts, packedBundleSha256, rawSha256, originalBundleSha256, originalHandoffSha256};
 }
 
 /** Resolve CMake from PATH the way `command -v` does: the first executable regular file named cmake.
@@ -87,14 +75,6 @@ function preflightPackage(env, io) {
   return cmake;
 }
 
-/** Read an absolute path that the Actions runner provides through the environment.
- * @param {NodeJS.ProcessEnv} env @param {string} name */
-function runnerPath(env, name) {
-  const value = env[name];
-  if (value === undefined || !path.isAbsolute(value)) {throw new Error(name + " must be an absolute runner path");}
-  return value;
-}
-
 /** Accept only an absolute, canonical, non-link executable regular file.
  * @param {string | undefined} file @returns {file is string} */
 function canonicalExecutable(file) {
@@ -108,27 +88,12 @@ function canonicalExecutable(file) {
   } catch {return false;}
 }
 
-/** Admit one canonical, single-link, bounded regular file; a non-null pin must match its SHA-256.
- * @param {string} file @param {unknown} pin @param {number} maximum @param {string} label @returns {AdmittedFile} */
-function admitFile(file, pin, maximum, label) {
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size < 1 || stat.size > maximum ||
-      path.resolve(file) !== file || fs.realpathSync(file) !== file) {
-    throw new Error("Invalid or unpinned native packaging " + label);
-  }
-  const sha256 = fileHash(file);
-  if (pin !== null && (typeof pin !== "string" || !hashPattern.test(pin) || sha256 !== pin)) {
-    throw new Error("Invalid or unpinned native packaging " + label);
-  }
-  return {bytes: stat.size, mode: stat.mode, sha256};
-}
-
 /** Require a canonical real directory holding exactly the named entries.
- * @param {string} directory @param {string[]} names @param {string} label */
+ * @param {string} directory @param {readonly string[]} names @param {string} label */
 function exactDirectory(directory, names, label) {
   const stat = fs.lstatSync(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink() || path.resolve(directory) !== directory || fs.realpathSync(directory) !== directory ||
-      fs.readdirSync(directory).sort().join("\0") !== [...names].sort().join("\0")) {
+      !hasBuildDirectoryEntries(directory, names)) {
     throw new Error("Unexpected native packaging " + label + " contents");
   }
 }
@@ -142,20 +107,9 @@ function admitTarMembers(tar, archive, expected, maxExpanded) {
   if (normalized.length !== wanted.length || normalized.join("\0") !== wanted.join("\0")) {
     throw new Error("Native packaging tar has missing or unexpected members");
   }
-  if (tar.tarExpandedBytes(archive, members.length, 60000) > maxExpanded) {
+  if (tar.tarExpandedBytes(archive, members, 60000) > maxExpanded) {
     throw new Error("Native packaging tar exceeds its bounded expansion limit");
   }
-  const listed = spawnSync("/usr/bin/tar", ["--list", "--verbose", "--numeric-owner", "--full-time", "--quoting-style=literal", "--file", archive],
-    {encoding: "utf8", timeout: 60000, maxBuffer: 8 << 20, windowsHide: true});
-  const lines = typeof listed.stdout === "string" ? listed.stdout.replace(/\r/g, "").split("\n").filter(Boolean) : [];
-  if (listed.error || listed.signal || listed.status !== 0 || lines.length !== members.length ||
-      members.some((name, index) => {
-        const line = lines[index] || "", normalizedName = name.replace(/\/$/, ""), isDirectory = name.endsWith("/");
-        return line[0] !== (isDirectory ? "d" : "-") || !(line.endsWith(" " + name) || isDirectory && line.endsWith(" " + normalizedName));
-      })) {
-    throw new Error("Native packaging tar contains a link, special file or ambiguous member listing");
-  }
-  return members;
 }
 
 /** Package the admitted packed candidate with the reviewed notices, audit before and after, and seal
@@ -171,9 +125,9 @@ function packageNative(env, io) {
   const {suffix, platform, target, binary} = plan, workspace = fs.realpathSync(io.workspace),
     inputRoot = path.join(temp, "native-package-inputs"), incoming = path.join(temp, "incoming"),
     inputDirs = {raw: path.join(inputRoot, "raw"), packed: path.join(inputRoot, "packed-executable")},
-    tarFiles = {packed: path.join(incoming, plan.packedRoot + ".tar"), original: path.join(incoming, plan.originalRoot + ".tar")},
+    tarFiles = {packed: path.join(incoming, plan.packedBuild + ".tar"), original: path.join(incoming, plan.applicationBuild + ".tar")},
     rawDirectory = path.join(temp, "native-raw"), raw = path.join(rawDirectory, binary), producer = path.join(rawDirectory, "result.json"),
-    packedRoot = path.join(io.stateRoot, plan.packedRoot), originalRoot = path.join(io.stateRoot, plan.originalRoot),
+    packedRoot = path.join(io.stateRoot, plan.packedBuild), originalRoot = path.join(io.stateRoot, plan.applicationBuild),
     originalEntry = path.join(originalRoot, "entrypoint.json"), originalConfig = path.join(originalRoot, "application-config.json"),
     runTempConfig = path.join(temp, target === "linux" ?
       `native-linux-assembly-config-${suffix}.json` : `native-windows-application-config-${suffix}.json`),
@@ -194,15 +148,15 @@ function packageNative(env, io) {
   }
 
   const noticeReview = io.checkNativeNoticeReview(undefined, noticeBody),
-    noticeManifestInfo = admitFile(noticeManifest, null, 2 << 20, "notice review manifest"),
-    reviewedNoticeInfo = admitFile(noticeBody, noticeReview.notice?.sha256, 8 << 20, "reviewed third-party notices");
+    noticeManifestInfo = admitReleaseFile(noticeManifest, null, 2 << 20, "notice review manifest"),
+    reviewedNoticeInfo = admitReleaseFile(noticeBody, noticeReview.notice?.sha256, 8 << 20, "reviewed third-party notices");
   if (noticeReview.version !== 1 || !noticeReview.dependencies || typeof noticeReview.dependencies !== "object" ||
       Array.isArray(noticeReview.dependencies) || noticeReview.notice?.bytes !== reviewedNoticeInfo.bytes) {
     throw new Error("Native notice review did not admit the tracked notice body and dependency snapshot");
   }
   const assertNoticeReviewStable = () => {
-    const manifest = admitFile(noticeManifest, null, 2 << 20, "notice review manifest"),
-      notice = admitFile(noticeBody, null, 8 << 20, "reviewed third-party notices");
+    const manifest = admitReleaseFile(noticeManifest, null, 2 << 20, "notice review manifest"),
+      notice = admitReleaseFile(noticeBody, null, 8 << 20, "reviewed third-party notices");
     if (manifest.sha256 !== noticeManifestInfo.sha256 || manifest.bytes !== noticeManifestInfo.bytes ||
         notice.sha256 !== noticeReview.notice.sha256 || notice.bytes !== noticeReview.notice.bytes) {
       throw new Error("Reviewed notice body or manifest changed during packaging");
@@ -213,27 +167,27 @@ function packageNative(env, io) {
 
   // The raw and packed executables share one file name, so each keeps its own download directory.
   exactDirectory(inputDirs.raw, [binary], "raw executable artifact");
-  const rawDownload = path.join(inputDirs.raw, binary), rawInfo = admitFile(rawDownload, plan.rawSha256, (1 << 30) - 1, "raw executable");
+  const rawDownload = path.join(inputDirs.raw, binary), rawInfo = admitReleaseFile(rawDownload, plan.rawSha256, (1 << 30) - 1, "raw executable");
   exactDirectory(inputDirs.packed, [binary], "packed executable artifact");
-  const packedInfo = admitFile(path.join(inputDirs.packed, binary), null, (1 << 30) - 1, "packed executable");
-  exactDirectory(incoming, [plan.packedRoot + ".tar", plan.originalRoot + ".tar"], "incoming build bundle");
-  admitFile(tarFiles.packed, plan.packedBundleSha256, 128 << 20, "packed-build bundle");
-  admitFile(tarFiles.original, plan.originalBundleSha256, 128 << 20, "original-build bundle");
+  const packedInfo = admitReleaseFile(path.join(inputDirs.packed, binary), null, (1 << 30) - 1, "packed executable");
+  exactDirectory(incoming, [plan.packedBuild + ".tar", plan.applicationBuild + ".tar"], "incoming build bundle");
+  admitReleaseFile(tarFiles.packed, plan.packedBundleSha256, 128 << 20, "packed-build bundle");
+  admitReleaseFile(tarFiles.original, plan.originalBundleSha256, 128 << 20, "original-build bundle");
 
-  admitTarMembers(io.ci, tarFiles.packed, [plan.packedRoot, ...[binary, ...packedFiles].map(name => `${plan.packedRoot}/${name}`)], 128 << 20);
-  admitTarMembers(io.ci, tarFiles.original, [plan.originalRoot, ...originalFiles.map(name => `${plan.originalRoot}/${name}`)], 128 << 20);
-  io.ci.extractState(tarFiles.packed, io.stateRoot, [plan.packedRoot], [plan.packedRoot], 60000);
-  io.ci.extractState(tarFiles.original, io.stateRoot, [plan.originalRoot], [plan.originalRoot], 60000);
+  admitTarMembers(io.ci, tarFiles.packed, [plan.packedBuild, ...[binary, ...packedFiles].map(name => `${plan.packedBuild}/${name}`)], 128 << 20);
+  admitTarMembers(io.ci, tarFiles.original, [plan.applicationBuild, ...applicationBuildFiles.map(name => `${plan.applicationBuild}/${name}`)], 128 << 20);
+  io.ci.extractState(tarFiles.packed, io.stateRoot, [plan.packedBuild], [plan.packedBuild], 60000);
+  io.ci.extractState(tarFiles.original, io.stateRoot, [plan.applicationBuild], [plan.applicationBuild], 60000);
   exactDirectory(packedRoot, [binary, ...packedFiles], "restored packed candidate");
-  exactDirectory(originalRoot, originalFiles, "restored original handoff");
-  const packedArtifact = admitFile(path.join(packedRoot, binary), null, (1 << 30) - 1, "packed candidate"),
-    candidateEntryInfo = admitFile(entrypoint, null, 8 << 20, "packed entrypoint"),
-    packInfo = admitFile(packReceipt, null, 8 << 20, "packing receipt"),
-    originInfo = admitFile(originalEntry, null, 8 << 20, "original entrypoint"),
+  exactDirectory(originalRoot, applicationBuildFiles, "restored original handoff");
+  const packedArtifact = admitReleaseFile(path.join(packedRoot, binary), null, (1 << 30) - 1, "packed candidate"),
+    candidateEntryInfo = admitReleaseFile(entrypoint, null, 8 << 20, "packed entrypoint"),
+    packInfo = admitReleaseFile(packReceipt, null, 8 << 20, "packing receipt"),
+    originInfo = admitReleaseFile(originalEntry, null, 8 << 20, "original entrypoint"),
     handoffFile = path.join(originalRoot, "handoff.json"), originProducer = path.join(originalRoot, "result.json");
-  admitFile(handoffFile, plan.originalHandoffSha256, 8 << 20, "original handoff");
-  const originProducerInfo = admitFile(originProducer, null, 128 << 20, "original producer receipt"),
-    originConfigInfo = admitFile(originalConfig, null, 8 << 20, "original application config"),
+  admitReleaseFile(handoffFile, plan.originalHandoffSha256, 8 << 20, "original handoff");
+  const originProducerInfo = admitReleaseFile(originProducer, null, 128 << 20, "original producer receipt"),
+    originConfigInfo = admitReleaseFile(originalConfig, null, 8 << 20, "original application config"),
     candidate = readBuildJson(entrypoint), origin = readBuildJson(originalEntry), handoff = readBuildJson(handoffFile),
     packing = readBuildJson(packReceipt);
   // The Linux producer always assembles under the fixed /tmp root; Windows uses its RUNNER_TEMP output.
@@ -265,21 +219,21 @@ function packageNative(env, io) {
       packing.source?.path !== raw || packing.source.sha256 !== plan.rawSha256 || packing.source.bytes !== rawInfo.bytes ||
       packing.artifact?.path !== path.join(packedRoot, binary) || packing.artifact.sha256 !== packedArtifact.sha256 ||
       packing.artifact.bytes !== packedArtifact.bytes || packing.buildOnly !== true || packing.publicationQualified !== false ||
-      Object.keys(packing.logs || {}).sort().join(",") !== "integrity,pack,restore") {
+      !hasExactBuildFields(packing.logs, ["integrity", "pack", "restore"])) {
     throw new Error("Packed artifact, original handoff, raw executable or retained packing evidence does not join the pinned build");
   }
   for (const stage of ["pack", "integrity", "restore"]) {
     const logPath = path.join(packedRoot, stage + ".log"), row = packing.logs[stage];
     if (row?.path !== logPath || !hashPattern.test(row.sha256 || "")) {throw new Error("Packed receipt has an invalid " + stage + " log binding");}
-    admitFile(logPath, row.sha256, 8 << 20, stage + " log");
+    admitReleaseFile(logPath, row.sha256, 8 << 20, stage + " log");
   }
   fs.mkdirSync(rawDirectory, {mode: 0o700});
   fs.copyFileSync(rawDownload, raw, fs.constants.COPYFILE_EXCL);
   fs.copyFileSync(originProducer, producer, fs.constants.COPYFILE_EXCL);
   fs.copyFileSync(originalConfig, runTempConfig, fs.constants.COPYFILE_EXCL);
-  if (admitFile(raw, plan.rawSha256, (1 << 30) - 1, "restored raw executable").bytes !== rawInfo.bytes ||
-      admitFile(producer, originProducerInfo.sha256, 128 << 20, "unchanged producer receipt").sha256 !== originProducerInfo.sha256 ||
-      admitFile(runTempConfig, originConfigInfo.sha256, 8 << 20, "restored original config").sha256 !== originConfigInfo.sha256) {
+  if (admitReleaseFile(raw, plan.rawSha256, (1 << 30) - 1, "restored raw executable").bytes !== rawInfo.bytes ||
+      admitReleaseFile(producer, originProducerInfo.sha256, 128 << 20, "unchanged producer receipt").sha256 !== originProducerInfo.sha256 ||
+      admitReleaseFile(runTempConfig, originConfigInfo.sha256, 8 << 20, "restored original config").sha256 !== originConfigInfo.sha256) {
     throw new Error("Restored raw/config/producer bytes differ from their original same-run pins");
   }
   const preAudit = io.auditNativeRelease(entrypoint);
@@ -304,10 +258,10 @@ function packageNative(env, io) {
       packaged.members?.join("\0") !== [binary, "THIRD-PARTY-NOTICES.txt"].join("\0")) {
     throw new Error("Existing late-notice package API returned a receipt for different bytes or members");
   }
-  const archiveInfo = admitFile(archivePath, packaged.archive.sha256, 1 << 30, "native release archive"),
-    packageInfo = admitFile(packageReceipt, null, 8 << 20, "native package receipt");
+  const archiveInfo = admitReleaseFile(archivePath, packaged.archive.sha256, 1 << 30, "native release archive"),
+    packageInfo = admitReleaseFile(packageReceipt, null, 8 << 20, "native package receipt");
   if (archiveInfo.bytes !== packaged.archive.bytes ||
-      admitFile(path.join(outputRoot, "THIRD-PARTY-NOTICES.txt"), noticeReview.notice.sha256, 8 << 20,
+      admitReleaseFile(path.join(outputRoot, "THIRD-PARTY-NOTICES.txt"), noticeReview.notice.sha256, 8 << 20,
         "packaged third-party notices").bytes !== noticeReview.notice.bytes) {
     throw new Error("Late package archive bytes or selected notice body are missing");
   }
@@ -324,12 +278,12 @@ function packageNative(env, io) {
     {flag: "wx", mode: 0o600});
   fs.writeFileSync(path.join(metadataRoot, "native-notice-review.json"), JSON.stringify(noticeReviewAudit, null, 2) + "\n",
     {flag: "wx", mode: 0o600});
-  admitFile(path.join(metadataRoot, "native-notice-review.json"), null, 8 << 20, "notice review snapshot");
-  if (admitFile(path.join(metadataRoot, "native-package.json"), packageInfo.sha256, 8 << 20, "copied package receipt").sha256 !== packageInfo.sha256) {
+  admitReleaseFile(path.join(metadataRoot, "native-notice-review.json"), null, 8 << 20, "notice review snapshot");
+  if (admitReleaseFile(path.join(metadataRoot, "native-package.json"), packageInfo.sha256, 8 << 20, "copied package receipt").sha256 !== packageInfo.sha256) {
     throw new Error("Package receipt changed while retaining the audit metadata");
   }
   const metadataBundle = io.ci.packState(metadataTar, outputRoot, [metadataName], 60000),
-    metadataBundleInfo = admitFile(metadataTar, null, 16 << 20, "package metadata tar");
+    metadataBundleInfo = admitReleaseFile(metadataTar, null, 16 << 20, "package metadata tar");
   if (!Number.isSafeInteger(metadataBundle?.bytes) || metadataBundle.bytes < 1 || metadataBundle.bytes > 16 << 20 ||
       metadataBundle.bytes !== metadataBundleInfo.bytes) {throw new Error("Native package metadata tar exceeds its bounded receipt-only size");}
   admitTarMembers(io.ci, metadataTar, [metadataName, ...["build-audit.json", "native-package.json", "native-notice-review.json"]

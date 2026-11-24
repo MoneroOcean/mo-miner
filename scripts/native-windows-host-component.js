@@ -4,7 +4,7 @@
 // Producer receipts stay untouched; the component is transport, not runtime qualification.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson, readBuildText, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, buildPathsOverlap, fileHash, readBuildJson, readBuildJsonSnapshot, readBuildText, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {isStaticArchive} = require("./native-audit");
 const {auditCoffArchiveInputs} = require("./native-coff-archive");
 const {verifyWindowsLlvmAdmission, archiveSha256} = require("./build-native-windows-llvm-sdk");
@@ -75,9 +75,7 @@ function requireDisjointOutput(output, inputs) {
     throw new Error("Windows host component output must be new and canonical");
   }
   for (const input of inputs) {
-    const selected = fs.realpathSync(input), relative = path.relative(selected, output), reverse = path.relative(output, selected);
-    if (relative === "" || reverse === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep)) ||
-        (!path.isAbsolute(reverse) && reverse !== ".." && !reverse.startsWith(".." + path.sep))) {
+    if (buildPathsOverlap(fs.realpathSync(input), output)) {
       throw new Error("Windows host component output overlaps a producer input");
     }
   }
@@ -104,7 +102,7 @@ function windowsHostComponentLlvmLayout(llvm) {
 /** @param {string} resultFile @param {ReturnType<typeof verifyWindowsLlvmAdmission>} llvm */
 function verifyComgrResult(resultFile, llvm) {
   canonicalFile(resultFile, "COMGR result receipt");
-  const receiptSha256 = fileHash(resultFile), receipt = readBuildJson(resultFile), saved = receipt.plan,
+  const {value: receipt, sha256: receiptSha256} = readBuildJsonSnapshot(resultFile), saved = receipt.plan,
     planProof = saved ? readBuildJson(path.join(saved.output, "plan.json")) : undefined;
   if (!saved || receipt.version !== 1 || receipt.role !== "windows-comgr-static-host" || receipt.stage !== "complete" ||
       receipt.buildOnly !== true || receipt.compiled !== true || receipt.executed !== false || receipt.publicationQualified !== false ||
@@ -186,7 +184,7 @@ function readOnlyGit(command, args) {
 /** @param {string} resultFile @param {ReturnType<typeof verifyWindowsLlvmAdmission>} llvm */
 function verifyAcppResult(resultFile, llvm) {
   canonicalFile(resultFile, "AdaptiveCpp result receipt");
-  const receiptSha256 = fileHash(resultFile), receipt = readBuildJson(resultFile), output = path.dirname(resultFile),
+  const {value: receipt, sha256: receiptSha256} = readBuildJsonSnapshot(resultFile), output = path.dirname(resultFile),
     saved = readBuildJson(path.join(output, "plan.json"));
   const artifacts = /** @type {Array<{path: string, sha256: string, bytes: number, members: number,
     objects: Array<{path: string, sha256: string, bytes: number}>}>} */ (receipt.artifacts);
@@ -253,8 +251,8 @@ function verifyAcppResult(resultFile, llvm) {
     if (fs.existsSync(file)) {throw new Error("Windows AdaptiveCpp output contains a forbidden tool or DLL: " + file);}
   }
   const compileFile = path.join(build, "compile_commands.json"),
-    commands = auditAcppCompileCommands(compileFile, source, build, receipt.hostCompilers?.cxx);
-  if (!isDeepStrictEqual(receipt.compileCommands, commands) || commands.path !== receipt.compileCommands?.path) {
+    {receipt: commands} = auditAcppCompileCommands(compileFile, source, build, receipt.hostCompilers?.cxx);
+  if (!isDeepStrictEqual(receipt.compileCommands, commands)) {
     throw new Error("Windows AdaptiveCpp compile database changed after its receipt");
   }
   for (const [index, item] of artifacts.entries()) {
@@ -279,7 +277,7 @@ function verifyAcppResult(resultFile, llvm) {
  * @param {ReturnType<typeof verifyAcppResult>} acpp */
 function verifyHiprtcResult(resultFile, comgr, acpp) {
   canonicalFile(resultFile, "HIPRTC result receipt");
-  const receiptSha256 = fileHash(resultFile), receipt = readBuildJson(resultFile), output = path.dirname(resultFile), rows = receipt.sources;
+  const {value: receipt, sha256: receiptSha256} = readBuildJsonSnapshot(resultFile), output = path.dirname(resultFile), rows = receipt.sources;
   if (receipt.version !== 1 || receipt.role !== "windows-hiprtc-static-host" || receipt.targetTriple !== targetTriple ||
       receipt.sourceRevision !== hiprtcSourceRevision || receipt.comgrRevision !== comgrRevision || receipt.buildOnly !== true ||
       receipt.compiled !== true || receipt.executed !== false || receipt.publicationQualified !== false || !Array.isArray(rows) ||
@@ -384,7 +382,7 @@ function copyRuntimeInput(producer, relative, output, files) {
  * @param {NodeJS.ProcessEnv} [environment] */
 function verifyWindowsHostComponentProducers(input, environment = process.env) {
   if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1" || !input ||
-      Object.keys(input).sort().join(",") !== "acppResult,comgrResult,hiprtcResult,llvmOutput" ||
+      !hasExactBuildFields(input, ["acppResult", "comgrResult", "hiprtcResult", "llvmOutput"]) ||
       !Object.values(input).every(absolute)) {
     throw new Error("Windows host component export requires Linuxx64, MOM_AOT_BUILD_ONLY=1 and explicit roots");
   }
@@ -456,7 +454,7 @@ function matchWindowsHostComponent(root, original) {
  * @param {{llvmOutput: string, comgrResult: string, acppResult: string, hiprtcResult: string, output: string}} input
  * @param {NodeJS.ProcessEnv} [environment] */
 function exportWindowsHostComponent(input, environment = process.env) {
-  if (!input || Object.keys(input).sort().join(",") !== "acppResult,comgrResult,hiprtcResult,llvmOutput,output" || !absolute(input.output)) {
+  if (!input || !hasExactBuildFields(input, ["acppResult", "comgrResult", "hiprtcResult", "llvmOutput", "output"]) || !absolute(input.output)) {
     throw new Error("Windows host component export requires Linuxx64, MOM_AOT_BUILD_ONLY=1 and explicit roots");
   }
   const {output, ...producerInput} = input, original = verifyWindowsHostComponentProducers(producerInput, environment),
@@ -503,7 +501,7 @@ function validRelative(value, label) {
 function windowsHostComponentInputs(root) {
   if (!absolute(root) || fs.realpathSync(root) !== root) {throw new Error("Select a canonical Windows host component root");}
   const manifestFile = path.join(root, "component.json"); canonicalFile(manifestFile, "component receipt");
-  const manifestSha256 = fileHash(manifestFile), manifest = readBuildJson(manifestFile);
+  const {value: manifest, sha256: manifestSha256} = readBuildJsonSnapshot(manifestFile);
   if (manifest.version !== 3 || manifest.kind !== "windows-native-host-sdk" || !isDeepStrictEqual(manifest.pins, componentPins) ||
       manifest.buildOnly !== true || manifest.publicationQualified !== false || !manifest.link || !manifest.files ||
       typeof manifest.files !== "object" || Array.isArray(manifest.files) || !manifest.provenance ||
@@ -547,7 +545,7 @@ function windowsHostComponentInputs(root) {
         throw new Error("Windows HIPRTC component archive differs from its producer provenance");
       }
       const proof = manifest.files[relative];
-      if (!proof || Object.keys(proof).sort().join(",") !== "bytes,sha256" || !hashPattern.test(proof.sha256) ||
+      if (!proof || !hasExactBuildFields(proof, ["bytes", "sha256"]) || !hashPattern.test(proof.sha256) ||
           !Number.isSafeInteger(proof.bytes) || proof.bytes < 8 || proof.bytes > archiveBytesLimit ||
           (totalBytes += proof.bytes) > componentBytesLimit) {throw new Error("Invalid or oversized Windows host component archive proof");}
       if (group === "hiprtc" && proof.sha256 !== hiprtc.archiveSha256) {

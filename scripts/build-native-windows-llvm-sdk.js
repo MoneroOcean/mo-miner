@@ -5,16 +5,18 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {createHash, randomUUID} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
 const {validateWindowsLlvmSdkConfig, windowsToolEnvironment, vfsFiles} = require("./build-native-windows-controller");
-const {fileHash, buildFileInputs, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, buildPathsOverlap, containsBuildPath, fileHash, buildFileInputs,
+  readBuildBytes, readBuildJson, readBuildJsonSnapshot, readBuildText, verifyStableBuildBytes} = require("./build-source-inputs");
 const {windowsIntelRuleOverride} = require("./prepare-native-jit-toolchain");
 const {jitBuildOutputs} = require("./native-jit-stages");
 const {isStaticArchive} = require("./native-audit");
-const {archiveName, archiveSha256, tarTool, sourceDirectories, llvmSourceSnapshot, verifyArchiveCatalog,
-  llvmAmdgpulibCallsCompileOptionsShim, verifyCmakeVersion} = require("./native-llvm-sdk");
+const {archiveName, archiveSha256, tarTool, sourceDirectories, amdgpulibCallsSource, llvmSourceSnapshot, verifyArchiveCatalog,
+  llvmAmdgpulibCallsCompileOptionsShim, verifyCmakeVersion, commandArguments, verifyLlvmHostCompileFlag} = require("./native-llvm-sdk");
 
 const repo = path.resolve(__dirname, "..");
 const targetTriple = "x86_64-pc-windows-msvc";
 const expectedStaticArchiveCount = 164;
+const maximumCompileCommandsBytes = 256 << 20;
 const sourceProjects = Object.freeze(["llvm", "clang", "lld"]);
 const recipeFiles = Object.freeze(["scripts/build-native-windows-llvm-sdk.js", "scripts/build-native-windows-controller.js",
   "scripts/build-source-inputs.js", "scripts/prepare-native-jit-toolchain.js", "scripts/native-jit-stages.js", "scripts/native-audit.js",
@@ -61,19 +63,12 @@ const cmake = value => {
   }
   return "[" + equals + "[" + value + "]" + equals + "]";
 };
-/** @param {string} root @param {string} child */
-function contained(root, child) {
-  const relative = path.relative(root, child);
-  return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));
-}
-/** @param {string} left @param {string} right */
-function overlaps(left, right) {return contained(left, right) || contained(right, left);}
 
 /** Check each existing cache path component without following symlinks out of the Ninja tree.
  * @param {string} build @param {string} file @param {"file" | "directory"} finalKind @param {boolean} [optional] */
 function verifyWindowsBuildPath(build, file, finalKind, optional = false) {
   const root = fs.realpathSync(build);
-  if (root !== build || path.resolve(file) !== file || !contained(build, file)) {
+  if (root !== build || path.resolve(file) !== file || !containsBuildPath(build, file)) {
     throw new Error("Windows LLVM build path escaped or aliased its selected tree: " + file);
   }
   const parts = path.relative(build, file).split(path.sep); let current = build;
@@ -89,7 +84,7 @@ function verifyWindowsBuildPath(build, file, finalKind, optional = false) {
       throw new Error("Windows LLVM build path is not a regular in-tree " + (final ? finalKind : "directory") + ": " + file);
     }
   }
-  if (!contained(root, fs.realpathSync(file))) {throw new Error("Windows LLVM build path resolves outside its selected tree: " + file);}
+  if (!containsBuildPath(root, fs.realpathSync(file))) {throw new Error("Windows LLVM build path resolves outside its selected tree: " + file);}
   return true;
 }
 
@@ -105,7 +100,7 @@ function verifyWindowsPrivateDirectory(directory, label, ownerOnly = false) {
 /** Re-derive the source/build layout before any read from a recorded build path. @param {ReturnType<typeof windowsLlvmSdkPlan>} plan */
 function verifyWindowsCacheRoots(plan) {
   if (!literal(plan.output) || path.normalize(plan.output) !== plan.output || plan.source !== path.join(plan.output, "source") ||
-      plan.build !== path.join(plan.output, "build") || [repo, plan.archive, ...Object.values(plan.tools)].some(input => overlaps(input, plan.output))) {
+      plan.build !== path.join(plan.output, "build") || [repo, plan.archive, ...Object.values(plan.tools)].some(input => buildPathsOverlap(input, plan.output))) {
     throw new Error("Windows LLVM build roots do not match their recorded generation");
   }
   verifyWindowsPrivateDirectory(plan.output, "generation output", true);
@@ -119,11 +114,7 @@ function verifyWindowsConfiguration(plan) {
   const inputs = /** @type {[string, string][]} */ ([[plan.overlay, plan.overlayText], [plan.ruleOverride, plan.ruleOverrideText],
     [plan.toolchainFile, plan.toolchain]]);
   for (const [file, expected] of inputs) {
-    const stat = fs.lstatSync(file, {throwIfNoEntry: false});
-    if (!stat?.isFile() || stat.isSymbolicLink() || fs.realpathSync(file) !== file || stat.size !== Buffer.byteLength(expected) ||
-        fs.readFileSync(file, "utf8") !== expected) {
-      throw new Error("Windows LLVM configure inputs changed; a full new configure/build is required");
-    }
+    verifyStableBuildBytes(file, Buffer.from(expected), "Windows LLVM configure input");
   }
   verifyWindowsSourceOptionsFile(plan);
 }
@@ -134,12 +125,8 @@ function verifyWindowsSourceOptionsFile(plan) {
       plan.sourceOptionsText !== llvmAmdgpulibCallsCompileOptionsShim(plan.source)) {
     throw new Error("Windows LLVM source-options hook differs from the frozen plan");
   }
-  const stat = fs.lstatSync(plan.sourceOptionsFile, {throwIfNoEntry: false});
-  if (!stat?.isFile() || stat.isSymbolicLink() || fs.realpathSync(plan.sourceOptionsFile) !== plan.sourceOptionsFile ||
-      stat.size !== Buffer.byteLength(plan.sourceOptionsText) || fs.readFileSync(plan.sourceOptionsFile, "utf8") !== plan.sourceOptionsText) {
-    throw new Error("Windows LLVM source-options hook is not the expected generated build input");
-  }
-  return evidenceFile(plan.sourceOptionsFile);
+  return {path: plan.sourceOptionsFile, sha256: verifyStableBuildBytes(plan.sourceOptionsFile,
+    Buffer.from(plan.sourceOptionsText), "Windows LLVM source-options hook")};
 }
 
 /** Every recorded input still has its recorded bytes. @param {Record<string, string>} expected */
@@ -151,7 +138,7 @@ function windowsBuildInputsCurrent(expected) {return isDeepStrictEqual(expected,
  * @param {{cmake: string, ninja: string}} tools @param {number} jobs */
 function windowsLlvmSdkPlan(descriptor, archive, output, tools, jobs) {
   const config = validateWindowsLlvmSdkConfig(descriptor), {windowsSdk, tools: selected} = config;
-  if (!tools || Object.keys(tools).sort().join(",") !== "cmake,ninja" ||
+  if (!tools || !hasExactBuildFields(tools, ["cmake", "ninja"]) ||
       ![archive, output, tools.cmake, tools.ninja, selected.clangCl, selected.lldLink, selected.llvmNm, tarTool,
         selected.clangResourceInclude, windowsSdk.overlay, windowsSdk.sourceRoot, ...windowsSdk.includeRoots,
         ...windowsSdk.libraryRoots, ...windowsSdk.msvcLibraries, ...windowsSdk.ucrtLibraries].every(literal) ||
@@ -258,7 +245,7 @@ function llvmStaticArchiveTargets(build, source) {
   }
   const sourceRoot = fs.realpathSync(source), buildRoot = fs.realpathSync(build);
   const modelSource = path.resolve(model.paths.source), modelBuild = path.resolve(model.paths.build);
-  if (!contained(sourceRoot, modelSource) || !contained(buildRoot, modelBuild)) {throw new Error("LLVM 21 CMake codemodel escaped its source/build roots");}
+  if (!containsBuildPath(sourceRoot, modelSource) || !containsBuildPath(buildRoot, modelBuild)) {throw new Error("LLVM 21 CMake codemodel escaped its source/build roots");}
   /** @type {{name: string, project: string, sourceDirectory: string, artifact: string, id: string, sources: number}[]} */ const targets = [];
   for (const reference of targetReferences) {
     if (!reference || typeof reference.id !== "string" || typeof reference.jsonFile !== "string" ||
@@ -268,9 +255,9 @@ function llvmStaticArchiveTargets(build, source) {
       (readBuildJson(targetFile));
     const targetSource = typeof target?.paths?.source === "string" ? path.resolve(modelSource, target.paths.source) : "";
     const targetBuild = typeof target?.paths?.build === "string" ? path.resolve(modelBuild, target.paths.build) : "";
-    const project = sourceProjects.find(name => contained(path.join(sourceRoot, name), targetSource));
+    const project = sourceProjects.find(name => containsBuildPath(path.join(sourceRoot, name), targetSource));
     if (!target || !project) {continue;}
-    if (!contained(buildRoot, targetBuild)) {throw new Error("LLVM 21 target build directory escaped its output");}
+    if (!containsBuildPath(buildRoot, targetBuild)) {throw new Error("LLVM 21 target build directory escaped its output");}
     // File API lists configured tools even when they are excluded from every requested
     // aggregate. Admit only static libraries here; the output audit rejects PE tools/DLLs
     // if one actually enters the selected build closure.
@@ -280,7 +267,7 @@ function llvmStaticArchiveTargets(build, source) {
       throw new Error("Invalid LLVM 21 static target artifact");
     }
     const artifact = path.isAbsolute(target.artifacts[0].path) ? target.artifacts[0].path : path.resolve(modelBuild, target.artifacts[0].path);
-    if (!contained(buildRoot, artifact) || !artifact.endsWith(".lib")) {throw new Error("LLVM 21 target is not a static COFF archive: " + artifact);}
+    if (!containsBuildPath(buildRoot, artifact) || !artifact.endsWith(".lib")) {throw new Error("LLVM 21 target is not a static COFF archive: " + artifact);}
     targets.push({name: target.name, project, sourceDirectory: targetSource, artifact, id: reference.id,
       sources: Array.isArray(target.sources) ? target.sources.length : 0});
   }
@@ -291,7 +278,7 @@ function llvmStaticArchiveTargets(build, source) {
   }
   for (const backend of ["AMDGPU", "NVPTX", "X86"]) {
     const backendRoot = path.join(sourceRoot, "llvm", "lib", "Target", backend);
-    if (!targets.some(row => row.project === "llvm" && contained(backendRoot, row.sourceDirectory))) {
+    if (!targets.some(row => row.project === "llvm" && containsBuildPath(backendRoot, row.sourceDirectory))) {
       throw new Error("LLVM 21 static target inventory omitted the " + backend + " backend");
     }
   }
@@ -301,91 +288,34 @@ function llvmStaticArchiveTargets(build, source) {
 /** Verify only the selected upstream aggregates exist; each is one explicit <=60-minute phase.
  * @param {string} build */
 function verifyBuildPhases(build) {
-  const file = path.join(build, "build.ninja"), stat = fs.statSync(file);
-  if (!stat.isFile() || stat.size > (64 << 20)) {throw new Error("Invalid LLVM 21 Ninja target graph");}
-  const text = fs.readFileSync(file, "utf8"), targets = new Set(text.split(/\r?\n/).map(line => line.match(/^build ([^ :]+):/)?.[1]).filter(Boolean));
+  const file = path.join(build, "build.ninja"), bytes = readBuildBytes(file, 64 << 20);
+  const targets = new Set(bytes.toString("utf8").split(/\r?\n/).map(line => line.match(/^build ([^ :]+):/)?.[1]).filter(Boolean));
   for (const phase of buildPhases) {if (!targets.has(phase.target)) {throw new Error("CMake omitted LLVM 21 phase target: " + phase.target);}}
-  return {buildNinjaSha256: fileHash(file), phases: buildPhases.map(phase => ({...phase}))};
-}
-
-/** Parse CMake's POSIX-quoted command string without invoking a shell. @param {string} command */
-function commandArguments(command) {
-  if (command.length > (1 << 20) || /[\r\n\0]/.test(command)) {throw new Error("Invalid LLVM 21 compile command length");}
-  const args = []; let value = "", quote = "", escaped = false, active = false;
-  for (const char of command) {
-    if (escaped) {value += char; escaped = false; active = true; continue;}
-    if (char === "\\" && quote !== "'") {escaped = true; active = true; continue;}
-    if (quote) {if (char === quote) {quote = "";} else {value += char;} active = true; continue;}
-    if (char === "'" || char === '"') {quote = char; active = true; continue;}
-    if (/[;&|<>]/.test(char)) {throw new Error("LLVM 21 compile command contains a shell operator");}
-    if (/\s/.test(char)) {if (active) {args.push(value); value = ""; active = false;} continue;}
-    if (char === "$" || char === "`") {throw new Error("LLVM 21 compile command contains shell expansion");}
-    value += char; active = true;
-  }
-  if (escaped || quote) {throw new Error("LLVM 21 compile command has incomplete quoting");}
-  if (active) {args.push(value);}
-  if (!args.length || args.length > 100000) {throw new Error("LLVM 21 compile command is empty or excessive");}
-  return args;
+  return {buildNinjaSha256: createHash("sha256").update(bytes).digest("hex"), phases: buildPhases.map(phase => ({...phase}))};
 }
 
 /** Require the compiler-generated host option on only the AMDGPU library helper TU.
  * @param {string} build @param {string} source */
-function verifyAmdgpulibCallsCompileFlag(build, source) {
-  return verifyAmdgpulibCallsCompileFlagInternal(build, source, true);
-}
-
-/** @param {string} build @param {string} source @param {boolean} required
- * @returns {{path: string, flag: string, compileCommands: number} | undefined} */
-function verifyAmdgpulibCallsCompileFlagInternal(build, source, required) {
+function verifyWindowsLlvmCompileCommands(build, source) {
   const file = path.join(build, "compile_commands.json"); verifyWindowsBuildPath(build, file, "file");
-  const stat = fs.statSync(file);
-  if (!stat.isFile() || stat.size < 2 || stat.size > (256 << 20)) {throw new Error("Invalid or excessive LLVM 21 compile_commands.json");}
-  const rows = readBuildJson(file);
-  if (!Array.isArray(rows) || !rows.length || rows.length > 200000) {throw new Error("LLVM compile command inventory is empty or excessive");}
+  const {value: rows, sha256} = readBuildJsonSnapshot(file, maximumCompileCommandsBytes);
   const buildRoot = fs.realpathSync(build), sourceRoot = fs.realpathSync(source),
-    target = fs.realpathSync(path.join(sourceRoot, "llvm", "lib", "Target", "AMDGPU", "AMDGPULibCalls.cpp"));
-  if (!contained(sourceRoot, target)) {throw new Error("AMDGPULibCalls.cpp escaped the frozen LLVM source tree");}
-  let targetRows = 0, flaggedRows = 0;
-  for (const row of rows) {
-    if (!row || typeof row.directory !== "string" || !path.isAbsolute(row.directory) || typeof row.file !== "string" || !row.file) {
-      throw new Error("LLVM compile command row omitted its directory or source");
-    }
-    const directory = fs.realpathSync(row.directory);
-    if (!contained(buildRoot, directory)) {throw new Error("LLVM compile command directory escaped its build tree");}
-    const sourceFile = path.resolve(directory, row.file);
-    if (!contained(sourceRoot, sourceFile) && !contained(buildRoot, sourceFile)) {
+    target = fs.realpathSync(path.join(sourceRoot, amdgpulibCallsSource));
+  if (!containsBuildPath(sourceRoot, target)) {throw new Error("AMDGPULibCalls.cpp escaped the frozen LLVM source tree");}
+  const hostSourceFlag = verifyLlvmHostCompileFlag(rows, target, (directoryPath, filePath) => {
+    const directory = fs.realpathSync(directoryPath);
+    if (!containsBuildPath(buildRoot, directory)) {throw new Error("LLVM compile command directory escaped its build tree");}
+    const sourceFile = path.resolve(directory, filePath);
+    if (!containsBuildPath(sourceRoot, sourceFile) && !containsBuildPath(buildRoot, sourceFile)) {
       throw new Error("LLVM compile command references a source outside its frozen trees");
     }
     const actualSource = fs.realpathSync(sourceFile);
-    if (!contained(sourceRoot, actualSource) && !contained(buildRoot, actualSource)) {
+    if (!containsBuildPath(sourceRoot, actualSource) && !containsBuildPath(buildRoot, actualSource)) {
       throw new Error("LLVM compile command source escaped its frozen trees");
     }
-    /** @type {number[]} */ const counts = [];
-    if (row.arguments !== undefined) {
-      if (!Array.isArray(row.arguments) || !row.arguments.every((/** @type {unknown} */ value) => typeof value === "string")) {
-        throw new Error("LLVM compile command arguments are malformed");
-      }
-      counts.push(row.arguments.filter((/** @type {string} */ value) => value === "-fno-builtin").length);
-    }
-    if (row.command !== undefined) {
-      if (typeof row.command !== "string") {throw new Error("LLVM compile command text is malformed");}
-      counts.push(commandArguments(row.command).filter(value => value === "-fno-builtin").length);
-    }
-    if (!counts.length || counts.some(value => value !== counts[0])) {throw new Error("LLVM compile command option representations disagree");}
-    const count = counts[0] || 0;
-    if (actualSource === target) {
-      targetRows++;
-      if (count !== Number(required)) {throw new Error("AMDGPULibCalls.cpp has an unexpected host-only -fno-builtin state");}
-    }
-    if (count) {
-      flaggedRows++;
-      if (actualSource !== target || count !== 1) {throw new Error("-fno-builtin escaped the AMDGPULibCalls.cpp source row");}
-    }
-  }
-  if (targetRows !== 1 || flaggedRows !== Number(required)) {
-    throw new Error("LLVM compile database must contain exactly one AMDGPULibCalls.cpp host-option row");
-  }
-  return required ? {path: target, flag: "-fno-builtin", compileCommands: rows.length} : undefined;
+    return actualSource;
+  });
+  return {hostSourceFlag, compileCommands: {path: file, sha256, count: hostSourceFlag.compileCommands}};
 }
 
 /** Read the COFF machine field, including the standard bigobj header variant. @param {string} file */
@@ -402,7 +332,7 @@ function coffObjectMachine(file) {
 /** @param {string} build @param {string} directory @param {string} value */
 function buildPath(build, directory, value) {
   const file = path.resolve(directory, value), root = fs.realpathSync(build);
-  if (!contained(root, file)) {throw new Error("LLVM 21 compile command output escaped its build tree");}
+  if (!containsBuildPath(root, file)) {throw new Error("LLVM 21 compile command output escaped its build tree");}
   return file;
 }
 
@@ -421,9 +351,7 @@ function commandOutput(args) {
  * @param {string} compileCommands @param {string} compiler @param {string} build @param {string} source
  * @param {string[]} [objectClosure] */
 function auditCompileCommands(compileCommands, compiler, build, source, objectClosure = []) {
-  const stat = fs.statSync(compileCommands);
-  if (!stat.isFile() || stat.size < 2 || stat.size > (256 << 20)) {throw new Error("Invalid or excessive LLVM 21 compile_commands.json");}
-  const bytes = fs.readFileSync(compileCommands), entries = JSON.parse(bytes.toString("utf8"));
+  const {value: entries, sha256} = readBuildJsonSnapshot(compileCommands, maximumCompileCommandsBytes);
   if (!Array.isArray(entries) || !entries.length || entries.length > 100000) {throw new Error("LLVM 21 compile command inventory is empty or excessive");}
   const buildRoot = fs.realpathSync(build), sourceRoot = fs.realpathSync(source);
   /** @type {Record<string, {source: string, output: string, compiler: string, compilerIdentity: string, language: string,
@@ -432,12 +360,12 @@ function auditCompileCommands(compileCommands, compiler, build, source, objectCl
     if (!entry || typeof entry.directory !== "string" || typeof entry.file !== "string" || typeof entry.output !== "string" ||
         typeof entry.command !== "string" || !path.isAbsolute(entry.directory)) {throw new Error("LLVM 21 compile command omitted its directory, source or output");}
     const directory = fs.realpathSync(entry.directory);
-    if (!contained(buildRoot, directory)) {throw new Error("LLVM 21 compile command directory escaped its build tree");}
+    if (!containsBuildPath(buildRoot, directory)) {throw new Error("LLVM 21 compile command directory escaped its build tree");}
     const output = buildPath(build, directory, entry.output);
     const sourceFile = path.resolve(directory, entry.file);
-    if (!contained(sourceRoot, sourceFile) && !contained(buildRoot, sourceFile)) {throw new Error("LLVM 21 compile command references a source outside its frozen trees");}
+    if (!containsBuildPath(sourceRoot, sourceFile) && !containsBuildPath(buildRoot, sourceFile)) {throw new Error("LLVM 21 compile command references a source outside its frozen trees");}
     const actualSource = fs.realpathSync(sourceFile);
-    if (!contained(sourceRoot, actualSource) && !contained(buildRoot, actualSource)) {throw new Error("LLVM 21 compile command source escaped its frozen trees");}
+    if (!containsBuildPath(sourceRoot, actualSource) && !containsBuildPath(buildRoot, actualSource)) {throw new Error("LLVM 21 compile command source escaped its frozen trees");}
     if (!output.endsWith(".obj")) {throw new Error("LLVM 21 compile command output is not a COFF object");}
     const args = commandArguments(entry.command), extension = path.extname(sourceFile).toLowerCase();
     const language = extension === ".asm" ? "ASM_MASM" : [".c", ".m"].includes(extension) ? "C" :
@@ -480,12 +408,12 @@ function auditCompileCommands(compileCommands, compiler, build, source, objectCl
     if (!command) {missing.push(output); continue;}
     const object = fs.lstatSync(output, {throwIfNoEntry: false});
     if (!object?.isFile() || object.isSymbolicLink() || object.size < 20 ||
-        !contained(buildRoot, fs.realpathSync(output)) || (command.language !== "ASM_MASM" && coffObjectMachine(output) !== 0x8664)) {
+        !containsBuildPath(buildRoot, fs.realpathSync(output)) || (command.language !== "ASM_MASM" && coffObjectMachine(output) !== 0x8664)) {
       throw new Error("LLVM 21 x64 COFF object is missing or invalid: " + output);
     }
     if (command.language !== "ASM_MASM") {objects.push({...command, sha256: fileHash(output), bytes: object.size});}
   }
-  return {sha256: fileHash(compileCommands), count: entries.length, commands, objects, missing};
+  return {sha256, count: entries.length, commands, objects, missing};
 }
 
 /** Read the exact direct COFF object inputs of a selected static Ninja target. @param {string} ninja @param {string} build @param {string} artifact */
@@ -505,7 +433,7 @@ function queryNinjaArchiveObjects(ninja, build, artifact) {
     if (value.startsWith("||")) {continue;}
     if (!value.endsWith(".obj")) {throw new Error("LLVM 21 static target has a non-object Ninja input: " + value);}
     const file = path.resolve(build, value);
-    if (!contained(fs.realpathSync(build), file)) {throw new Error("LLVM 21 Ninja object escaped its build root");}
+    if (!containsBuildPath(fs.realpathSync(build), file)) {throw new Error("LLVM 21 Ninja object escaped its build root");}
     members.push(file);
   }
   if (!members.length || new Set(members).size !== members.length) {throw new Error("LLVM 21 static target has no unique object closure: " + target);}
@@ -553,7 +481,7 @@ function auditNinjaAssemblyObject(ninja, build, sourceRoot, output, compiler) {
   const source = lines.slice(lines.indexOf(lines.find(line => line.startsWith("  input: ")) || "") + 1)
     .map(line => line.trim()).find(value => value.endsWith(".asm") && !value.startsWith("||")) || "";
   if (lines[0] !== target + ":" || !rule.startsWith("ASM_MASM_COMPILER") || !path.isAbsolute(source) ||
-      !contained(fs.realpathSync(sourceRoot), source)) {throw new Error("LLVM 21 object is not a frozen-source MASM edge: " + target);}
+      !containsBuildPath(fs.realpathSync(sourceRoot), source)) {throw new Error("LLVM 21 object is not a frozen-source MASM edge: " + target);}
   const result = spawnSync(ninja, ["-C", build, "-t", "commands", target], {encoding: "utf8", timeout: 30000, maxBuffer: 4 << 20});
   if (result.error || result.signal || result.status !== 0) {throw new Error("LLVM 21 MASM command query failed: " + target, {cause: result.error});}
   const commands = String(result.stdout).split(/\r?\n/).filter(line => /(?:^|\/)llvm-ml(?:\s|$)/.test(line));
@@ -584,7 +512,7 @@ function auditWindowsLlvmArchives(ninja, build, source, compiler, masm, compileC
   verifyWindowsTargetPaths(build, targets);
   const buildRoot = fs.realpathSync(build), archiveInputs = new Map();
   for (const target of targets) {
-    if (!isStaticArchive(target.artifact) || !contained(buildRoot, path.resolve(target.artifact))) {
+    if (!isStaticArchive(target.artifact) || !containsBuildPath(buildRoot, path.resolve(target.artifact))) {
       throw new Error("LLVM 21 archive target escaped its build tree: " + target.artifact);
     }
     archiveInputs.set(target.artifact, queryNinjaArchiveObjects(ninja, build, target.artifact));
@@ -607,7 +535,7 @@ function auditWindowsLlvmArchives(ninja, build, source, compiler, masm, compileC
   if (objects.size !== closure.length) {throw new Error("LLVM 21 archive object closure has duplicate or unverified commands");}
   const archives = targets.map(target => {
     const file = target.artifact, stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || !contained(buildRoot, fs.realpathSync(file))) {
+    if (!stat.isFile() || stat.isSymbolicLink() || !containsBuildPath(buildRoot, fs.realpathSync(file))) {
       throw new Error("LLVM 21 static archive is missing or escaped its build tree: " + file);
     }
     const proof = verifyCoffArchive(file), members = archiveInputs.get(file);
@@ -633,7 +561,7 @@ function verifyIntelCompilerIdentity(build) {
     const file = candidates.map(root => path.join(root, "CMake" + language + "Compiler.cmake")).find(name => fs.existsSync(name));
     if (!file) {throw new Error("LLVM 21 CMake omitted its " + language + " compiler identity");}
     verifyWindowsBuildPath(build, file, "file");
-    const text = fs.readFileSync(file, "utf8");
+    const text = readBuildText(file, 2 << 20);
     if (!pattern.test(text)) {throw new Error("LLVM 21 CMake compiler is not the selected IntelLLVM driver");}
     return file;
   };
@@ -643,7 +571,7 @@ function verifyIntelCompilerIdentity(build) {
 
 /** @param {string} build @param {ReturnType<typeof windowsLlvmSdkPlan>} plan */
 function verifyCMakeCache(build, plan) {
-  const file = path.join(build, "CMakeCache.txt"), text = fs.readFileSync(file, "utf8"), values = new Map();
+  const file = path.join(build, "CMakeCache.txt"), text = readBuildText(file, 2 << 20), values = new Map();
   for (const line of text.split(/\r?\n/)) {
     const entry = line.match(/^([^/#][^:]*):[^=]*=(.*)$/);
     if (entry) {values.set(entry[1], entry[2]);}
@@ -674,31 +602,35 @@ function writeReceipt(output, value, replace = false) {
 
 /** @param {string} file @param {string} command @param {string[]} args @param {string} cwd
  * @param {NodeJS.ProcessEnv} environment @param {number} [timeout] */
-function runLogged(file, command, args, cwd, environment, timeout = phaseTimeout) {
+function spawnLoggedPhase(file, command, args, cwd, environment, timeout = phaseTimeout) {
   const fd = fs.openSync(file, "wx");
   try {
-    const result = spawnSync(command, args, {cwd, env: environment, stdio: ["ignore", fd, fd], timeout, maxBuffer: 1 << 20});
-    if (result.error || result.signal || result.status !== 0) {
-      throw new Error("Windows LLVM 21 phase failed; inspect " + file, {cause: result.error});
-    }
+    return spawnSync(command, args, {cwd, env: environment, stdio: ["ignore", fd, fd], timeout, maxBuffer: 1 << 20});
   } finally {fs.closeSync(fd);}
+}
+
+/** @param {string} file @param {string} command @param {string[]} args @param {string} cwd
+ * @param {NodeJS.ProcessEnv} environment @param {number} [timeout] */
+function runLogged(file, command, args, cwd, environment, timeout) {
+  const result = spawnLoggedPhase(file, command, args, cwd, environment, timeout);
+  if (result.error || result.signal || result.status !== 0) {
+    throw new Error("Windows LLVM 21 phase failed; inspect " + file, {cause: result.error});
+  }
 }
 
 /** @param {string} source @returns {string[]} */
 function directoryFiles(source) {
   /** @type {string[]} */ const files = [];
-  for (const root of [source]) {
-    if (!fs.lstatSync(root).isDirectory()) {throw new Error("LLVM 21 include root is not a real directory: " + root);}
-    /** @param {string} directory */
-    const visit = directory => {
-      for (const entry of fs.readdirSync(directory, {withFileTypes: true}).sort((a, b) => a.name.localeCompare(b.name))) {
-        const file = path.join(directory, entry.name);
-        if (entry.isDirectory()) {visit(file);} else if (entry.isFile() || entry.isSymbolicLink()) {files.push(file);} else {throw new Error("Invalid LLVM 21 include input");}
-        if (files.length > 65536) {throw new Error("LLVM 21 include inventory exceeds bounds");}
-      }
-    };
-    visit(root);
-  }
+  if (!fs.lstatSync(source).isDirectory()) {throw new Error("LLVM 21 include root is not a real directory: " + source);}
+  /** @param {string} directory */
+  const visit = directory => {
+    for (const entry of fs.readdirSync(directory, {withFileTypes: true}).sort((a, b) => a.name.localeCompare(b.name))) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) {visit(file);} else if (entry.isFile() || entry.isSymbolicLink()) {files.push(file);} else {throw new Error("Invalid LLVM 21 include input");}
+      if (files.length > 65536) {throw new Error("LLVM 21 include inventory exceeds bounds");}
+    }
+  };
+  visit(source);
   return files;
 }
 
@@ -753,7 +685,7 @@ function configureWindowsLlvmSdk(descriptorFile, archive, output, tools, jobs, e
   for (const input of [repo, path.dirname(archive), descriptor.windowsSdk.sourceRoot, ...descriptor.windowsSdk.libraryRoots,
     path.dirname(descriptor.tools.clangCl), path.dirname(descriptor.tools.lldLink)]) {
     const real = fs.realpathSync(input);
-    if (overlaps(real, target)) {throw new Error("Windows LLVM 21 output overlaps a source, tool or SDK input");}
+    if (buildPathsOverlap(real, target)) {throw new Error("Windows LLVM 21 output overlaps a source, tool or SDK input");}
   }
   const cleanEnvironment = windowsToolEnvironment(environment);
   for (const key of ["CC", "CXX", "CMAKE_PREFIX_PATH", "CMAKE_TOOLCHAIN_FILE", "CMAKE_GENERATOR", "CMAKE_MAKE_PROGRAM", "PKG_CONFIG_PATH"]) {delete cleanEnvironment[key];}
@@ -799,12 +731,15 @@ function configureWindowsLlvmSdk(descriptorFile, archive, output, tools, jobs, e
   writeReceipt(resultFile, receipt);
   runLogged(path.join(output, "configure.log"), tools.cmake, plan.configure.slice(1), repo, cleanEnvironment, 1200000);
   const compilerIdentity = verifyIntelCompilerIdentity(build), targets = llvmStaticArchiveTargets(build, plan.source);
-  const targetGraph = verifyBuildPhases(build), compileCommands = path.join(build, "compile_commands.json");
+  const targetGraph = verifyBuildPhases(build);
   verifyCMakeCache(build, plan);
-  const sourceOptions = verifyWindowsSourceOptionsFile(plan), hostSourceFlag = verifyAmdgpulibCallsCompileFlag(build, plan.source);
+  const sourceOptions = verifyWindowsSourceOptionsFile(plan), {hostSourceFlag, compileCommands} = verifyWindowsLlvmCompileCommands(build, plan.source);
   const configuredFiles = windowsLlvmConfiguredFiles(plan);
+  if (configuredFiles[compileCommands.path] !== compileCommands.sha256) {
+    throw new Error("Windows LLVM compile commands changed during configuration");
+  }
   const result = {...receipt, stage: "configured", compilerIdentity, targets, phases: targetGraph.phases,
-    sourceOptions, hostSourceFlag, configuredFiles, compileCommandsSha256: fileHash(compileCommands),
+    sourceOptions, hostSourceFlag, configuredFiles, compileCommandsSha256: compileCommands.sha256,
     outputs: jitBuildOutputs(build)};
   if (!isDeepStrictEqual(sourceState, llvmSourceSnapshot(plan.source)) ||
       Object.entries(fingerprints).some(([file, hash]) => fileHash(file) !== hash) || fileHash(archive) !== archiveSha256) {
@@ -851,7 +786,7 @@ function verifySession(receipt, plan, expectedOutputs = receipt.outputs) {
     throw new Error("Windows LLVM 21 build outputs changed since the last completed phase; use a new output directory");
   }
   if (!isDeepStrictEqual(receipt.sourceOptions, verifyWindowsSourceOptionsFile(plan)) ||
-      !isDeepStrictEqual(receipt.hostSourceFlag, verifyAmdgpulibCallsCompileFlag(plan.build, plan.source))) {
+      !isDeepStrictEqual(receipt.hostSourceFlag, verifyWindowsLlvmCompileCommands(plan.build, plan.source).hostSourceFlag)) {
     throw new Error("Windows LLVM 21 source-specific host option is missing or changed");
   }
   if (!isDeepStrictEqual(llvmSourceSnapshot(plan.source), receipt.sourceState)) {throw new Error("LLVM 21 sources changed between build phases");}
@@ -896,16 +831,15 @@ function writeCurrentResult(output, receipt, plan, state) {
       state.phaseProofs.length !== buildPhases.length || !receipt.producerSnapshot) {
     throw new Error("Windows LLVM 21 cannot publish a current result before all six phases pass");
   }
-  const compileCommandsFile = path.join(plan.build, "compile_commands.json"), compileCommands = readBuildJson(compileCommandsFile);
-  const sourceOptions = verifyWindowsSourceOptionsFile(plan), hostSourceFlag = verifyAmdgpulibCallsCompileFlag(plan.build, plan.source);
-  if (!isDeepStrictEqual(sourceOptions, receipt.sourceOptions) || !isDeepStrictEqual(hostSourceFlag, receipt.hostSourceFlag)) {
+  const sourceOptions = verifyWindowsSourceOptionsFile(plan), {hostSourceFlag, compileCommands} = verifyWindowsLlvmCompileCommands(plan.build, plan.source);
+  if (compileCommands.sha256 !== receipt.compileCommandsSha256 ||
+      !isDeepStrictEqual(sourceOptions, receipt.sourceOptions) || !isDeepStrictEqual(hostSourceFlag, receipt.hostSourceFlag)) {
     throw new Error("Windows LLVM 21 current result source-option evidence changed after configuration");
   }
   const current = {version: 1, role: "windows-llvm21-current-result", generationId: receipt.runId, output,
     originalReceipt: evidenceFile(path.join(output, "result.json")), producerSnapshot: receipt.producerSnapshot,
     sourceState: receipt.sourceState, inputs: receipt.fingerprints, configuredFiles: receipt.configuredFiles,
-    sourceOptions, hostSourceFlag,
-    compileCommands: {path: compileCommandsFile, sha256: fileHash(compileCommandsFile), count: compileCommands.length},
+    sourceOptions, hostSourceFlag, compileCommands,
     phaseProofs: state.phaseProofs, buildOnly: true, compiled: true, executed: false, publicationQualified: false};
   writeReceipt(path.join(output, "result-current.json"), current);
   return current;
@@ -916,8 +850,7 @@ function writeCurrentResult(output, receipt, plan, state) {
 function runBuildPhase(output, receipt, plan, phase, environment) {
   const args = ["--build", plan.build, "--target", phase.target, "--parallel", String(plan.jobs), "--", "-k", "0"];
   const logFile = path.join(output, "build-" + phase.name + "-" + receipt.runId + ".log");
-  const fd = fs.openSync(logFile, "wx"); let result;
-  try {result = spawnSync(plan.tools.cmake, args, {cwd: repo, env: environment, stdio: ["ignore", fd, fd], timeout: phaseTimeout, maxBuffer: 1 << 20});} finally {fs.closeSync(fd);}
+  const result = spawnLoggedPhase(logFile, plan.tools.cmake, args, repo, environment);
   const record = {phase, command: plan.tools.cmake, args, status: result.status, signal: result.signal || null,
     ...(result.error ? {error: String(result.error.message)} : {}), pass: !result.error && !result.signal && result.status === 0,
     log: evidenceFile(logFile), buildOnly: true, executed: false, publicationQualified: false};
@@ -1063,8 +996,7 @@ function verifyCurrentPhaseProofs(phaseProofs, plan, phaseCount = buildPhases.le
  */
 function verifyWindowsLlvmCurrentResult(output, receipt, plan) {
   verifyWindowsCacheRoots(plan);
-  const configuredFiles = windowsLlvmConfiguredFiles(plan), compileCommandsFile = path.join(plan.build, "compile_commands.json");
-  verifyWindowsBuildPath(plan.build, compileCommandsFile, "file");
+  const configuredFiles = windowsLlvmConfiguredFiles(plan), {hostSourceFlag, compileCommands} = verifyWindowsLlvmCompileCommands(plan.build, plan.source);
   const resultFile = path.join(output, "result-current.json"), current = /** @type {CurrentLlvmResult} */ (readBuildJson(resultFile));
   if (current.version !== 1 || current.role !== "windows-llvm21-current-result" || current.output !== output ||
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(current.generationId) || current.buildOnly !== true || current.compiled !== true ||
@@ -1075,9 +1007,8 @@ function verifyWindowsLlvmCurrentResult(output, receipt, plan) {
       !isDeepStrictEqual(current.sourceOptions, receipt.sourceOptions) ||
       !isDeepStrictEqual(current.hostSourceFlag, receipt.hostSourceFlag) ||
       !isDeepStrictEqual(current.sourceOptions, verifyWindowsSourceOptionsFile(plan)) ||
-      !isDeepStrictEqual(current.hostSourceFlag, verifyAmdgpulibCallsCompileFlag(plan.build, plan.source)) ||
-      !isDeepStrictEqual(current.compileCommands, {path: path.join(plan.build, "compile_commands.json"),
-        sha256: fileHash(path.join(plan.build, "compile_commands.json")), count: readBuildJson(path.join(plan.build, "compile_commands.json")).length}) ||
+      compileCommands.sha256 !== receipt.compileCommandsSha256 ||
+      !isDeepStrictEqual(current.hostSourceFlag, hostSourceFlag) || !isDeepStrictEqual(current.compileCommands, compileCommands) ||
       !isDeepStrictEqual(current.configuredFiles, configuredFiles)) {
     throw new Error("Windows LLVM 21 current result does not match its original configured receipt or build graph");
   }
@@ -1206,7 +1137,7 @@ module.exports = {archiveSha256, buildPhases, windowsLlvmSdkPlan, llvmSourceSnap
   llvmStaticArchiveTargets, verifyBuildPhases, auditCompileCommands, verifyIntelCompilerIdentity, verifyCMakeCache,
   configureWindowsLlvmSdk, buildWindowsLlvmSdk, auditWindowsLlvmAdmission,
   windowsLlvmSdkInputFiles, windowsLlvmConfiguredInputFiles, windowsLlvmConfiguredFiles,
-  verifyAmdgpulibCallsCompileFlag, verifyWindowsLlvmAdmission};
+  verifyWindowsLlvmCompileCommands, verifyWindowsLlvmAdmission};
 
 if (require.main === module) {
   try {

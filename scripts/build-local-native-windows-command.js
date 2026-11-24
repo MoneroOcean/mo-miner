@@ -5,20 +5,13 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"),
   {createHash, randomUUID} = require("node:crypto");
 const {prepareWindowsWslRelease, wslText} = require("./build-local-native-wsl");
+const {requireBuildFields, hasBuildDirectoryEntries} = require("./build-source-inputs");
 const repo = path.resolve(__dirname, ".."), nodeVersion = "v24.15.0", relayEnvironment = "ONEAPI_ROOT/w:MOM_NATIVE_PERL_ROOT/w",
   uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 /** @typedef {(command:string,args:string[],options:import("node:child_process").SpawnSyncOptions)=>{status:number|null,error?:Error,signal?:NodeJS.Signals|null,stdout?:Buffer|string}} LocalSpawn */
 
 /** @param {unknown} value @returns {value is Record<string, any>} */
 function record(value) {return Boolean(value && typeof value === "object" && !Array.isArray(value));}
-
-/** @param {unknown} value @param {string[]} keys @param {string} label */
-function exactObject(value, keys, label) {
-  if (!record(value) || Object.keys(value).sort().join(",") !== [...keys].sort().join(",")) {
-    throw new Error(label + " has unknown or missing fields");
-  }
-  return /** @type {Record<string, any>} */ (value);
-}
 
 /** @param {string} value */
 function validWindowsPath(value) {
@@ -128,7 +121,7 @@ function windowsToolPreflight(environment, spawn = spawnSync) {
       spawn, {...environment, MOM_NATIVE_WINDOWS_TOOLS_SCRIPT: toolsScript}, "Native Windows tool preflight"), output = wslText(result.stdout).trim();
   let payload;
   try {payload = JSON.parse(output);} catch (error) {throw new Error("Native Windows tool preflight returned invalid JSON", {cause: error});}
-  exactObject(payload, ["appData", "nativePerlRoot", "oneApiRoot", "tools"], "Native Windows tool preflight");
+  requireBuildFields(payload, ["appData", "nativePerlRoot", "oneApiRoot", "tools"], "Native Windows tool preflight");
   if (!validWindowsPath(payload.appData) || !validWindowsPath(payload.oneApiRoot) || !validWindowsPath(payload.nativePerlRoot)) {
     throw new Error("PowerShell did not return canonical LocalApplicationData and selected native tool roots");
   }
@@ -162,8 +155,8 @@ function createBridgeRun(bridge, id) {
 function removeSuccessfulBridgeRun(run) {
   const current = fs.lstatSync(run.root, {throwIfNoEntry: false});
   if (!current?.isDirectory() || current.isSymbolicLink() || current.dev !== run.dev || current.ino !== run.ino) {return false;}
-  const names = fs.readdirSync(run.root).sort();
-  if (names.join(",") !== "hermes-sources.tar,support-input.json,support-output.json") {return false;}
+  const names = ["hermes-sources.tar", "support-input.json", "support-output.json"];
+  if (!hasBuildDirectoryEntries(run.root, names)) {return false;}
   for (const name of names) {
     const file = path.win32.join(run.root, name), stat = fs.lstatSync(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {return false;}
@@ -313,10 +306,10 @@ function runWindowsSupportBridge(input, dependencies = {}) {
 /** Validate only the original Windows bridge result, then map its file roots without rewriting receipts.
  * @param {unknown} value @param {any} input @param {any} [dependencies] */
 function admitWindowsBridgeResult(value, input, dependencies = {}) {
-  const result = exactObject(value, ["controllerSupport", "coreArchive", "coreReceipt", "exportRetirementCandidates", "supportRetirementCandidates"], "Windows support/Core bridge result"),
-    controller = exactObject(result["controllerSupport"], ["hermes", "io", "localBuildId"], "Windows controller-support references"),
-    id = controller["localBuildId"], archive = result["coreArchive"], receipt = exactObject(result["coreReceipt"], ["path", "sha256"], "Windows Core receipt reference");
-  const retired = exactObject(result["supportRetirementCandidates"], ["core", "hermes", "io", "openssl"], "Windows support retirement candidates");
+  const result = requireBuildFields(value, ["controllerSupport", "coreArchive", "coreReceipt", "exportRetirementCandidates", "supportRetirementCandidates"], "Windows support/Core bridge result"),
+    controller = requireBuildFields(result["controllerSupport"], ["hermes", "io", "localBuildId"], "Windows controller-support references"),
+    id = controller["localBuildId"], archive = result["coreArchive"], receipt = requireBuildFields(result["coreReceipt"], ["path", "sha256"], "Windows Core receipt reference");
+  const retired = requireBuildFields(result["supportRetirementCandidates"], ["core", "hermes", "io", "openssl"], "Windows support retirement candidates");
   if (!uuid.test(id || "") || !validWindowsPath(archive) || !validWindowsPath(receipt["path"]) ||
       !/^[a-f0-9]{64}$/.test(receipt["sha256"] || "") || !windowsContained(input.supportWorkspace, archive) ||
       path.win32.dirname(archive).toLowerCase() !== path.win32.dirname(receipt["path"]).toLowerCase() ||
@@ -326,8 +319,8 @@ function admitWindowsBridgeResult(value, input, dependencies = {}) {
   }
   /** @param {unknown} value @param {"io"|"hermes"} kind */
   const reference = (value, kind) => {
-    const row = exactObject(value, ["admitted", "handoffSha256", "root"], "Windows " + kind + " handoff reference"),
-      admitted = exactObject(row["admitted"], ["kind", "localBuildId"], "Windows " + kind + " handoff identity");
+    const row = requireBuildFields(value, ["admitted", "handoffSha256", "root"], "Windows " + kind + " handoff reference"),
+      admitted = requireBuildFields(row["admitted"], ["kind", "localBuildId"], "Windows " + kind + " handoff identity");
     if (admitted["kind"] !== kind || admitted["localBuildId"] !== id || !/^[a-f0-9]{64}$/.test(row["handoffSha256"] || "") ||
         !validWindowsPath(row["root"]) || !windowsContained(input.exportWorkspace, row["root"])) {
       throw new Error("Windows " + kind + " handoff does not retain the original export identity");
@@ -375,7 +368,7 @@ async function runLocalWindowsWslRelease(input, dependencies = {}) {
   if (!validWindowsPath(workerEnvironment["ONEAPI_ROOT"]) || !validWindowsPath(workerEnvironment["MOM_NATIVE_PERL_ROOT"])) {
     throw new Error("The WSL Windows release worker requires the selected native oneAPI and Perl roots");
   }
-  const args = exactObject(input, ["bridgeRunWindows", "checkout", "checkoutWindows", "exportWorkspace", "powershellWindows", "supportWorkspace"], "WSL Windows release worker input");
+  const args = requireBuildFields(input, ["bridgeRunWindows", "checkout", "checkoutWindows", "exportWorkspace", "powershellWindows", "supportWorkspace"], "WSL Windows release worker input");
   if (args["checkout"] !== fs.realpathSync(repo) || !validWindowsPath(args["checkoutWindows"]) ||
       !validWindowsPath(args["powershellWindows"]) || !validWindowsPath(args["supportWorkspace"]) || !validWindowsPath(args["exportWorkspace"]) ||
       !validWindowsPath(args["bridgeRunWindows"])) {
@@ -535,7 +528,7 @@ function launchWslBootstrap(input, dependencies = {}) {
     version = (dependencies.releaseVersion || require("./build-release").releaseVersion)(environment);
   if ((dependencies.observedNodeVersion || process.version) !== nodeVersion) {throw new Error("WSL requires pinned build Node.js " + nodeVersion);}
   verifyNodeVersionPin();
-  const values = exactObject(input, ["bridgeRunWindows", "checkout", "checkoutWindows", "exportWorkspace", "powershellWindows", "supportWorkspace"], "WSL Windows bootstrap input");
+  const values = requireBuildFields(input, ["bridgeRunWindows", "checkout", "checkoutWindows", "exportWorkspace", "powershellWindows", "supportWorkspace"], "WSL Windows bootstrap input");
   if (values["checkout"] !== fs.realpathSync(repo)) {throw new Error("WSL checkout does not match the Windows-preflighted mapped repository");}
   const jobs = String(local.localBuildJobs(environment)),
     env = {...environment, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: jobs, OMP_NUM_THREADS: jobs, MOM_RELEASE_VERSION: version};

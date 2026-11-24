@@ -3,6 +3,58 @@
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
 
+const includeOptions = ["-idirafter", "-isystem", "-iquote", "-imsvc", "-I"];
+
+/** Extract explicit include directories and CUDA's implied include directory from compiler argv.
+ * @param {string[]} args */
+function compilerIncludePaths(args) {
+  const paths = [];
+  for (let index = 0; index < args.length; ++index) {
+    const arg = args[index] || "";
+    if (arg.startsWith("--cuda-path=")) {
+      paths.push(path.join(arg.slice("--cuda-path=".length), "include"));
+      continue;
+    }
+    const option = includeOptions.find(flag => arg.startsWith(flag));
+    if (option) {
+      const selected = arg === option ? args[++index] : arg.slice(option.length);
+      if (selected) {paths.push(selected);}
+    }
+  }
+  return paths;
+}
+
+/** Check lexical containment, including the root itself. Callers resolve symlinks when needed.
+ * @param {string} root @param {string} file */
+function containsBuildPath(root, file) {
+  const relative = path.relative(root, file);
+  return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
+}
+
+/** @param {string} left @param {string} right */
+function buildPathsOverlap(left, right) {
+  return containsBuildPath(left, right) || containsBuildPath(right, left);
+}
+
+/** Optional include flags may point to missing paths; other filesystem errors block caching.
+ * @param {string} directory */
+function isBuildIncludeDirectory(directory) {
+  try {return fs.statSync(directory).isDirectory();} catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || !["ENOENT", "ENOTDIR"].includes(String(error.code))) {throw error;}
+    return false;
+  }
+}
+
+/** Keep the default and the 1..16 bound aligned across native SDK producer entry points.
+ * @param {NodeJS.ProcessEnv} [environment] */
+function nativeBuildJobs(environment = process.env) {
+  const value = environment["MOM_BUILD_JOBS"] || "2";
+  if (!/^(?:[1-9]|1[0-6])$/.test(value)) {
+    throw new Error("Native builds need MOM_BUILD_JOBS as an integer in 1..16");
+  }
+  return Number(value);
+}
+
 /** SDK archives can be gigabytes. Hash regular files with bounded storage and reject a
  * changing input rather than publishing a digest of an inconsistent build dependency.
  * @param {string} file */
@@ -87,7 +139,7 @@ function nativeSourceInputs(root, kind) {
       // imported by helpers; changing either must invalidate a previously audited object.
       "scripts/native-elf.js", "scripts/native-jit-cache-tag.js", "scripts/native-jit-link.js", "scripts/build-native-windows-hiprtc-sdk.js",
       "scripts/native-dpcpp-pins.js", "scripts/native-comgr-inputs.js", "scripts/native-resources.js", "scripts/native-jit-headers.js",
-      "scripts/native-cuda-images.js", "scripts/native-cuda-images.cpp",
+      "scripts/native-cuda-images.js", "scripts/native-cuda-images.cpp", "scripts/native-linux-sysroot.js",
       "scripts/check-portable-opencl.js", "scripts/cxx-combined.sh", "scripts/combined-build.sh", "runtime/driver-library.cpp",
       "runtime/compiler-gate.cpp", "runtime/system-driver.h", "runtime/static-constructors.ld"];
   // Kernels also include shared native headers (constants, job bounds, JIT headers and CPU
@@ -102,27 +154,137 @@ function verifySourceInputs(expected, actual, label) {
   if (!isDeepStrictEqual(expected, actual)) {throw new Error(label + " source inputs are stale or missing; rebuild this component");}
 }
 
-/** Metadata is local build output, not an excuse to read an unbounded file. Freeze one fd and
- * reject growth/truncation; FIFO and directory paths cannot block a native-build preflight.
- * @param {string} file @param {number} [maximum] */
-function readBuildText(file, maximum = 8 << 20) {
+/** @param {import("node:fs").Stats} a @param {import("node:fs").Stats} b */
+function sameBuildFile(a, b) {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.nlink === b.nlink &&
+    a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+}
+
+/** Freeze one fd and reject growth or truncation. The 256 MiB ceiling covers the largest
+ * compiler logs and compile databases. Non-regular files cannot block a build preflight.
+ * @param {string} file @param {number} [maximum] @param {import("node:fs").Stats} [expected] */
+function readBuildBytes(file, maximum = 8 << 20, expected) {
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
   try {
     const stat = fs.fstatSync(fd);
-    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > (8 << 20) || !stat.isFile() || stat.size < 1 || stat.size > maximum) {throw new Error("Invalid or excessive build receipt: " + file);}
+    if (expected && !sameBuildFile(stat, expected)) {throw new Error("Build receipt changed before admission: " + file);}
+    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > (256 << 20) || !stat.isFile() || stat.size < 1 || stat.size > maximum) {
+      throw new Error("Invalid or excessive build receipt: " + file);
+    }
     const data = Buffer.alloc(stat.size + 1);
     let size = 0;
     for (let n; size < data.length && (n = fs.readSync(fd, data, size, data.length - size, null));) {size += n;}
     const after = fs.fstatSync(fd);
-    if (size !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) {
+    if (size !== stat.size || !sameBuildFile(stat, after)) {
       throw new Error("Build receipt changed during admission: " + file);
     }
-    return data.subarray(0, size).toString("utf8");
+    return data.subarray(0, size);
   } finally {fs.closeSync(fd);}
 }
 
-/** @param {string} file */
-function readBuildJson(file) {return JSON.parse(readBuildText(file));}
+/** @param {string} file @param {number} [maximum] */
+function readBuildText(file, maximum = 8 << 20) {return readBuildBytes(file, maximum).toString("utf8");}
+
+/** @param {string} file @param {number} [maximum] */
+function readBuildJson(file, maximum) {return JSON.parse(readBuildText(file, maximum));}
+
+/** Retain the digest of the bytes actually parsed so callers can compare it with a receipt pin.
+ * @param {string} file @param {number} [maximum] @param {{sha256:string, message:string}} [pin] */
+function readBuildJsonSnapshot(file, maximum, pin) {
+  const bytes = readBuildBytes(file, maximum), sha256 = createHash("sha256").update(bytes).digest("hex");
+  if (pin && sha256 !== pin.sha256) {throw new Error(pin.message);}
+  return {value: JSON.parse(bytes.toString("utf8")), sha256};
+}
+
+/** @param {unknown} value @param {readonly string[]} keys @param {string} label */
+function requireBuildFields(value, keys, label) {
+  if (!hasExactBuildFields(value, keys)) {
+    throw new Error(label + " has unknown or missing fields");
+  }
+  return /** @type {Record<string, any>} */ (value);
+}
+
+/** Compare field names directly because JSON keys may contain delimiter characters.
+ * @param {unknown} value @param {readonly string[]} keys @returns {boolean} */
+function hasExactBuildFields(value, keys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {return false;}
+  const actual = Object.keys(value).sort();
+  return actual.length === keys.length && [...keys].sort().every((key, index) => key === actual[index]);
+}
+
+/** Admit an exact local file path before opening producer state or tools.
+ * @param {string} file @param {string} label @param {number} [maximum] */
+function canonicalBuildFile(file, label, maximum = 8 << 20) {
+  if (typeof file !== "string") {throw new Error(label + " path is invalid");}
+  const stat = fs.lstatSync(file, {throwIfNoEntry: false});
+  if (!stat?.isFile() || stat.nlink !== 1 || stat.size < 1 || stat.size > maximum || fs.realpathSync(file) !== file) {
+    throw new Error(label + " is not a bounded canonical regular file: " + file);
+  }
+  return stat;
+}
+
+/** Bind the parsed value and its digest to a single opened file.
+ * @param {string} file @param {number} maximum @param {string} label */
+function readCanonicalBuildJson(file, maximum, label) {
+  const identity = canonicalBuildFile(file, label, maximum), bytes = readBuildBytes(file, maximum, identity);
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  if (!sameBuildFile(identity, canonicalBuildFile(file, label, maximum)) || fileHash(file) !== sha256) {
+    throw new Error(label + " changed during admission");
+  }
+  let value;
+  try {value = JSON.parse(bytes.toString("utf8"));} catch (error) {throw new Error(label + " is invalid JSON", {cause: error});}
+  return {value, sha256, identity};
+}
+
+/** @param {string} directory @param {string} label @param {boolean} [allowMissing] */
+function canonicalBuildDirectory(directory, label, allowMissing = false) {
+  const stat = fs.lstatSync(directory, {throwIfNoEntry: false});
+  if (!stat && allowMissing) {return false;}
+  if (!stat?.isDirectory() || fs.realpathSync(directory) !== directory) {
+    throw new Error(label + " is not a canonical directory: " + directory);
+  }
+  return true;
+}
+
+/** Stop at the first unrecognized entry so an unexpected tree cannot exhaust memory.
+ * @param {string} directory @param {readonly string[]} expected */
+function hasBuildDirectoryEntries(directory, expected) {
+  const remaining = new Set(expected);
+  if (remaining.size !== expected.length) {return false;}
+  const handle = fs.opendirSync(directory);
+  try {
+    for (let entry; (entry = handle.readSync()) !== null;) {
+      if (!remaining.delete(entry.name)) {return false;}
+    }
+  } finally {handle.closeSync();}
+  return remaining.size === 0;
+}
+
+/** @param {string} directory @param {readonly string[]} expected @param {string} label */
+function verifyBuildDirectoryEntries(directory, expected, label) {
+  if (!hasBuildDirectoryEntries(directory, expected)) {
+    throw new Error(label + " is incomplete or contains unknown entries; preserve it for inspection");
+  }
+}
+
+/** Re-admit a completed build using the digest of the same exact bytes that were compared.
+ * @param {string} file @param {Buffer} expected @param {string} label */
+function verifyStableBuildBytes(file, expected, label) {
+  const before = canonicalBuildFile(file, label);
+  const stale = label + " is stale or changed; preserve it for inspection";
+  if (before.size !== expected.length) {throw new Error(stale);}
+  const bytes = readBuildBytes(file, before.size, before);
+  const after = canonicalBuildFile(file, label);
+  if (!sameBuildFile(before, after) || !bytes.equals(expected)) {
+    throw new Error(stale);
+  }
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** @param {string} file @param {unknown} expected @param {string} label */
+function verifyStableBuildJson(file, expected, label) {
+  return verifyStableBuildBytes(file, Buffer.from(JSON.stringify(expected, null, 2) + "\n"), label);
+}
 
 /** One literal parser for compiler -MD and Gyp's deps_* := form. Never evaluate Make text;
  * escaped spaces stay in filenames, SYCL host/device rules are unioned, -MP rules add no deps.
@@ -181,5 +343,7 @@ function completeBuildInputs(depfiles, repo, output, startedAt, initial) {
   return current;
 }
 
-module.exports = {fileHash, sortedBuildEntries, walk, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildJson, readBuildText,
+module.exports = {compilerIncludePaths, containsBuildPath, buildPathsOverlap, isBuildIncludeDirectory, nativeBuildJobs, fileHash, sortedBuildEntries, walk, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildBytes, readBuildJson, readBuildText,
+  hasExactBuildFields, requireBuildFields, canonicalBuildFile, readBuildJsonSnapshot, readCanonicalBuildJson, canonicalBuildDirectory, hasBuildDirectoryEntries,
+  verifyBuildDirectoryEntries, verifyStableBuildBytes, verifyStableBuildJson,
   buildDependencies, buildFileInputs, completeBuildInputs};

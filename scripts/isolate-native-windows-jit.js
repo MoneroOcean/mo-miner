@@ -3,7 +3,7 @@
 // Consume a hash-bound completed Windows JIT SDK. This isolates archives only; it neither
 // requalifies the mutable compiler build tree nor changes the producer's original receipt.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson, readBuildText} = require("./build-source-inputs");
+const {hasExactBuildFields, buildPathsOverlap, fileHash, readBuildJson, readBuildJsonSnapshot, readBuildText} = require("./build-source-inputs");
 const {compilerArchives, dpcppEntries} = require("./native-compiler-isolation");
 const {isolateCoffCompilerArchives} = require("./native-coff-archive");
 const {jitBuildStages} = require("./native-jit-stages");
@@ -34,12 +34,6 @@ function canonicalPath(file, kind, label, maximum = Number.MAX_SAFE_INTEGER) {
   const samePath = process.platform === "win32" ? path.resolve(real).toLowerCase() === file.toLowerCase() : real === file;
   if (!valid || stat.isSymbolicLink() || stat.size > maximum || !samePath) {throw new Error(label + " is not a canonical bounded regular " + kind + ": " + file);}
   return stat;
-}
-
-/** @param {string} parent @param {string} child */
-function overlaps(parent, child) {
-  const relative = path.relative(parent, child);
-  return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));
 }
 
 /** Keep the original public SDK result contract and its recorded external-input hashes intact. @param {unknown} value @param {string} build */
@@ -80,8 +74,8 @@ function validateRecipeRecord(recipe) {
 function validateToolsManifest(value) {
   if (!record(value)) {throw new Error("LLVM tools manifest must name exactly llvmAr, llvmNm and llvmObjcopy");}
   const manifest = /** @type {ToolsManifest} */ (value), rawTools = manifest.tools;
-  if (manifest.version !== 1 || !record(rawTools) || Object.keys(manifest).sort().join(",") !== "tools,version" ||
-      Object.keys(rawTools).sort().join(",") !== "llvmAr,llvmNm,llvmObjcopy") {throw new Error("LLVM tools manifest must name exactly llvmAr, llvmNm and llvmObjcopy");}
+  if (manifest.version !== 1 || !record(rawTools) || !hasExactBuildFields(manifest, ["tools", "version"]) ||
+      !hasExactBuildFields(rawTools, ["llvmAr", "llvmNm", "llvmObjcopy"])) {throw new Error("LLVM tools manifest must name exactly llvmAr, llvmNm and llvmObjcopy");}
   const tools = /** @type {Record<string, unknown>} */ (rawTools), selected = {llvmAr: tools["llvmAr"], llvmNm: tools["llvmNm"], llvmObjcopy: tools["llvmObjcopy"]};
   for (const tool of Object.values(selected)) {
     if (typeof tool !== "string") {throw new Error("LLVM archive isolation tool path is invalid");}
@@ -155,9 +149,9 @@ function digest(value) {return createHash("sha256").update(JSON.stringify(value)
 function readPinnedProducerResult(file, expectedSha256) {
   canonicalPath(file, "file", "Windows JIT producer result", 8 << 20);
   if (!hashPattern.test(expectedSha256)) {throw new Error("Expected producer result SHA256 is invalid");}
-  const sha256 = fileHash(file);
-  if (sha256 !== expectedSha256) {throw new Error("Windows JIT producer result does not match its handoff SHA256");}
-  return {result: readBuildJson(file), sha256};
+  const {value: result, sha256} = readBuildJsonSnapshot(file, undefined,
+    {sha256: expectedSha256, message: "Windows JIT producer result does not match its handoff SHA256"});
+  return {result, sha256};
 }
 
 /** Consume one hash-bound producer output without depending on unrelated build-cache files. @param {string} sdkRoot
@@ -205,7 +199,7 @@ function inspectWindowsJitSdk(sdkRoot, expectedResultSha256, toolsFile) {
 function validateFreshOutput(selected, toolsFile, output) {
   if (!absolutePath(output) || fs.lstatSync(output, {throwIfNoEntry: false})) {throw new Error("Windows JIT archive isolation needs a fresh absolute output");}
   canonicalPath(path.dirname(output), "directory", "Windows JIT output parent");
-  for (const input of [...selected.protectedPaths, toolsFile]) {if (overlaps(input, output) || overlaps(output, input)) {throw new Error("Windows JIT isolation output overlaps a producer or tool input");}}
+  for (const input of [...selected.protectedPaths, toolsFile]) {if (buildPathsOverlap(input, output)) {throw new Error("Windows JIT isolation output overlaps a producer or tool input");}}
 }
 
 /** One handoff format for fresh CI isolation and read-only local cache admission.

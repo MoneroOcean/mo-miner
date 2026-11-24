@@ -4,7 +4,7 @@
 // consumes the resulting overlay; this script only admits and stages its explicit inputs.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {absolutePath} = require("./build-native-release");
-const {fileHash, readBuildJson, readBuildText, buildDependencies, buildFileInputs, completeBuildInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, containsBuildPath, fileHash, readBuildJson, readBuildJsonSnapshot, readBuildText, buildDependencies, buildFileInputs, completeBuildInputs} = require("./build-source-inputs");
 const {validName} = require("./native-jit-headers");
 const {jitSourceInputs} = require("./native-jit-sdk");
 const {sdkSourceFiles} = require("./prepare-native-sdk-sources");
@@ -50,12 +50,6 @@ function relativeName(value, label) {
     throw new Error("Invalid relative " + label);
   }
   return value;
-}
-
-/** @param {string} root @param {string} file @returns {boolean} */
-function within(root, file) {
-  const relative = path.relative(root, file);
-  return relative === "" || (relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative));
 }
 
 /** @param {string} value @returns {string} */
@@ -110,10 +104,10 @@ function validateProfile(value) {
 
 /** Admit only the SDK's explicitly hashed base files, never a recursively discovered SDK tree.
  * GNU headers are added later from generated-source dependencies, not borrowed from the host.
- * @param {Profile} profile @param {string} root @returns {{root: string, bytes: number, entries: Array<{source: string, virtual: string, target: string, sha256: string, bytes: number}>}} */
+ * @param {Profile} profile @param {string} root @returns {{root: string, bytes: number, entries: Array<{source: string, virtual: string, target: string, sha256: string, bytes: number}>, sha256: string}} */
 function readBaseManifest(profile, root) {
   const manifestFile = requirePath(profile.baseManifest, "base manifest");
-  const value = /** @type {BaseManifest} */ (readBuildJson(manifestFile));
+  const {value: parsed, sha256} = readBuildJsonSnapshot(manifestFile, 8 << 20), value = /** @type {BaseManifest} */ (parsed);
   if (!value || value.version !== 1 || !Array.isArray(value.files) || !value.files.length || value.files.length > MAX_FILES) {
     throw new Error("Invalid explicit base resource manifest");
   }
@@ -131,7 +125,7 @@ function readBaseManifest(profile, root) {
     }
     const logical = path.resolve(root, source);
     const target = fs.realpathSync(logical);
-    if (!within(root, target)) {throw new Error("Base resource symlink escapes its package root");}
+    if (!containsBuildPath(root, target)) {throw new Error("Base resource symlink escapes its package root");}
     const stat = regular(target, "Base resource");
     const sha256 = fileHash(target);
     if (sha256.toLowerCase() !== item.sha256.toLowerCase()) {throw new Error("Base resource hash mismatch: " + source);}
@@ -142,7 +136,7 @@ function readBaseManifest(profile, root) {
     entries.push(entry);
   }
   entries.sort(compareVirtual);
-  return {root, bytes: total, entries};
+  return {root, bytes: total, entries, sha256};
 }
 
 /** Bind the executable source emitter and its maintained inputs to the SDK build receipt.
@@ -151,7 +145,8 @@ function readBaseManifest(profile, root) {
 function admitReceipt(profile, repo) {
   const fixture = requirePath(profile.fixture, "source fixture"), clang = requirePath(profile.clang, "host clang");
   const fixtureReal = fs.realpathSync(fixture), clangReal = fs.realpathSync(clang);
-  const receipt = /** @type {Receipt} */ (readBuildJson(requirePath(profile.receipt, "SDK receipt")));
+  const receiptFile = requirePath(profile.receipt, "SDK receipt"), {value: parsed, sha256} = readBuildJsonSnapshot(receiptFile, 8 << 20),
+    receipt = /** @type {Receipt} */ (parsed);
   if (!receipt || receipt.version !== 1 || receipt.fixture !== fixture || receipt.compiler !== clang ||
       typeof receipt.fixtureSha256 !== "string" || typeof receipt.compilerSha256 !== "string" || !receipt.inputs ||
       typeof receipt.inputs !== "object" || Array.isArray(receipt.inputs)) {throw new Error("SDK receipt does not pin the source fixture and compiler");}
@@ -175,7 +170,7 @@ function admitReceipt(profile, repo) {
       throw new Error("SDK receipt does not pin maintained source input: " + relative);
     }
   }
-  return {fixture: fixtureReal, clang: clangReal, receipt, inputs: actual};
+  return {fixture: fixtureReal, clang: clangReal, receipt, receiptSha256: sha256, inputs: actual};
 }
 
 /** @param {string} file @param {string} virtual @param {string} stage */
@@ -216,14 +211,14 @@ function prepare(profile, output) {
   if (!fs.statSync(gnuRoot).isDirectory()) {throw new Error("GNU package root is not a directory");}
   if (!fs.statSync(baseRoot).isDirectory()) {throw new Error("Base resource root is not a directory");}
   if (!fs.statSync(noticeRoot).isDirectory()) {throw new Error("Notice root is not a directory");}
-  if (within(gnuRoot, baseRoot) || within(baseRoot, gnuRoot) ||
-      within(noticeRoot, gnuRoot) && !within(gnuRoot, noticeRoot) ||
-      within(noticeRoot, baseRoot) && !within(baseRoot, noticeRoot)) {
+  if (containsBuildPath(gnuRoot, baseRoot) || containsBuildPath(baseRoot, gnuRoot) ||
+      containsBuildPath(noticeRoot, gnuRoot) && !containsBuildPath(gnuRoot, noticeRoot) ||
+      containsBuildPath(noticeRoot, baseRoot) && !containsBuildPath(baseRoot, noticeRoot)) {
     throw new Error("GNU, base and notice roots must be explicit non-overlapping package roots");
   }
   const outputParent = fs.realpathSync(path.dirname(outputPath)), outputCandidate = path.join(outputParent, path.basename(outputPath));
   for (const root of [repo, gnuRoot, baseRoot, noticeRoot]) {
-    if (within(root, outputCandidate)) {throw new Error("Output must be outside every admitted input root");}
+    if (containsBuildPath(root, outputCandidate)) {throw new Error("Output must be outside every admitted input root");}
   }
   const manifest = readBaseManifest(admitted, baseRoot), receipt = admitReceipt(admitted, repo);
   const manifestByVirtual = new Map(manifest.entries.map(entry => [entry.virtual, entry]));
@@ -240,7 +235,7 @@ function prepare(profile, output) {
     const foldedVirtual = foldedName(virtual);
     if (FORBIDDEN.test(source) || FORBIDDEN.test(virtual) || noticeVirtuals.has(foldedVirtual)) {throw new Error("Forbidden or duplicate notice path");}
     const target = fs.realpathSync(path.resolve(noticeRoot, source));
-    if (!within(noticeRoot, target)) {throw new Error("Notice symlink escapes its admitted package root");}
+    if (!containsBuildPath(noticeRoot, target)) {throw new Error("Notice symlink escapes its admitted package root");}
     const stat = regular(target, "Notice file"), sha256 = fileHash(target);
     if (sha256.toLowerCase() !== String(notice.sha256).toLowerCase()) {throw new Error("Notice hash mismatch: " + source);}
     noticeVirtuals.add(foldedVirtual);
@@ -251,23 +246,26 @@ function prepare(profile, output) {
   noticeEntries.sort(compareVirtual);
   const roots = admitted.headerRoots.map(root => {
     const real = fs.realpathSync(requirePath(root.path, "header root"));
-    if (!within(gnuRoot, real) || !fs.statSync(real).isDirectory()) {throw new Error("GNU header root is outside package root");}
+    if (!containsBuildPath(gnuRoot, real) || !fs.statSync(real).isDirectory()) {throw new Error("GNU header root is outside package root");}
     return {path: real, virtual: root.virtual};
   });
   const backward = path.join(roots[0]?.path || "", "backward");
-  if (!fs.statSync(backward, {throwIfNoEntry: false})?.isDirectory() || !within(gnuRoot, fs.realpathSync(backward))) {
+  if (!fs.statSync(backward, {throwIfNoEntry: false})?.isDirectory() || !containsBuildPath(gnuRoot, fs.realpathSync(backward))) {
     throw new Error("Derived GNU backward include root is missing or escapes the package root");
   }
   const compilerRoots = [...roots, {path: fs.realpathSync(backward), virtual: BACKWARD_VIRTUAL}];
   const compilerSearchRoots = [...compilerRoots].sort((a, b) => b.path.length - a.path.length);
   const syclInclude = fs.realpathSync(admitted.syclInclude), clangBuiltinInclude = fs.realpathSync(admitted.clangBuiltinInclude);
-  if (!within(baseRoot, syclInclude) || !fs.statSync(syclInclude).isDirectory()) {throw new Error("SYCL include root is outside the base resource root");}
-  if (!within(baseRoot, clangBuiltinInclude) || !fs.statSync(clangBuiltinInclude).isDirectory()) {throw new Error("Clang builtin include root is outside the base resource root");}
+  if (!containsBuildPath(baseRoot, syclInclude) || !fs.statSync(syclInclude).isDirectory()) {throw new Error("SYCL include root is outside the base resource root");}
+  if (!containsBuildPath(baseRoot, clangBuiltinInclude) || !fs.statSync(clangBuiltinInclude).isDirectory()) {throw new Error("Clang builtin include root is outside the base resource root");}
   const initialFiles = new Set([requirePath(admitted.receipt, "SDK receipt"), requirePath(admitted.baseManifest, "base manifest"),
     requirePath(admitted.fixture, "source fixture"), requirePath(admitted.clang, "host clang"), ...Object.keys(receipt.inputs), ...manifest.entries.map(entry => entry.target),
     ...noticeEntries.map(entry => entry.target)]);
   const initial = buildFileInputs([...initialFiles].map(file => fs.realpathSync(file)));
-  const receiptFileSha256 = fileHash(admitted.receipt), baseManifestFileSha256 = fileHash(admitted.baseManifest);
+  const receiptFileSha256 = receipt.receiptSha256, baseManifestFileSha256 = manifest.sha256;
+  if (initial[fs.realpathSync(admitted.receipt)] !== receiptFileSha256 || initial[fs.realpathSync(admitted.baseManifest)] !== baseManifestFileSha256) {
+    throw new Error("SDK receipt or base manifest changed during admission");
+  }
   const startedAt = Date.now();
   const parent = path.dirname(outputPath), staging = fs.mkdtempSync(path.join(parent, ".mom-sycl-jit-resource-"));
   try {
@@ -312,12 +310,12 @@ function prepare(profile, output) {
     function admitGnuDependency(dependency, target) {
       const logical = path.resolve(dependency);
       for (const root of compilerSearchRoots) {
-        const candidate = within(root.path, logical) ? logical : target;
-        if (!within(root.path, candidate)) {continue;}
+        const candidate = containsBuildPath(root.path, logical) ? logical : target;
+        if (!containsBuildPath(root.path, candidate)) {continue;}
         const relative = path.relative(root.path, candidate).split(path.sep).join("/");
         if (!relative || !validName(relative)) {throw new Error("Invalid GNU dependency path");}
         const sourcePath = path.relative(gnuRoot, logical).split(path.sep).join("/");
-        if (!validName(sourcePath) || !within(gnuRoot, target)) {throw new Error("GNU dependency escapes its package root");}
+        if (!validName(sourcePath) || !containsBuildPath(gnuRoot, target)) {throw new Error("GNU dependency escapes its package root");}
         const expected = receipt.inputs[target];
         if (!expected) {throw new Error("GNU dependency is absent from the pinned SDK receipt: " + sourcePath);}
         const sha256 = fileHash(target);
@@ -339,7 +337,7 @@ function prepare(profile, output) {
       const logical = path.resolve(dependency), target = fs.realpathSync(logical);
       const direct = byLogical.get(logical), aliases = byTarget.get(target) || [];
       const entry = direct || (aliases.length === 1 ? aliases[0] : undefined);
-      if (entry && within(baseRoot, target)) {used.add(entry.virtual); continue;}
+      if (entry && containsBuildPath(baseRoot, target)) {used.add(entry.virtual); continue;}
       admitGnuDependency(dependency, target);
     }
     for (const entry of gnuEntries) {copyFile(entry.target, entry.virtual, overlay);}
@@ -375,7 +373,7 @@ function verifyJitResources(directory, target) {
   requirePath(directory, "JIT resource directory");
   const selected = resourceTarget(target), file = path.join(directory, "manifest.json"), repo = path.resolve(__dirname, "..");
   if (!fs.lstatSync(directory).isDirectory() || !fs.lstatSync(file).isFile()) {throw new Error("JIT resources require regular metadata and a real directory");}
-  const manifestHash = fileHash(file), manifest = readBuildJson(file);
+  const {value: manifest, sha256: manifestHash} = readBuildJsonSnapshot(file, 8 << 20);
   if (fileHash(file) !== manifestHash || manifest?.version !== 1 || manifest.target !== selected.target || manifest.platform !== selected.platform ||
       manifest.publicationQualified !== false || !isDeepStrictEqual(manifest.undefines, selected.undefines)) {throw new Error("Wrong-target or changing JIT resources");}
   const sourceNames = manifest.sourceInputs && typeof manifest.sourceInputs === "object" && !Array.isArray(manifest.sourceInputs) ?
@@ -398,7 +396,7 @@ function verifyJitResources(directory, target) {
     }
     if (!isDeepStrictEqual(Object.fromEntries(entries), sdkSourceFiles(path.join(directory, kind)))) {throw new Error("JIT resource payload membership or bytes changed: " + kind);}
   }
-  if (!manifest.required || Object.keys(manifest.required).sort().join(",") !== "libdevice,spirv32,spirv64") {throw new Error("Incomplete required JIT bitcode");}
+  if (!manifest.required || !hasExactBuildFields(manifest.required, ["libdevice", "spirv32", "spirv64"])) {throw new Error("Incomplete required JIT bitcode");}
   for (const row of Object.values(manifest.required)) {
     const name = relativeName(row?.virtual, "required bitcode"), payload = path.join(directory, "overlay", name);
     hashValue(row.sha256, "required bitcode");

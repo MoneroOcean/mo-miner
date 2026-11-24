@@ -2,15 +2,9 @@
 
 // Shared read-only admission for the composed Microsoft Windows host SDK inputs.
 const fs = require("node:fs"), path = require("node:path");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {windowsHostSdkCatalog} = require("./fetch-native-sdk-sources");
 const {safeRelative, walkTree} = require("./prepare-native-windows-sdk");
-
-/** @param {unknown} value @param {string[]} keys */
-function hasExactKeys(value, keys) {
-  return !!value && typeof value === "object" && !Array.isArray(value) &&
-    Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
-}
 
 /**
  * Re-admit the existing composed Windows host-SDK tree and its package-origin inventory.
@@ -21,7 +15,7 @@ function hasExactKeys(value, keys) {
 function windowsHostSdkInputs(windowsSdkRoot, pins) {
   const pinKeys = ["resultSha256", "descriptorSha256", "filesSha256", "overlaySha256"];
   if (typeof windowsSdkRoot !== "string" || !path.isAbsolute(windowsSdkRoot) || /[\r\n\0]/.test(windowsSdkRoot) ||
-      !hasExactKeys(pins, pinKeys) || Object.values(pins).some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash))) {
+      !hasExactBuildFields(pins, pinKeys) || Object.values(pins).some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash))) {
     throw new Error("Windows host-SDK inputs require a canonical root and four explicit file pins");
   }
   const root = path.resolve(windowsSdkRoot), rootStat = fs.lstatSync(root);
@@ -34,11 +28,10 @@ function windowsHostSdkInputs(windowsSdkRoot, pins) {
   /** @param {string} file @param {string} expected @param {string} label */
   function readPinnedJson(file, expected, label) {
     const stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || fs.realpathSync(file) !== file ||
-        stat.size < 1 || stat.size > (8 << 20) || fileHash(file) !== expected) {
-      throw new Error("Windows host-SDK receipt differs from its external pin: " + label);
-    }
-    const value = readBuildJson(file);
+    const message = "Windows host-SDK receipt differs from its external pin: " + label;
+    if (!stat.isFile() || stat.nlink !== 1 || fs.realpathSync(file) !== file ||
+        stat.size < 1 || stat.size > (8 << 20)) {throw new Error(message);}
+    const {value} = readBuildJsonSnapshot(file, undefined, {sha256: expected, message});
     if (fileHash(file) !== expected) {throw new Error("Windows host-SDK receipt changed while reading: " + label);}
     return value;
   }
@@ -61,7 +54,7 @@ function windowsHostSdkInputs(windowsSdkRoot, pins) {
       result.descriptor?.path !== sdkPath || result.descriptor.sha256 !== pins.descriptorSha256 ||
       result.overlay?.path !== overlayPath || result.overlay.sha256 !== pins.overlaySha256 ||
       result.provenance?.path !== filesPath || result.provenance.sha256 !== pins.filesSha256 ||
-      !hasExactKeys(sdk, ["sourceRoot", "overlay", "includeRoots", "libraryRoots"]) || sdk.sourceRoot !== sdkRoot || sdk.overlay !== overlayPath ||
+      !hasExactBuildFields(sdk, ["sourceRoot", "overlay", "includeRoots", "libraryRoots"]) || sdk.sourceRoot !== sdkRoot || sdk.overlay !== overlayPath ||
       !Array.isArray(sdk.includeRoots) || !sdk.includeRoots.length || !Array.isArray(sdk.libraryRoots) || !sdk.libraryRoots.length ||
       !Array.isArray(manifest.files) || manifest.files.length !== result.selectedFileCount || manifest.files.length > 50000 ||
       !Array.isArray(manifest.origins)) {
@@ -70,7 +63,7 @@ function windowsHostSdkInputs(windowsSdkRoot, pins) {
 
   const actualTree = walkTree(sdkRoot), files = new Map(), originCounts = new Map(); let inventoryBytes = 0;
   for (const row of manifest.files) {
-    if (!row || !hasExactKeys(row, ["path", "sha256", "bytes", "origins"]) || safeRelative(row.path) !== row.path ||
+    if (!row || !hasExactBuildFields(row, ["path", "sha256", "bytes", "origins"]) || safeRelative(row.path) !== row.path ||
         !/^[a-f0-9]{64}$/.test(row.sha256 || "") || !Number.isSafeInteger(row.bytes) || row.bytes < 0 ||
         !Array.isArray(row.origins) || !row.origins.length || row.origins.length > 128 ||
         (inventoryBytes += row.bytes) > (2 * 1024 ** 3)) {
@@ -81,7 +74,7 @@ function windowsHostSdkInputs(windowsSdkRoot, pins) {
     files.set(key, row);
     for (const origin of row.origins) {
       const packagePin = lock.packages[origin?.package];
-      if (!hasExactKeys(origin, ["package", "packageSha256", "member", "sha256", "bytes"]) ||
+      if (!hasExactBuildFields(origin, ["package", "packageSha256", "member", "sha256", "bytes"]) ||
           !/^[a-z0-9.-]{1,128}$/.test(origin.package || "") || !/^[a-f0-9]{64}$/.test(origin.packageSha256 || "") ||
           !packagePin || origin.packageSha256 !== packagePin.sha256 ||
           safeRelative(origin.member) !== origin.member || origin.sha256 !== row.sha256 || origin.bytes !== row.bytes) {
@@ -100,7 +93,7 @@ function windowsHostSdkInputs(windowsSdkRoot, pins) {
     }
   }
   for (const origin of manifest.origins) {
-    if (!hasExactKeys(origin, ["destination", "package", "packageSha256", "member", "sha256", "bytes"]) ||
+    if (!hasExactBuildFields(origin, ["destination", "package", "packageSha256", "member", "sha256", "bytes"]) ||
         safeRelative(origin.destination) !== origin.destination || !/^[a-f0-9]{64}$/.test(origin.sha256 || "")) {
       throw new Error("Windows host-SDK origin index is malformed");
     }

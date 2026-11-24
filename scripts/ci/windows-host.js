@@ -10,7 +10,7 @@ const ciJob = require("../native-ci-job"),
   ciSources = require("../native-ci-linux-sources"),
   ciTar = require("../native-ci-tar"),
   ciWindowsLlvm = require("../native-ci-windows-llvm"),
-  dpcppInputs = require("../native-dpcpp-cuda-inputs"), {fileHash, readBuildJson} = require("../build-source-inputs");
+  dpcppInputs = require("../native-dpcpp-cuda-inputs"), {fileHash, readBuildJson, readBuildJsonSnapshot} = require("../build-source-inputs");
 const {ciSuffix, validCiSuffix} = require("../native-ci-job");
 
 const repo = path.resolve(__dirname, "../.."), digest = /^[a-f0-9]{64}$/, epochPattern = /^\d{10}$/,
@@ -100,15 +100,10 @@ function jobDeadlines(env, runDeadlineEpoch, nowSeconds) {
 /** Derived per-job environment consumed by the host-SDK, LLVM-state and descriptor helpers.
  * @param {string} runnerTemp @param {string} suffix @param {{runEpoch: number, jobEpoch: number}} deadlines */
 function jobEnvironment(runnerTemp, suffix, deadlines) {
-  const hostSdkRoot = path.join(runnerTemp, "mom-native-windows-host-sdk-" + suffix);
   return {
     MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH: String(deadlines.runEpoch),
     MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: String(deadlines.jobEpoch),
-    MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH: String(deadlines.jobEpoch),
-    MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT: hostSdkRoot,
-    MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR: path.join(hostSdkRoot, "archives"),
-    MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR: path.join(hostSdkRoot, "native-windows-host-sdk-" + suffix),
-    MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR: path.join(runnerTemp, `native-windows-host-sdk-${suffix}-metadata.tar`),
+    ...ciWindowsLlvm.windowsHostSdkEnvironment(runnerTemp, suffix, deadlines.jobEpoch),
     MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR: path.join(runnerTemp, "mom-native-windows-llvm21-descriptor-" + suffix),
   };
 }
@@ -300,7 +295,7 @@ function verifySameRunInputs(paths, pins, suffix, restored) {
  * @param {{lldLink: string, llvmNm: string}} toolInputs */
 function writeDescriptorInput(runnerTemp, suffix, hermesRoot, hermesHandoffSha256, toolInputs) {
   const hostSdkMetadata = ciWindowsLlvm.buildWindowsHostSdkSourcesCi(),
-    windowsSdkRoot = path.join(runnerTemp, "mom-native-windows-host-sdk-" + suffix, "native-windows-host-sdk-" + suffix),
+    windowsSdkRoot = ciWindowsLlvm.windowsHostSdkPaths(runnerTemp, suffix).sdkOutput,
     windowsSdkPins = {resultSha256: fileHash(path.join(windowsSdkRoot, "result.json")), descriptorSha256: fileHash(path.join(windowsSdkRoot, "sdk.json")),
       filesSha256: fileHash(path.join(windowsSdkRoot, "files.json")), overlaySha256: fileHash(path.join(windowsSdkRoot, "vfs-overlay.json"))};
   if (!hostSdkMetadata || !Object.values(windowsSdkPins).every(value => digest.test(value))) {
@@ -503,7 +498,7 @@ function sealHostComponent(input, nowMs = Date.now()) {
     throw new Error("Windows host-component seal paths or inherited job deadline are invalid");
   }
   const operationTimeout = () => boundedTimeout(deadlineMs, Number.MAX_SAFE_INTEGER, 0);
-  const before = windowsHostComponentInputs(root), metadata = readBuildJson(receipt), manifestSha256 = fileHash(receipt);
+  const before = windowsHostComponentInputs(root), {value: metadata, sha256: manifestSha256} = readBuildJsonSnapshot(receipt);
   if (fs.existsSync(archive) || before.files[receipt] !== manifestSha256 || metadata.buildOnly !== true || metadata.publicationQualified !== false) {
     throw new Error("Windows host component differs from its fresh build-only manifest before sealing");
   }

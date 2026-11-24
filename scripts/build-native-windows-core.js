@@ -7,7 +7,7 @@ const path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {createHash, randomBytes} = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, walk, nativeSourceInputs, verifySourceInputs, readBuildJson, readBuildText} = require("./build-source-inputs");
+const {fileHash, walk, nativeSourceInputs, verifySourceInputs, readBuildJson, readBuildJsonSnapshot, readBuildText} = require("./build-source-inputs");
 const {gpuDeclarations} = require("./native-gpu-table");
 
 /** @typedef {{status: number | null, signal: NodeJS.Signals | null, error?: Error | undefined, stdout?: unknown, stderr?: unknown}} ToolResult */
@@ -178,7 +178,7 @@ function acquireWindowsCoreCacheLock(cacheRoot) {
 function readCoreCacheJson(file, maximum = maxCoreCacheBytes) {
   const stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > maximum) {throw new Error("Invalid Windows Core cache receipt: " + file);}
-  return JSON.parse(fs.readFileSync(file, "utf8"));
+  return readBuildJson(file, maximum);
 }
 
 /** @param {string} file @param {unknown} value */
@@ -505,7 +505,7 @@ function existingWindowsCoreCacheRoot(root) {
 function windowsCoreCurrentCacheAdmission(configFile, prospectiveOutput, environment = process.env, hooks = {}) {
   const root = hooks.root || repo;
   requireFile(configFile, "Windows Core descriptor");
-  const descriptorSha256 = fileHash(configFile), config = validateWindowsCoreDescriptor(readBuildJson(configFile));
+  const {value, sha256: descriptorSha256} = readBuildJsonSnapshot(configFile), config = validateWindowsCoreDescriptor(value);
   if (fileHash(configFile) !== descriptorSha256) {throw new Error("Windows Core descriptor changed during cache admission");}
   const plan = windowsCorePlan(config, prospectiveOutput, root), cacheRoot = hooks.cacheRoot || existingWindowsCoreCacheRoot(root);
   if (!cacheRoot) {return {reusable: false, reason: "Core cache is absent", descriptorSha256};}
@@ -1004,7 +1004,7 @@ function buildNativeWindowsCore(configFile, output, environment = process.env, h
   }
   validatePortableEnvironment(environment);
   requireFile(configFile, "Windows Core descriptor");
-  const descriptorSha256 = fileHash(configFile), config = validateWindowsCoreDescriptor(readBuildJson(configFile));
+  const {value, sha256: descriptorSha256} = readBuildJsonSnapshot(configFile), config = validateWindowsCoreDescriptor(value);
   if (fileHash(configFile) !== descriptorSha256) {throw new Error("Windows Core descriptor changed during admission");}
   const plan = windowsCorePlan(config, output, repo), cacheRoot = windowsCoreCacheRoot(repo), releaseLock = acquireWindowsCoreCacheLock(cacheRoot);
   /** @type {ReturnType<typeof stageSourceTree> | null} */ let staged = null;

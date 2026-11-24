@@ -2,7 +2,7 @@
 
 // A same-run transport for the selected original HIP headers; it is not a second ROCm build.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, sourceInputs, verifySourceInputs, readBuildJson, readBuildText} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, sourceInputs, verifySourceInputs, readBuildJson, readBuildText} = require("./build-source-inputs");
 const {gitSourceComponents} = require("./fetch-native-sdk-sources");
 const {sdkSourceFiles} = require("./prepare-native-sdk-sources");
 const {hiprtcHeaders} = require("./build-native-rocm-resources");
@@ -14,12 +14,6 @@ const repo = path.resolve(__dirname, ".."), format = "mom-rocm-hip-headers-hando
     "scripts/build-native-rocm-resources.js", "scripts/build-native-rocm-host-runtime.js", "scripts/native-comgr-inputs.js", "scripts/build-source-inputs.js", patchName],
   maxManifestBytes = 8 << 20, maxFileBytes = 8 << 20, maxFiles = 4096, maxTotalBytes = 64 * 1024 ** 2,
   maxDirectories = 4096, maxDepth = 16;
-
-/** @param {unknown} value @param {string[]} keys */
-function hasExactKeys(value, keys) {
-  return !!value && typeof value === "object" && !Array.isArray(value) &&
-    Object.keys(value).sort().join(",") === [...keys].sort().join(",");
-}
 
 /** @param {unknown} value @returns {value is string} */
 function digest(value) {return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);}
@@ -95,7 +89,7 @@ function requireSourceSummary(value, label) {
     throw new Error("ROCm HIP header package has invalid " + label + " source-export evidence");
   }
   const row = /** @type {Record<string, any>} */ (value);
-  if (Object.keys(row).sort().join(",") !== "fileCount,filesSha256,revision,root,treeSha256" ||
+  if (!hasExactBuildFields(row, ["fileCount", "filesSha256", "revision", "root", "treeSha256"]) ||
       typeof row["root"] !== "string" || !Number.isSafeInteger(row["fileCount"]) || row["fileCount"] < 1 || row["fileCount"] > 100000 ||
       !digest(row["filesSha256"]) || !digest(row["treeSha256"]) || !/^[a-f0-9]{40}$/.test(row["revision"] || "")) {
     throw new Error("ROCm HIP header package has invalid " + label + " source-export evidence");
@@ -112,34 +106,34 @@ function validateHeaderPackage(input, sourceRoot, verifyOriginal) {
     throw new Error("ROCm HIP header package source root is not the canonical run path");
   }
   const sourceCohortRoot = path.join("/tmp", "mom-native-rocm-prerequisites-" + suffix);
-  if (!packageRow || !hasExactKeys(packageRow, ["version", "pins", "sourceExports", "patch", "configure", "hiprtcCmake",
+  if (!packageRow || !hasExactBuildFields(packageRow, ["version", "pins", "sourceExports", "patch", "configure", "hiprtcCmake",
     "generatedHeader", "files", "requiredHiprtcHeaders", "buildOnly", "publicationQualified"]) ||
       packageRow.version !== 1 || packageRow.buildOnly !== true || packageRow.publicationQualified !== false ||
-      !hasExactKeys(packageRow.pins, ["hip", "clr"]) || packageRow.pins.hip !== hip || packageRow.pins.clr !== clr ||
-      !hasExactKeys(packageRow.sourceExports, ["hipCommon", "clrHipamd"])) {
+      !hasExactBuildFields(packageRow.pins, ["hip", "clr"]) || packageRow.pins.hip !== hip || packageRow.pins.clr !== clr ||
+      !hasExactBuildFields(packageRow.sourceExports, ["hipCommon", "clrHipamd"])) {
     throw new Error("ROCm HIP header package is not the current pinned build-only producer output");
   }
   requireSourceSummary(packageRow.sourceExports.hipCommon, "HIP common");
   const common = packageRow.sourceExports.hipCommon, clrExport = packageRow.sourceExports.clrHipamd;
-  if (common.root !== "source/hip-common" || common.revision !== hip || !clrExport || !hasExactKeys(clrExport,
+  if (common.root !== "source/hip-common" || common.revision !== hip || !clrExport || !hasExactBuildFields(clrExport,
     ["afterPatch", "fileCount", "filesSha256", "revision", "root", "treeish", "treeSha256"]) ||
       clrExport.root !== "source/clr-hipamd" || clrExport.revision !== clr || clrExport.treeish !== clr + ":hipamd" ||
       !Number.isSafeInteger(clrExport.fileCount) || clrExport.fileCount < 1 || clrExport.fileCount > 100000 ||
-      !digest(clrExport.filesSha256) || !digest(clrExport.treeSha256) || !hasExactKeys(clrExport.afterPatch, ["fileCount", "filesSha256"]) ||
+      !digest(clrExport.filesSha256) || !digest(clrExport.treeSha256) || !hasExactBuildFields(clrExport.afterPatch, ["fileCount", "filesSha256"]) ||
       clrExport.afterPatch.fileCount !== clrExport.fileCount || !digest(clrExport.afterPatch.filesSha256)) {
     throw new Error("ROCm HIP header package source exports do not match the current HIP/CLR pins");
   }
   const patch = packageRow.patch, patchFile = path.join(repo, patchName);
-  if (!hasExactKeys(patch, ["path", "sha256", "stripComponents", "target", "originalSha256", "patchedSha256", "checkLog", "applyLog"]) ||
+  if (!hasExactBuildFields(patch, ["path", "sha256", "stripComponents", "target", "originalSha256", "patchedSha256", "checkLog", "applyLog"]) ||
       patch.path !== "patches/rocm-hip-headers-only.patch" || patch.sha256 !== fileHash(patchFile) || patch.stripComponents !== 2 ||
       patch.target !== "source/clr-hipamd/CMakeLists.txt" || !digest(patch.originalSha256) || !digest(patch.patchedSha256) ||
       patch.checkLog !== "patches/check.json" || patch.applyLog !== "patches/apply.json") {
     throw new Error("ROCm HIP header package patch differs from the current reviewed source patch");
   }
   const configure = packageRow.configure;
-  if (!hasExactKeys(configure, ["command", "environment", "configureOnly", "log", "logSha256", "status"]) ||
+  if (!hasExactBuildFields(configure, ["command", "environment", "configureOnly", "log", "logSha256", "status"]) ||
       configure.configureOnly !== true || configure.status !== 0 || configure.log !== "cmake-configure.log" || !digest(configure.logSha256) ||
-      !hasExactKeys(configure.environment, ["GIT_DIR"]) || configure.environment.GIT_DIR !== path.join(sourceCohortRoot, "roots/clr") ||
+      !hasExactBuildFields(configure.environment, ["GIT_DIR"]) || configure.environment.GIT_DIR !== path.join(sourceCohortRoot, "roots/clr") ||
       !Array.isArray(configure.command) || configure.command.length < 12 || configure.command.length > 64 ||
       configure.command.some((/** @type {unknown} */ item) => typeof item !== "string" || item.length > 4096 || /[\r\n\0]/.test(item))) {
     throw new Error("ROCm HIP header package lacks a successful configure-only receipt");
@@ -158,8 +152,8 @@ function validateHeaderPackage(input, sourceRoot, verifyOriginal) {
     throw new Error("ROCm HIP header configure command differs from the headers-only producer plan");
   }
   const hiprtc = packageRow.hiprtcCmake, generated = packageRow.generatedHeader;
-  if (!hasExactKeys(hiprtc, ["path", "sha256"]) || hiprtc.path !== "source/clr-hipamd/src/hiprtc/CMakeLists.txt" || !digest(hiprtc.sha256) ||
-      !hasExactKeys(generated, ["path", "sha256"]) || generated.path !== "build/include/hip/hip_version.h" || !digest(generated.sha256) ||
+  if (!hasExactBuildFields(hiprtc, ["path", "sha256"]) || hiprtc.path !== "source/clr-hipamd/src/hiprtc/CMakeLists.txt" || !digest(hiprtc.sha256) ||
+      !hasExactBuildFields(generated, ["path", "sha256"]) || generated.path !== "build/include/hip/hip_version.h" || !digest(generated.sha256) ||
       !packageRow.files || typeof packageRow.files !== "object" || Array.isArray(packageRow.files) ||
       Object.keys(packageRow.files).length < 17 || Object.keys(packageRow.files).length > maxFiles ||
       !Array.isArray(packageRow.requiredHiprtcHeaders) || packageRow.requiredHiprtcHeaders.length < 16 || packageRow.requiredHiprtcHeaders.length > 128) {
@@ -212,7 +206,7 @@ function validateHeaderPackage(input, sourceRoot, verifyOriginal) {
       const evidence = readBuildJson(logFile);
       const check = logName === patch.checkLog, expectedArgs = ["-C", path.join(sourceRoot, "source/clr-hipamd"), "apply", "-p2",
         ...(check ? ["--check"] : []), "--", patchCopy];
-      if (!hasExactKeys(evidence, ["command", "status", "signal", "error", "stdout", "stderr"]) || evidence.status !== 0 ||
+      if (!hasExactBuildFields(evidence, ["command", "status", "signal", "error", "stdout", "stderr"]) || evidence.status !== 0 ||
           evidence.signal !== null || evidence.error !== null || typeof evidence.stdout !== "string" || typeof evidence.stderr !== "string" ||
           !Array.isArray(evidence.command) || evidence.command.length !== expectedArgs.length + 1 || !path.isAbsolute(evidence.command[0] || "") ||
           !isDeepStrictEqual(evidence.command.slice(1), expectedArgs)) {
@@ -292,7 +286,7 @@ function rocmHipHeaderInputs(root, expected) {
   const handoffPath = path.join(root, "handoff.json"), handoffPin = stableRegular(handoffPath, maxManifestBytes, "ROCm HIP header handoff receipt");
   if (handoffPin.sha256 !== expected.handoffSha256) {throw new Error("ROCm HIP header handoff differs from its external hash pin");}
   const handoff = readBuildJson(handoffPath);
-  if (!hasExactKeys(handoff, ["version", "format", "sourceRoot", "manifestSha256", "recipe", "files"]) ||
+  if (!hasExactBuildFields(handoff, ["version", "format", "sourceRoot", "manifestSha256", "recipe", "files"]) ||
       handoff.version !== 1 || handoff.format !== format ||
       handoff.sourceRoot !== path.join("/tmp", "mom-native-rocm-hip-headers-" + suffix) || !digest(handoff.manifestSha256) ||
       !handoff.recipe || typeof handoff.recipe !== "object" || !handoff.files || typeof handoff.files !== "object" || Array.isArray(handoff.files)) {
@@ -323,7 +317,7 @@ function rocmHipHeaderInputs(root, expected) {
 /** @param {Record<string,string>} actual @param {Record<string,string>} expected */
 function isExactMap(actual, expected) {
   return !!expected && typeof expected === "object" && !Array.isArray(expected) &&
-    Object.keys(actual).sort().join("\0") === Object.keys(expected).sort().join("\0") &&
+    hasExactBuildFields(actual, Object.keys(expected)) &&
     Object.keys(actual).every(key => actual[key] === expected[key]);
 }
 

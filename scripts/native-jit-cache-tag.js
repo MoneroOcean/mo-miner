@@ -2,7 +2,7 @@
 
 const {createHash} = require("node:crypto");
 const path = require("node:path");
-const {fileHash, sourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, sourceInputs} = require("./build-source-inputs");
 const digest = /^[a-f0-9]{64}$/;
 
 /** The final admitted native closure owns cache identity, not transport paths or receipt JSON.
@@ -22,7 +22,7 @@ function nativeJitCacheTag(target, artifacts, recipes, linkPlan = []) {
     throw new Error("Invalid native JIT link plan");
   }
   for (const row of artifacts) {
-    if (!row || Array.isArray(row) || Object.keys(row).sort().join(",") !== "role,sha256" ||
+    if (!row || Array.isArray(row) || !hasExactBuildFields(row, ["role", "sha256"]) ||
         typeof row.role !== "string" || !/^[a-z][a-z0-9-]*\/[0-9]+$/.test(row.role) ||
         roles.has(row.role) || typeof row.sha256 !== "string" || !digest.test(row.sha256)) {throw new Error("Invalid native JIT cache artifact");}
     roles.add(row.role);

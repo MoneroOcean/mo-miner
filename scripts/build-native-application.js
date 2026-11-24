@@ -12,7 +12,7 @@ const tls = require("node:tls");
 const {createHash} = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
 const {controllerBundleOptions, controllerAotCommand, verifyBundle, nativeApplicationRoot} = require("./native-bundle");
-const {fileHash, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
+const {fileHash, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildJson, compilerIncludePaths, containsBuildPath} = require("./build-source-inputs");
 const nativeResources = require("./native-resources");
 const {admittedJitCacheTag, nativeJitCacheHeader} = require("./native-jit-cache-tag");
 const {assertUniqueHcfIds} = require("./native-hcf");
@@ -32,17 +32,14 @@ let activeObjectBatch = null;
 /** @param {string[]} args @param {string} source @param {string} output */
 function linuxObjectIncludeRoots(args, source, output) {
   const roots = new Set(), outputRoot = path.resolve(output);
-  for (let i = 0; i < args.length; ++i) {
-    const arg = args[i] || "";
-    let root;
-    if (arg === "-I" || arg === "-isystem") {root = args[++i];} else if (arg.startsWith("-I") && arg.length > 2) {root = arg.slice(2);}
-    if (!root || !path.isAbsolute(root)) {continue;}
+  for (const root of compilerIncludePaths(args)) {
+    if (!path.isAbsolute(root)) {continue;}
     const selected = path.resolve(root);
-    if (selected === outputRoot || selected.startsWith(outputRoot + path.sep)) {continue;}
+    if (containsBuildPath(outputRoot, selected)) {continue;}
     roots.add(selected);
   }
   const sourceDirectory = path.dirname(path.resolve(source));
-  if (sourceDirectory !== outputRoot && !sourceDirectory.startsWith(outputRoot + path.sep)) {roots.add(sourceDirectory);}
+  if (!containsBuildPath(outputRoot, sourceDirectory)) {roots.add(sourceDirectory);}
   return [...roots];
 }
 

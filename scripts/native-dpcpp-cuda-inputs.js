@@ -4,7 +4,7 @@
 // transport and provisioning; local and CI callers use this same producer/auditor.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {createHash} = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {capturePackageCopyright} = require("./prepare-native-gnu-headers");
 const {pins: dpcppPins, sdkIdentity: dpcppSdkIdentity} = require("./native-dpcpp-pins");
 const {sdkSourceFiles} = require("./prepare-native-sdk-sources");
@@ -22,12 +22,6 @@ const cudaPackageNames = ["cuda-cudart-12-6", "cuda-cudart-dev-12-6", "cuda-nvml
 
 /** @param {string} value */
 function jsonHash(value) {return createHash("sha256").update(value).digest("hex");}
-
-/** @param {unknown} value @param {string[]} keys */
-function hasExactKeys(value, keys) {
-  return !!value && typeof value === "object" && !Array.isArray(value) &&
-    Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
-}
 
 /** @param {string} name */
 function safeRelative(name) {
@@ -108,7 +102,7 @@ function auditCudaPackageCopyrights(state, packages, notices) {
     const sourcePath = "/usr/share/doc/" + name + "/copyright",
       destination = path.join(state.root, "licenses", name, "copyright"), alias = row?.resolvedSourcePath !== undefined,
       stat = fs.lstatSync(destination, {throwIfNoEntry: false});
-    if (!hasExactKeys(row, ["package", "version", "sourcePath", "path", "sha256", ...(alias ? ["resolvedSourcePath", "ownershipPath"] : [])]) ||
+    if (!hasExactBuildFields(row, ["package", "version", "sourcePath", "path", "sha256", ...(alias ? ["resolvedSourcePath", "ownershipPath"] : [])]) ||
         row.package !== name || row.version !== packages[name] || row.sourcePath !== sourcePath || row.path !== destination ||
         !/^[a-f0-9]{64}$/.test(row.sha256 || "") || !stat?.isFile() || stat.isSymbolicLink() ||
         fs.realpathSync(destination) !== destination || stat.size < 1 || stat.size > (2 << 20) || fileHash(destination) !== row.sha256 ||
@@ -244,9 +238,9 @@ function dpcppCudaInputsManifest(state, sourceOrigin, packageVersions, cudaProbe
   dpcppSdkIdentity(cudaProbe.dpcppVersion, fs.readFileSync(marker, "utf8"));
   const nvccVersion = cudaProbe.version;
   if (!/\brelease 12\.6,/.test(nvccVersion) || cudaProbe.top !== state.cudaRoot ||
-      !hasExactKeys(packageVersions, cudaPackageNames) ||
+      !hasExactBuildFields(packageVersions, cudaPackageNames) ||
       Object.values(packageVersions).some(value => typeof value !== "string" || !/^(?:[0-9]+:)?12\.6\.[A-Za-z0-9.+~:-]{1,120}$/.test(value)) ||
-      cmakeEvidence.status !== 0 || !hasExactKeys(cmakeEvidence.result, ["toolkitVersion", "cudart", "importedCudart", "includeDirectories"]) ||
+      cmakeEvidence.status !== 0 || !hasExactBuildFields(cmakeEvidence.result, ["toolkitVersion", "cudart", "importedCudart", "includeDirectories"]) ||
       typeof cmakeEvidence.result.toolkitVersion !== "string" ||
       cmakeEvidence.result.toolkitVersion !== "12.6" && !cmakeEvidence.result.toolkitVersion.startsWith("12.6.") ||
       cmakeEvidence.result.cudart !== path.join(state.cudaRoot, "lib64/libcudart.so") ||
@@ -283,13 +277,13 @@ function dpcppCudaInputsManifest(state, sourceOrigin, packageVersions, cudaProbe
 /** @param {DpcppCudaInputState} state @param {any} source */
 function validDpcppCudaSourceOrigin(state, source) {
   const tarKeys = ["name", "tar", "tarSha256", "fetchReceiptSha256", "linuxPreparationSha256", "compilerPreparationSha256"];
-  if (hasExactKeys(source, tarKeys)) {
+  if (hasExactBuildFields(source, tarKeys)) {
     return typeof state.linux.sourceTar === "string" && source.name === state.linux.sourceName && source.tar === path.basename(state.linux.sourceTar) &&
       [source.tarSha256, source.fetchReceiptSha256, source.linuxPreparationSha256, source.compilerPreparationSha256].every(value => /^[0-9a-f]{64}$/.test(value || "")) &&
       source.fetchReceiptSha256 === fileHash(state.linux.fetchReceipt) && source.linuxPreparationSha256 === fileHash(state.linux.preparedReceipt) &&
       source.compilerPreparationSha256 === fileHash(state.linux.compilerPreparedReceipt);
   }
-  if (!hasExactKeys(source, ["origin", "workspaceRoot", "fetchReceipt", "linuxPreparation", "compilerPreparation"]) ||
+  if (!hasExactBuildFields(source, ["origin", "workspaceRoot", "fetchReceipt", "linuxPreparation", "compilerPreparation"]) ||
       source.origin !== "workspace-prepared-receipts" || state.workspaceRoot !== source.workspaceRoot) {return false;}
   try {
     // Use the producer's path/marker checks again; a second implementation would drift.
@@ -311,10 +305,11 @@ function auditDpcppCudaInputs(state, record, expectedManifestSha256) {
   if (externallyPinned) {
     const manifestStat = fs.lstatSync(state.manifest, {throwIfNoEntry: false});
     if (!/^[a-f0-9]{64}$/.test(expectedManifestSha256) || !manifestStat?.isFile() || manifestStat.isSymbolicLink() ||
-        fs.realpathSync(state.manifest) !== state.manifest || fileHash(state.manifest) !== expectedManifestSha256) {
+        fs.realpathSync(state.manifest) !== state.manifest) {
       throw new Error("DPC++/CUDA manifest differs from its external same-run pin");
     }
-    const sealedRecord = readBuildJson(state.manifest);
+    const {value: sealedRecord} = readBuildJsonSnapshot(state.manifest, undefined,
+      {sha256: expectedManifestSha256, message: "DPC++/CUDA manifest differs from its external same-run pin"});
     if (!isDeepStrictEqual(record, sealedRecord) || fileHash(state.manifest) !== expectedManifestSha256) {
       throw new Error("DPC++/CUDA record does not match its externally pinned manifest");
     }
@@ -322,38 +317,38 @@ function auditDpcppCudaInputs(state, record, expectedManifestSha256) {
   const producerFile = path.join(repo, "scripts/build-native-dpcpp-sdk.js"), installer = path.join(repo, "scripts/install-dev.sh"), installerText = fs.readFileSync(installer, "utf8"),
     release = installerText.match(/^DPCPP_RELEASE=\$\{MOM_DPCPP_RELEASE-([^}]+)\}$/m)?.[1],
     keyring = installerText.match(/^CUDA_KEYRING_SHA256=([0-9a-f]{64})$/m)?.[1];
-  if (!hasExactKeys(record, ["version", "target", "buildOnly", "compiled", "executed", "publicationQualified", "scope", "source", "producer", "dpcpp", "cuda"]) ||
+  if (!hasExactBuildFields(record, ["version", "target", "buildOnly", "compiled", "executed", "publicationQualified", "scope", "source", "producer", "dpcpp", "cuda"]) ||
       record.version !== 1 || record.target !== "linux-dpcpp23-cuda12.6-inputs" || record.buildOnly !== true || record.compiled !== false ||
       record.executed !== false || record.publicationQualified !== false ||
       record.scope !== "Pinned DPC++ compiler plus CUDA 12.6 headers, nvcc configure probe and ptxas/fatbinary inputs, CUDART and libdevice; exact static CUDA archives are carried for the source-built ACPP runtime, which is built separately." ||
       !validDpcppCudaSourceOrigin(state, record.source) ||
-      !hasExactKeys(record.producer, ["installer", "helperSha256", "consumerSha256"]) ||
+      !hasExactBuildFields(record.producer, ["installer", "helperSha256", "consumerSha256"]) ||
       !/^[a-f0-9]{64}$/.test(record.producer.helperSha256 || "") ||
       !externallyPinned && record.producer.helperSha256 !== fileHash(__filename) ||
       !/^[a-f0-9]{64}$/.test(record.producer.consumerSha256 || "") || record.producer.consumerSha256 !== fileHash(producerFile) ||
-      !hasExactKeys(record.producer.installer, ["path", "sha256", "dpcppRelease", "dpcppArchiveSha256", "cudaSeries", "cudaKeyringSha256"]) ||
+      !hasExactBuildFields(record.producer.installer, ["path", "sha256", "dpcppRelease", "dpcppArchiveSha256", "cudaSeries", "cudaKeyringSha256"]) ||
       record.producer.installer.path !== installer || !/^[a-f0-9]{64}$/.test(record.producer.installer.sha256 || "") ||
       !externallyPinned && record.producer.installer.sha256 !== fileHash(installer) ||
       record.producer.installer.dpcppRelease !== release || record.producer.installer.dpcppArchiveSha256 !== dpcppPins.sdk ||
       record.producer.installer.cudaSeries !== "12.6" || record.producer.installer.cudaKeyringSha256 !== keyring ||
-      !hasExactKeys(record.dpcpp, ["root", "archiveSha256", "marker", "clang", "clangxx", "sycl", "jit", "clangVersion"]) ||
+      !hasExactBuildFields(record.dpcpp, ["root", "archiveSha256", "marker", "clang", "clangxx", "sycl", "jit", "clangVersion"]) ||
       record.dpcpp.root !== state.dpcppRoot || record.dpcpp.archiveSha256 !== dpcppPins.sdk ||
-      !hasExactKeys(record.cuda, ["root", "series", "packages", "nvcc", "profile", "ptxas", "fatbinary", "nvccVersion", "cmakeRoot", "versionEvidence", "cmakeProbeEvidence",
+      !hasExactBuildFields(record.cuda, ["root", "series", "packages", "nvcc", "profile", "ptxas", "fatbinary", "nvccVersion", "cmakeRoot", "versionEvidence", "cmakeProbeEvidence",
         "cmakeLists", "cmakeEvidence", "headers", "licenses", "libdevice", "cudart", "staticRuntime", "excluded"]) ||
       record.cuda.root !== state.cudaRoot || record.cuda.series !== "12.6" || record.cuda.cmakeRoot !== state.cudaRoot ||
-      !hasExactKeys(record.cuda.staticRuntime, ["cudart", "culibos"]) ||
+      !hasExactBuildFields(record.cuda.staticRuntime, ["cudart", "culibos"]) ||
       !/\brelease 12\.6,/.test(record.cuda.nvccVersion || "") ||
-      !hasExactKeys(record.cuda.versionEvidence, ["path", "sha256"]) || record.cuda.versionEvidence.path !== state.cudaVersionEvidence ||
+      !hasExactBuildFields(record.cuda.versionEvidence, ["path", "sha256"]) || record.cuda.versionEvidence.path !== state.cudaVersionEvidence ||
       record.cuda.versionEvidence.sha256 !== fileHash(state.cudaVersionEvidence) || fs.readFileSync(state.cudaVersionEvidence, "utf8") !== record.cuda.nvccVersion ||
-      !hasExactKeys(record.cuda.cmakeProbeEvidence, ["path", "sha256"]) || record.cuda.cmakeProbeEvidence.path !== state.cudaProbeEvidence ||
+      !hasExactBuildFields(record.cuda.cmakeProbeEvidence, ["path", "sha256"]) || record.cuda.cmakeProbeEvidence.path !== state.cudaProbeEvidence ||
       record.cuda.cmakeProbeEvidence.sha256 !== fileHash(state.cudaProbeEvidence) ||
-      !hasExactKeys(record.cuda.cmakeLists, ["path", "sha256"]) || record.cuda.cmakeLists.path !== state.cudaCmakeLists ||
+      !hasExactBuildFields(record.cuda.cmakeLists, ["path", "sha256"]) || record.cuda.cmakeLists.path !== state.cudaCmakeLists ||
       record.cuda.cmakeLists.sha256 !== fileHash(state.cudaCmakeLists) ||
-      !hasExactKeys(record.cuda.cmakeEvidence, ["path", "sha256"]) || record.cuda.cmakeEvidence.path !== state.cudaCmakeEvidence ||
+      !hasExactBuildFields(record.cuda.cmakeEvidence, ["path", "sha256"]) || record.cuda.cmakeEvidence.path !== state.cudaCmakeEvidence ||
       record.cuda.cmakeEvidence.sha256 !== fileHash(state.cudaCmakeEvidence) ||
-      !hasExactKeys(record.cuda.packages, cudaPackageNames) ||
+      !hasExactBuildFields(record.cuda.packages, cudaPackageNames) ||
       Object.values(record.cuda.packages).some(value => typeof value !== "string" || !/^(?:[0-9]+:)?12\.6\.[A-Za-z0-9.+~:-]{1,120}$/.test(value)) ||
-      !Array.isArray(record.cuda.excluded) || record.cuda.excluded.some((/** @type {{path?:unknown,target?:unknown}} */ item) => !hasExactKeys(item, ["path", "target"]) ||
+      !Array.isArray(record.cuda.excluded) || record.cuda.excluded.some((/** @type {{path?:unknown,target?:unknown}} */ item) => !hasExactBuildFields(item, ["path", "target"]) ||
         item.path !== "include/nvrtc.h" || item.target !== "/opt/mom/nvrtc-13.3.33/include/nvrtc.h")) {
     throw new Error("DPC++/CUDA input handoff provenance is malformed or stale");
   }
@@ -368,13 +363,13 @@ function auditDpcppCudaInputs(state, record, expectedManifestSha256) {
       !/[\r\n\0]/.test(cmakeBuild) && path.normalize(cmakeBuild) === cmakeBuild &&
       path.basename(cmakeBuild) === path.basename(state.cudaCmakeBuild),
     expectedCmakeCommand = [cmake, "-S", state.cudaCmakeSource, "-B", cmakeBuild, "-DCUDAToolkit_ROOT=" + state.cudaRoot];
-  if (!hasExactKeys(cmakeEvidence, ["version", "command", "status", "tool", "script", "result", "stdout", "stderr"]) || cmakeEvidence.version !== 1 ||
+  if (!hasExactBuildFields(cmakeEvidence, ["version", "command", "status", "tool", "script", "result", "stdout", "stderr"]) || cmakeEvidence.version !== 1 ||
       cmakeEvidence.status !== 0 || !validCmakeBuild || !isDeepStrictEqual(cmakeEvidence.command, expectedCmakeCommand) ||
-      !hasExactKeys(cmakeEvidence.tool, ["path", "sha256"]) || typeof cmake !== "string" || !path.isAbsolute(cmake) ||
+      !hasExactBuildFields(cmakeEvidence.tool, ["path", "sha256"]) || typeof cmake !== "string" || !path.isAbsolute(cmake) ||
       /[\r\n\0]/.test(cmake) || typeof cmakeEvidence.tool.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(cmakeEvidence.tool.sha256) ||
-      !hasExactKeys(cmakeEvidence.script, ["path", "sha256"]) || cmakeEvidence.script.path !== state.cudaCmakeLists ||
+      !hasExactBuildFields(cmakeEvidence.script, ["path", "sha256"]) || cmakeEvidence.script.path !== state.cudaCmakeLists ||
       cmakeEvidence.script.sha256 !== fileHash(state.cudaCmakeLists) ||
-      !hasExactKeys(cmakeEvidence.result, ["toolkitVersion", "cudart", "importedCudart", "includeDirectories"]) ||
+      !hasExactBuildFields(cmakeEvidence.result, ["toolkitVersion", "cudart", "importedCudart", "includeDirectories"]) ||
       !/^12\.6\./.test(cmakeEvidence.result.toolkitVersion) || cmakeEvidence.result.cudart !== path.join(state.cudaRoot, "lib64/libcudart.so") ||
       cmakeEvidence.result.importedCudart !== cmakeEvidence.result.cudart ||
       typeof cmakeEvidence.result.includeDirectories !== "string" ||
@@ -390,7 +385,7 @@ function auditDpcppCudaInputs(state, record, expectedManifestSha256) {
     [state.cudaRoot, record.cuda.libdevice, "nvvm/libdevice/libdevice.10.bc", false], [state.cudaRoot, record.cuda.cudart, "lib64/libcudart.so", false],
     [state.cudaRoot, record.cuda.staticRuntime?.cudart, "lib64/libcudart_static.a", false],
     [state.cudaRoot, record.cuda.staticRuntime?.culibos, "lib64/libculibos.a", false]]) {
-    if (!hasExactKeys(row, ["path", "sha256"]) || row.path !== path.join(root, relative) || !/^[0-9a-f]{64}$/.test(row.sha256 || "") ||
+    if (!hasExactBuildFields(row, ["path", "sha256"]) || row.path !== path.join(root, relative) || !/^[0-9a-f]{64}$/.test(row.sha256 || "") ||
         inputFileRecord(root, relative, executable).sha256 !== row.sha256) {throw new Error("Selected DPC++/CUDA input changed: " + relative);}
   }
   if (!isStaticArchive(record.cuda.staticRuntime.cudart.path) || !isStaticArchive(record.cuda.staticRuntime.culibos.path)) {
@@ -398,7 +393,7 @@ function auditDpcppCudaInputs(state, record, expectedManifestSha256) {
   }
   const headers = sdkSourceFiles(path.join(state.cudaRoot, "include"));
   const probeText = fs.readFileSync(state.cudaProbeEvidence, "utf8"), probeTop = probeText.match(/^#\$ TOP=(.+)$/m)?.[1]?.trim();
-  if (!hasExactKeys(record.cuda.headers, ["files", "sha256"]) || !isDeepStrictEqual(headers, record.cuda.headers.files) ||
+  if (!hasExactBuildFields(record.cuda.headers, ["files", "sha256"]) || !isDeepStrictEqual(headers, record.cuda.headers.files) ||
       record.cuda.headers.sha256 !== jsonHash(JSON.stringify(headers)) ||
       !["cuda.h", "nvml.h", "cuda_runtime.h"].every(name => Object.hasOwn(headers, name)) || !probeTop || path.resolve(probeTop) !== state.cudaRoot ||
       record.cuda.excluded.length > 1) {
@@ -428,7 +423,7 @@ function cudaToolkitProbeRoot(version, probe, root) {
  * @param {DpcppCudaInputState} state @param {{dpcpp:string,cuda:string}} installedRoots
  * @param {DpcppCudaSourceOrigin} sourceOrigin @param {NodeJS.ProcessEnv} environment */
 function stageDpcppCudaInputs(state, installedRoots, sourceOrigin, environment) {
-  if (!hasExactKeys(installedRoots, ["cuda", "dpcpp"]) ||
+  if (!hasExactBuildFields(installedRoots, ["cuda", "dpcpp"]) ||
       [state.root, state.dpcppRoot, state.cudaRoot].some(file => fs.lstatSync(file, {throwIfNoEntry: false})) ||
       fs.realpathSync(path.dirname(state.root)) !== path.dirname(state.root)) {
     throw new Error("DPC++/CUDA staging needs a fresh output beneath a canonical parent");

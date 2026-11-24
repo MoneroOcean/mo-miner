@@ -59,11 +59,15 @@ test.describe("Native GPU compile planning", () => {
     const files = ["sycl/cn-gpu/cn-gpu.cpp", "sycl/pearlhash/pearlhash.cpp", "sycl/kawpow/kawpow.cpp", "sycl/hoohash/host-math.c",
       "runtime/driver-library.cpp"];
     const flags = ["-std=c++20", "-O3", "-I", output];
-    const commands = adaptiveCppCompileCommands(files, "/sdk/bin/clang++", repo, output, flags, true, "cuda");
+    const commands = adaptiveCppCompileCommands(files, "/sdk/bin/clang++", repo, output, flags, "cuda");
     assert.equal(commands.length, files.length);
     assert.deepEqual(commands.map(command => path.relative(repo, command.source).split(path.sep).join("/")), files);
     assert.deepEqual(commands[0]?.args.slice(0, flags.length + 1), [...flags, "-DMOM_SYCL_HAS_CUDA"]);
     assert.deepEqual(commands[1]?.args.slice(0, flags.length + 2), [...flags, "-DMOM_SYCL_HAS_CUDA", "-DMOM_EMBEDDED_NVRTC_HEADERS"]);
+    assert.deepEqual(commands.filter(command => command.args.includes("-DMOM_SYCL_HAS_CUDA"))
+      .map(command => path.relative(repo, command.source).split(path.sep).join("/")), files.slice(0, 2));
+    assert.deepEqual(commands.filter(command => command.args.includes("-DMOM_EMBEDDED_NVRTC_HEADERS"))
+      .map(command => path.relative(repo, command.source).split(path.sep).join("/")), ["sycl/pearlhash/pearlhash.cpp"]);
     assert.deepEqual(commands[2]?.generatedInputs, [path.join(output, "sycl/sycl.hpp")]);
     assert.deepEqual(commands[0]?.generatedInputs, [path.join(output, "sycl/sycl.hpp"), path.join(output, "nvrtc-api/nvrtc.h")]);
     assert.deepEqual(commands[1]?.generatedInputs, [path.join(output, "sycl/sycl.hpp"), path.join(output, "nvrtc-api/nvrtc.h"),
@@ -80,11 +84,13 @@ test.describe("Native GPU compile planning", () => {
     assert.deepEqual(commands[3]?.generatedInputs, []);
     assert.deepEqual(commands[4]?.generatedInputs, []);
     assert.deepEqual(commands.map(command => path.basename(command.object)), ["0.o", "1.o", "2.o", "3.o", "4.o"]);
-    const hip = adaptiveCppCompileCommands(files, "/sdk/bin/clang++", repo, output, flags, false, "hip");
-    const combined = adaptiveCppCompileCommands(files, "/sdk/bin/clang++", repo, output, flags, true, "cuda-hip");
+    const hip = adaptiveCppCompileCommands(files, "/sdk/bin/clang++", repo, output, flags, "hip");
+    const combined = adaptiveCppCompileCommands(files, "/sdk/bin/clang++", repo, output, flags, "cuda-hip");
     assert.ok(hip[0]?.args.includes("-acpp-sscp-hcf-object-id-namespace=acpp-hip"));
     assert.ok(combined[0]?.args.includes("-acpp-sscp-hcf-object-id-namespace=acpp-cuda-hip"));
-    assert.throws(() => adaptiveCppCompileCommands(files, "/sdk/bin/clang++", repo, output, flags, true, "omp"), /HCF identity profile/);
+    assert.ok(!hip[0]?.args.includes("-DMOM_SYCL_HAS_CUDA"));
+    assert.ok(combined[0]?.args.includes("-DMOM_SYCL_HAS_CUDA"));
+    assert.throws(() => adaptiveCppCompileCommands(files, "/sdk/bin/clang++", repo, output, flags, "omp"), /explicit cuda, hip or cuda-hip/);
   });
 
   test("DPC++ cache plan preserves mixed compiler selection and only declares consumed generated inputs", () => {
@@ -184,11 +190,13 @@ test.describe("Native GPU compile planning", () => {
   test("include-root membership retains bounded repository root and excludes output/source subtrees", t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-gpu-includes-"));
     t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-    const localRepo = path.join(root, "repo"), output = path.join(root, "candidate"), sdk = path.join(root, "sdk"), external = path.join(root, "external");
-    for (const directory of [localRepo, output, path.join(sdk, "include"), external]) {fs.mkdirSync(directory, {recursive: true});}
-    const roots = nativeIncludeRoots(["-I", external, "-isystem", path.join(sdk, "include"), "--cuda-path=" + sdk,
-      "-I", output, "-I", localRepo], localRepo, output);
-    assert.deepEqual(roots, [external, path.join(sdk, "include"), localRepo]);
+    const checkout = path.join(root, "checkout"), localRepo = path.join(checkout, "repo");
+    const output = path.join(root, "candidate"), sdk = path.join(root, "sdk"), external = path.join(root, "external"), implicit = path.join(root, "cuda");
+    const quote = path.join(external, "quote"), after = path.join(sdk, "after");
+    for (const directory of [localRepo, output, path.join(sdk, "include"), after, path.join(implicit, "include"), external, quote]) {fs.mkdirSync(directory, {recursive: true});}
+    const roots = nativeIncludeRoots(["-I", external, "--cuda-path=" + implicit, "-iquote" + quote, "-isystem", path.join(sdk, "include"),
+      "-idirafter", after, "-I", output, "-I", localRepo, "-I", ".."], localRepo, output);
+    assert.deepEqual(roots, [external, path.join(implicit, "include"), quote, path.join(sdk, "include"), after, localRepo, checkout]);
     assert.ok(!roots.includes(path.join(localRepo, "native")));
   });
 
@@ -231,7 +239,7 @@ test.describe("Native GPU compile planning", () => {
     assert.ok(flags.includes("-DMOM_EMBEDDED_CUDA_IMAGES"));
     assert.ok(!flags.includes("-DMOM_STATIC_NVRTC"));
     assert.ok(gpuProfile("cuda").definitions.includes("-DMOM_STATIC_NVRTC"), "transitional compiler mode stays explicit");
-    const commands = adaptiveCppCompileCommands(files, "/sdk/bin/clang++", repo, output, flags, true, "cuda", true);
+    const commands = adaptiveCppCompileCommands(files, "/sdk/bin/clang++", repo, output, flags, "cuda", true);
     for (const command of commands) {
       assert.ok(command.args.includes("-DMOM_SYCL_HAS_CUDA"));
       assert.doesNotMatch(command.args.join(" "), /NVRTC/);

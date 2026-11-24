@@ -11,7 +11,7 @@ const local = require("./build-local-native-sdk"), hostSdkBuilder = require("./b
   applicationConfig = require("./native-windows-application-config"), windowsApplication = require("./native-windows-application"),
   windowsController = require("./build-native-windows-controller"), release = require("./build-release"),
   {checkNativeNoticeReview} = require("./check-native-notices");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, requireBuildFields, verifyBuildDirectoryEntries, canonicalBuildFile, fileHash, readBuildJson} = require("./build-source-inputs");
 
 const repo = path.resolve(__dirname, ".."),
   profiles = ["oneapi", "dpcpp", "dpcpp-opencl", "acpp-cuda", "acpp-hip"],
@@ -19,37 +19,6 @@ const repo = path.resolve(__dirname, ".."),
 
 /** @param {unknown} value @returns {value is Record<string, any>} */
 function record(value) {return value !== null && typeof value === "object" && !Array.isArray(value);}
-
-/** @param {unknown} value @param {string[]} keys @param {string} label */
-function exactObject(value, keys, label) {
-  if (!record(value) || !isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort())) {
-    throw new Error(label + " has unknown or missing fields");
-  }
-  return /** @type {Record<string, any>} */ (value);
-}
-
-/** @param {string} file @param {string} label @param {number} maximum */
-function regularFile(file, label, maximum) {
-  if (typeof file !== "string") {throw new Error(label + " path is invalid");}
-  const stat = fs.lstatSync(file, {throwIfNoEntry: false});
-  if (!path.isAbsolute(file) || path.resolve(file) !== file || !stat?.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 ||
-      stat.size < 1 || stat.size > maximum || fs.realpathSync(file) !== file) {
-    throw new Error(label + " is not a bounded canonical regular file: " + file);
-  }
-  return stat;
-}
-
-/** Read only the bounded direct inventory owned by this stage. @param {string} directory @param {string[]} expected @param {string} label */
-function exactEntries(directory, expected, label) {
-  const names = [], handle = fs.opendirSync(directory);
-  try {
-    for (let entry; (entry = handle.readSync()) !== null;) {
-      names.push(entry.name);
-      if (names.length > expected.length) {throw new Error(label + " contains unknown entries; preserve it for inspection");}
-    }
-  } finally {handle.closeSync();}
-  if (!isDeepStrictEqual(names.sort(), [...expected].sort())) {throw new Error(label + " is incomplete or contains unknown entries; preserve it");}
-}
 
 /** @param {string} workspace @param {string} output */
 function localWindowsSdkStagePaths(workspace, output) {
@@ -91,14 +60,14 @@ async function buildLocalNativeWindowsSdk(input, dependencies = {}) {
   const verifyScope = dependencies.verifyScope || local.verifyCurrentMemoryScope;
   verifyScope();
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local Windows SDK graph requires Linux x64 (WSL2)");}
-  const args = exactObject(input, ["controllerSupport", "coreArchive", "linuxSdk", "output", "tools", "workspace"], "Local Windows SDK input");
+  const args = requireBuildFields(input, ["controllerSupport", "coreArchive", "linuxSdk", "output", "tools", "workspace"], "Local Windows SDK input");
   if (typeof args["workspace"] !== "string") {throw new Error("Local Windows SDK workspace must be marked and canonical");}
   const workspace = local.admitWorkspace(args["workspace"], repo);
   if (workspace !== args["workspace"]) {throw new Error("Local Windows SDK workspace must be canonical and marked");}
   const jobs = local.localBuildJobs({...process.env, ...(dependencies.environment || {})}),
     paths = localWindowsSdkStagePaths(workspace, args["output"]), environment = {...process.env, ...(dependencies.environment || {}),
       MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs), OMP_NUM_THREADS: String(jobs)},
-    suppliedTools = exactObject(args["tools"], ["cc", "cmake", "cxx", "git", "ninja", "systemdRun"], "Selected local tools"),
+    suppliedTools = requireBuildFields(args["tools"], ["cc", "cmake", "cxx", "git", "ninja", "systemdRun"], "Selected local tools"),
     selectedTools = (dependencies.resolveTools || local.localTools)(environment),
     tools = /** @type {ReturnType<typeof local.localTools>} */ (suppliedTools);
   if (!isDeepStrictEqual(tools, selectedTools)) {throw new Error("Local Windows SDK tools differ from the current pinned selection");}
@@ -110,9 +79,9 @@ async function buildLocalNativeWindowsSdk(input, dependencies = {}) {
     throw new Error("Local Windows SDK needs the current buildLocalNativeSdk result for this workspace and MOM_BUILD_JOBS");
   }
   const coreArchive = args["coreArchive"];
-  regularFile(coreArchive, "Original WSL-copied Windows Core archive", 256 << 20);
+  canonicalBuildFile(coreArchive, "Original WSL-copied Windows Core archive", 256 << 20);
   if (!/\.lib$/i.test(coreArchive)) {throw new Error("Local Windows SDK Core input must be the original .lib archive");}
-  regularFile(path.join(path.dirname(coreArchive), "inputs.json"), "Original Windows Core producer receipt", 8 << 20);
+  canonicalBuildFile(path.join(path.dirname(coreArchive), "inputs.json"), "Original Windows Core producer receipt", 8 << 20);
 
   const prepareSources = dependencies.prepareWindowsSources || local.prepareOrAdmitWindowsSources,
     windowsSources = prepareSources(workspace, {environment}),
@@ -127,8 +96,8 @@ async function buildLocalNativeWindowsSdk(input, dependencies = {}) {
     windowsHostSdk = await buildHostSdk({workspace}, {verifyScope, environment}),
     hostSdk = {root: windowsHostSdk.root, pins: windowsHostSdk.pins};
   assertWorkspaceResult(windowsHostSdk, workspace, "Windows host SDK");
-  if (hostSdk.root !== path.join(workspace, "windows-host-sdk", "sdk") || !record(hostSdk.pins) ||
-      Object.keys(hostSdk.pins).sort().join(",") !== "descriptorSha256,filesSha256,overlaySha256,resultSha256" ||
+  if (hostSdk.root !== path.join(workspace, "windows-host-sdk", "sdk") ||
+      !hasExactBuildFields(hostSdk.pins, ["descriptorSha256", "filesSha256", "overlaySha256", "resultSha256"]) ||
       Object.values(hostSdk.pins).some(hash => !/^[a-f0-9]{64}$/.test(hash || ""))) {
     throw new Error("Local Windows host-SDK producer returned invalid root or receipt pins");
   }
@@ -205,11 +174,12 @@ async function buildLocalNativeWindowsSdk(input, dependencies = {}) {
     if (!selected) {throw new Error("Local Windows GPU config disappeared: " + profile);}
     fs.writeFileSync(configFile, selected.configBytes, {flag: "wx", mode: 0o444});
     if (fileHash(configFile) !== selected.configSha256) {throw new Error("Windows GPU config changed while staging: " + profile);}
-    const produced = buildGpu(configFile, output, environment), receiptFile = path.join(output, "result.json"),
-      receiptStat = regularFile(receiptFile, "Windows GPU producer receipt", 32 << 20), receipt = (dependencies.readJson || readBuildJson)(receiptFile);
+    const produced = buildGpu(configFile, output, environment), receiptFile = path.join(output, "result.json");
+    canonicalBuildFile(receiptFile, "Windows GPU producer receipt");
+    const receipt = (dependencies.readJson || readBuildJson)(receiptFile);
     if (!record(produced) || !isDeepStrictEqual(produced, receipt) || produced.version !== 1 || produced.profile !== profile ||
         produced.factory !== "mom_native_gpu_" + profile.replaceAll("-", "_") || produced.configFile !== configFile ||
-        produced.configSha256 !== selected.configSha256 || receiptStat.size < 1 || fileHash(configFile) !== selected.configSha256) {
+        produced.configSha256 !== selected.configSha256 || fileHash(configFile) !== selected.configSha256) {
       throw new Error("Original Windows GPU producer did not retain the selected config and receipt: " + profile);
     }
     gpuReceipts.push(receiptFile);
@@ -254,8 +224,8 @@ async function buildLocalNativeWindowsSdk(input, dependencies = {}) {
   validateNotice(notices);
 
   const expectedConfigs = profiles.map(profile => profile + ".json");
-  exactEntries(paths.gpuConfigs, expectedConfigs, "Local Windows GPU config stage");
-  exactEntries(paths.gpuOutputs, profiles, "Local Windows GPU output stage");
+  verifyBuildDirectoryEntries(paths.gpuConfigs, expectedConfigs, "Local Windows GPU config stage");
+  verifyBuildDirectoryEntries(paths.gpuOutputs, profiles, "Local Windows GPU output stage");
   const descriptorBytes = Buffer.from(JSON.stringify(config, null, 2) + "\n");
   if (descriptorBytes.length < 2 || descriptorBytes.length > 8 << 20) {throw new Error("Windows SDK descriptor exceeds its bound");}
   fs.writeFileSync(paths.configFile, descriptorBytes, {flag: "wx", mode: 0o444});
@@ -268,7 +238,7 @@ async function buildLocalNativeWindowsSdk(input, dependencies = {}) {
   }
   validateNotice(reread.notices);
   (dependencies.verifyApplicationFiles || windowsApplication.verifyWindowsApplicationFiles)(applicationAdmission.files);
-  exactEntries(paths.root, ["gpu", "gpu-configs", "native-windows-sdk.json"], "Local Windows SDK stage");
+  verifyBuildDirectoryEntries(paths.root, ["gpu", "gpu-configs", "native-windows-sdk.json"], "Local Windows SDK stage");
   return {workspace, root: paths.root, configFile: paths.configFile, tools, windowsHostSdk, windowsLlvm,
     windowsJitResources, windowsJitSdk, windowsDpcppSdk, windowsHostComponent, gpuReceipts, applicationAdmission,
     jobs, buildOnly: true, compiled: true, executed: false, publicationQualified: false};

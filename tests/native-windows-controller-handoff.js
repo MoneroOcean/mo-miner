@@ -401,6 +401,12 @@ test.describe("Windows controller support handoff admission", () => {
     updateHermesFetch(f, fetch => {fetch.fetcherSha256 = "g".repeat(64);}, false);
     assert.throws(() => windowsControllerHandoffInputs(f.root, f.expected), /handoff tree differs from its pinned inventory/);
   });
+  test("rejects a producer receipt pin that disagrees with the sealed inventory", t => {
+    const f = hermesFixture(t);
+    f.handoff.producers[0].receiptSha256 = sha("another Hermes result");
+    f.expected.handoffSha256 = seal(f.root, f.handoff);
+    assert.throws(() => windowsControllerHandoffInputs(f.root, f.expected), /hermes\/result\.json has conflicting pins/);
+  });
   test("admits and exposes Hermes root LICENSE only when it matches the original source inventory", (/** @type {{after:(fn:()=>void)=>void}} */ t) => {
     const f = hermesFixture(t, false, true), result = windowsControllerHandoffInputs(f.root, f.expected),
       license = path.join(f.root, "hermes/source/LICENSE"), source = JSON.parse(fs.readFileSync(path.join(f.root, "hermes/result.json"), "utf8"));

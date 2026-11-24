@@ -130,7 +130,19 @@ test.describe("Public Linux LLVM 21 source SDK producer", {skip: process.platfor
     fs.writeFileSync(database, JSON.stringify([row(sourceFile, true), row(otherFile, false)]) + "\n");
     assert.equal(verifyAmdgpulibCallsCompileFlag(f.build, f.source).compileCommands, 2);
     fs.writeFileSync(database, JSON.stringify([row(sourceFile, false), row(otherFile, false)]) + "\n");
-    assert.throws(() => verifyAmdgpulibCallsCompileFlag(f.build, f.source), /missing its unique/);
+    assert.throws(() => verifyAmdgpulibCallsCompileFlag(f.build, f.source), /exactly one host-only/);
+    const duplicate = row(sourceFile, false);
+    duplicate.command += " -fno-builtin -fno-builtin";
+    fs.writeFileSync(database, JSON.stringify([duplicate]) + "\n");
+    assert.throws(() => verifyAmdgpulibCallsCompileFlag(f.build, f.source), /exactly one host-only/);
+    const quoted = row(otherFile, false);
+    quoted.command += ' -DOTHER="text -fno-builtin text"';
+    fs.writeFileSync(database, JSON.stringify([row(sourceFile, true), quoted]) + "\n");
+    assert.equal(verifyAmdgpulibCallsCompileFlag(f.build, f.source).compileCommands, 2);
+    const escaped = row(sourceFile, false);
+    escaped.command += String.raw` "\-fno-builtin"`;
+    fs.writeFileSync(database, JSON.stringify([escaped]) + "\n");
+    assert.throws(() => verifyAmdgpulibCallsCompileFlag(f.build, f.source), /exactly one host-only/);
     fs.writeFileSync(database, JSON.stringify([row(sourceFile, true), row(otherFile, true)]) + "\n");
     assert.throws(() => verifyAmdgpulibCallsCompileFlag(f.build, f.source), /escaped/);
     fs.writeFileSync(database, JSON.stringify([row(sourceFile, true), row(sourceFile, true)]) + "\n");
@@ -271,6 +283,16 @@ test.describe("Public Linux LLVM 21 source SDK producer", {skip: process.platfor
     assert.throws(() => findClangLinkCommand(f.root, [phase], f.tools.cxx), /exactly one PIC Intel clang link/);
     fs.writeFileSync(log, linkCommand + "\n");
     assert.equal(findClangLinkCommand(f.root, [phase], f.tools.cxx).command, linkCommand);
+
+    const read = fs.readSync;
+    fs.readSync = /** @type {typeof fs.readSync} */ ((...args) => {
+      fs.readSync = read;
+      fs.appendFileSync(log, "more output\n");
+      return Reflect.apply(read, fs, args);
+    });
+    try {
+      assert.throws(() => findClangLinkCommand(f.root, [phase], f.tools.cxx), /changed during admission/);
+    } finally {fs.readSync = read;}
   });
 
   test("requires source-consumer LLVM tools in the generated graph", t => {

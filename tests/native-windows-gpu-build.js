@@ -482,7 +482,7 @@ test.describe("Windows native GPU source and host policy", () => {
     ].sort());
     assert.equal(new Set([...maintained.main, ...maintained.support]).size,
       maintained.main.length + maintained.support.length);
-    // The development builders retain stable object names, so compare their source paths alone.
+    // Compare source paths because the development builders also assign object labels.
     const windowsSources = fs.readFileSync(path.join(repo, "scripts/windows-sycl-sources.ps1"), "utf8");
     const development = [...windowsSources.matchAll(/'([^']+\.cpp)'/g)]
       .map(match => (match[1] || "").replaceAll("\\", "/"));

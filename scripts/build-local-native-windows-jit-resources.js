@@ -7,29 +7,10 @@ const local = require("./build-local-native-sdk"), localJit = require("./build-l
   nativeCi = require("./native-ci-linux-jit"), dpcppInputs = require("./native-dpcpp-cuda-inputs"),
   gnuHeaders = require("./prepare-native-gnu-headers"), jitSdk = require("./native-jit-sdk"),
   windowsResources = require("./native-windows-jit-resources"), resourceBuilder = require("./prepare-native-sycl-jit-resources");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {verifyBuildDirectoryEntries, canonicalBuildDirectory, canonicalBuildFile, fileHash, readBuildJson, readBuildJsonSnapshot} = require("./build-source-inputs");
 
 const repo = fs.realpathSync(path.resolve(__dirname, "..")), linuxTarget = "x86_64-unknown-linux-gnu",
   windowsTarget = "x86_64-w64-windows-gnu", oneapiCompiler = "/opt/intel/oneapi/compiler/2026.2/bin";
-
-/** @param {string} file @param {string} label @param {number} [maximum] */
-function regularFile(file, label, maximum = 16 << 20) {
-  const stat = fs.lstatSync(file, {throwIfNoEntry: false});
-  if (!path.isAbsolute(file) || path.resolve(file) !== file || !stat?.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 ||
-      stat.size < 1 || stat.size > maximum || fs.realpathSync(file) !== file) {
-    throw new Error(label + " is not a bounded canonical regular file: " + file);
-  }
-  return stat;
-}
-
-/** @param {string} root @param {string} label */
-function realDirectory(root, label) {
-  const stat = fs.lstatSync(root, {throwIfNoEntry: false});
-  if (!path.isAbsolute(root) || path.resolve(root) !== root || !stat?.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(root) !== root) {
-    throw new Error(label + " is not a canonical directory: " + root);
-  }
-  return root;
-}
 
 /** @param {string} workspace */
 function localWindowsJitResourcePaths(workspace) {
@@ -72,9 +53,10 @@ function validateTools(tools) {
  * @param {{cmake:string,ninja:string,cc:string,cxx:string}} tools @param {NodeJS.ProcessEnv} env
  * @param {typeof dpcppInputs.auditDpcppCudaInputs} auditDpcpp @param {typeof nativeCi.auditLinuxJitResourceTree} auditLinux */
 function auditInputs(context, tools, env, auditDpcpp, auditLinux) {
-  const state = local.localDpcppCudaState(context.support), manifestStat = regularFile(state.manifest, "Local DPC++/CUDA manifest", 8 << 20),
-    manifestSha256 = fileHash(state.manifest), record = readBuildJson(state.manifest);
-  if (manifestStat.size < 1 || record?.source?.origin !== "workspace-prepared-receipts" || record.source.workspaceRoot !== context.workspace) {
+  const state = local.localDpcppCudaState(context.support);
+  canonicalBuildFile(state.manifest, "Local DPC++/CUDA manifest");
+  const {value: record, sha256: manifestSha256} = readBuildJsonSnapshot(state.manifest, 8 << 20);
+  if (record?.source?.origin !== "workspace-prepared-receipts" || record.source.workspaceRoot !== context.workspace) {
     throw new Error("Local Windows JIT requires the original prepared-receipt DPC++ source provenance");
   }
   const dpcpp = auditDpcpp(state, record);
@@ -85,30 +67,26 @@ function auditInputs(context, tools, env, auditDpcpp, auditLinux) {
     throw new Error("Local Windows JIT source, DPC++ inputs or Linux resource admission changed");
   }
   const baseRoot = path.join(context.resources.root, "base", "base"), baseManifest = path.join(context.resources.root, "base", "base-manifest.json");
-  realDirectory(baseRoot, "Admitted local Linux JIT base"); regularFile(baseManifest, "Admitted local Linux JIT base manifest", 8 << 20);
+  canonicalBuildDirectory(baseRoot, "Admitted local Linux JIT base"); canonicalBuildFile(baseManifest, "Admitted local Linux JIT base manifest", 8 << 20);
   return {dpcpp, dpcppManifestSha256: manifestSha256, linux, base: {baseRoot, baseManifest, baseManifestSha256: fileHash(baseManifest)}};
 }
 
 /** @param {ReturnType<typeof localWindowsJitResourcePaths>} paths @param {boolean} allowMissing */
 function checkManagedRoot(paths, allowMissing) {
-  const stat = fs.lstatSync(paths.root, {throwIfNoEntry: false});
-  if (!stat) {
-    if (!allowMissing) {throw new Error("Local Windows JIT managed output is missing");}
+  if (!canonicalBuildDirectory(paths.root, "Local Windows JIT managed output", allowMissing)) {
     if (fs.realpathSync(path.dirname(paths.root)) !== path.dirname(paths.root)) {throw new Error("Local Windows JIT workspace parent is not canonical");}
     return false;
   }
-  realDirectory(paths.root, "Local Windows JIT managed output");
-  const expected = ["emitter", "resources", "resource-profile.json", "windows-gnu-headers"].sort(), actual = fs.readdirSync(paths.root).sort();
-  if (!isDeepStrictEqual(actual, expected)) {throw new Error("Local Windows JIT output is incomplete or contains unknown state; preserve it for inspection");}
-  realDirectory(paths.gnu, "Local Windows GNU headers"); realDirectory(paths.emitter, "Local Windows JIT emitter");
-  realDirectory(paths.resources, "Local Windows JIT resources"); regularFile(paths.profile, "Local Windows JIT resource profile", 1 << 20);
+  verifyBuildDirectoryEntries(paths.root, ["emitter", "resources", "resource-profile.json", "windows-gnu-headers"], "Local Windows JIT output");
+  canonicalBuildDirectory(paths.gnu, "Local Windows GNU headers"); canonicalBuildDirectory(paths.emitter, "Local Windows JIT emitter");
+  canonicalBuildDirectory(paths.resources, "Local Windows JIT resources"); canonicalBuildFile(paths.profile, "Local Windows JIT resource profile", 1 << 20);
   return true;
 }
 
 /** @param {string} root */
 function windowsGnuReceiptPins(root) {
   const result = path.join(root, "result.json"), copyrights = path.join(root, "copyrights.json"), targetHeaders = path.join(root, "target-headers.json");
-  for (const file of [result, copyrights, targetHeaders]) {regularFile(file, "Local Windows GNU producer receipt", 8 << 20);}
+  for (const file of [result, copyrights, targetHeaders]) {canonicalBuildFile(file, "Local Windows GNU producer receipt", 8 << 20);}
   return {result: fileHash(result), copyrights: fileHash(copyrights), targetHeaders: fileHash(targetHeaders)};
 }
 
@@ -151,7 +129,7 @@ function buildLocalWindowsJitResources(localSdk, tools, dependencies = {}) {
       throw new Error("Local Windows GNU producer did not emit its bounded absolute target-header list");
     }
     buildEmitter(context.inputs.dpcppRoot, paths.emitter, env, targetHeaders);
-    const emitterFile = path.join(paths.emitter, "result.json"); regularFile(emitterFile, "Local Windows JIT emitter receipt");
+    const emitterFile = path.join(paths.emitter, "result.json"); canonicalBuildFile(emitterFile, "Local Windows JIT emitter receipt", 16 << 20);
     const emitter = admitEmitter(paths.emitter, context.inputs.dpcppRoot, paths.gnu, initialGnu.headers, fileHash(emitterFile)),
       profile = windowsResources.profileFromAdmissions(before.base, {root: paths.gnu, notices: initialGnu.notices}, emitter);
     fs.writeFileSync(paths.profile, JSON.stringify(profile, null, 2) + "\n", {flag: "wx", mode: 0o600});
@@ -164,11 +142,11 @@ function buildLocalWindowsJitResources(localSdk, tools, dependencies = {}) {
   checkManagedRoot(paths, false);
   const gnuAdmission = auditGnu({root: paths.gnu, target: windowsTarget}, windowsTarget),
     gnuAdmissionPins = windowsGnuReceiptPins(paths.gnu),
-    emitterFile = path.join(paths.emitter, "result.json"); regularFile(emitterFile, "Local Windows JIT emitter receipt");
+    emitterFile = path.join(paths.emitter, "result.json"); canonicalBuildFile(emitterFile, "Local Windows JIT emitter receipt", 16 << 20);
   const emitter = admitEmitter(paths.emitter, context.inputs.dpcppRoot,
       paths.gnu, gnuAdmission.headers, fileHash(emitterFile)),
     profile = windowsResources.profileFromAdmissions(before.base, {root: paths.gnu, notices: gnuAdmission.notices}, emitter),
-    profileFile = readBuildJson(paths.profile), profileSha256 = fileHash(paths.profile);
+    {value: profileFile, sha256: profileSha256} = readBuildJsonSnapshot(paths.profile, 1 << 20);
   if (!isDeepStrictEqual(profileFile, profile)) {throw new Error("Local Windows JIT profile differs from its admitted producer inputs");}
   const resourceAdmission = verifyResources(paths.resources, windowsTarget);
   if (resourceAdmission?.target !== windowsTarget || resourceAdmission.directory !== paths.resources ||

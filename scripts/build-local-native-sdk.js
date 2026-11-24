@@ -6,7 +6,7 @@ const fs = require("node:fs"), path = require("node:path"), os = require("node:o
 const {isDeepStrictEqual} = require("node:util");
 const {createHash} = require("node:crypto");
 const {prepareSdkSources, verifyPreparedSdkSources, sdkComponents} = require("./prepare-native-sdk-sources");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {canonicalBuildDirectory, hasExactBuildFields, buildPathsOverlap, fileHash, readBuildJson, nativeBuildJobs: localBuildJobs} = require("./build-source-inputs");
 const {archiveName} = require("./native-llvm-sdk");
 const {verifyLinuxLlvmAdmission} = require("./build-native-llvm-sdk");
 const {ioPins, nativeIoInputs} = require("./build-native-io");
@@ -22,15 +22,6 @@ const ciJit = require("./native-ci-linux-jit"),
 const repo = fs.realpathSync(path.resolve(__dirname, "..")), markerName = ".mom-native-sdk-workspace.json",
   gib = 1024 ** 3, oneapiCompilerRoot = "/opt/intel/oneapi/compiler";
 /** @param {string} name */ const producer = name => path.join(repo, "scripts", name);
-
-/** The one local release parallelism setting: MOM_BUILD_JOBS, an integer in 1..16 (the bound every native producer
- * plan enforces), defaulting to the established two. Recorded job counts are parallelism provenance, not release-byte
- * inputs, so outputs built with another count stay reusable. @param {NodeJS.ProcessEnv} [environment] */
-function localBuildJobs(environment = process.env) {
-  const value = environment["MOM_BUILD_JOBS"] || "2";
-  if (!/^(?:[1-9]|1[0-6])$/.test(value)) {throw new Error("Local native builds need MOM_BUILD_JOBS as an integer in 1..16");}
-  return Number(value);
-}
 
 /** Producers that run CI's own support/ROCm recipes, whose admissions accept only CI's 2 or 4 jobs. @param {number} jobs */
 function ciRecipeJobs(jobs) {return jobs >= 4 ? 4 : 2;}
@@ -65,13 +56,6 @@ function defaultWorkspace() {
     parent = next;
   }
   return path.join(parent, "native-sdk");
-}
-
-/** @param {string} left @param {string} right */
-function overlaps(left, right) {
-  /** @param {string} parent @param {string} child */
-  const contains = (parent, child) => {const rel = path.relative(parent, child); return !rel || (!path.isAbsolute(rel) && rel !== ".." && !rel.startsWith(".." + path.sep));};
-  return contains(left, right) || contains(right, left);
 }
 
 /** Resolve PATH tools to immutable absolute executable paths. @param {string} name @param {string} searchPath */
@@ -130,7 +114,7 @@ function localTools(environment, versionOf = executableVersion) {
 /** Create or admit only the marked workspace for this checkout; never clear unknown contents.
  * @param {string} workspace @param {string} checkout */
 function admitWorkspace(workspace, checkout) {
-  if (!path.isAbsolute(workspace) || path.resolve(workspace) !== workspace || overlaps(workspace, checkout) || /[\r\n\0]/.test(workspace)) {
+  if (!path.isAbsolute(workspace) || path.resolve(workspace) !== workspace || buildPathsOverlap(workspace, checkout) || /[\r\n\0]/.test(workspace)) {
     throw new Error("Native SDK workspace must be a canonical absolute directory outside the checkout");
   }
   const parent = path.dirname(workspace);
@@ -154,16 +138,6 @@ function admitWorkspace(workspace, checkout) {
     throw new Error("Native SDK workspace sources path must be a real directory");
   }
   return workspace;
-}
-
-/** @param {string} directory @param {string} label */
-function existingDirectory(directory, label) {
-  const stat = fs.lstatSync(directory, {throwIfNoEntry: false});
-  if (!stat) {return false;}
-  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {
-    throw new Error(label + " is not a canonical directory: " + directory);
-  }
-  return true;
 }
 
 /** @param {string} file @param {string} label */
@@ -214,12 +188,12 @@ function supportPaths(workspace) {
  * @param {string} workspace @param {NodeJS.ProcessEnv} environment @param {typeof runCommand} [run] */
 function ensureLocalLinuxSysroot(workspace, environment, run = runCommand) {
   const paths = supportPaths(workspace);
-  if (!existingDirectory(paths.sysrootFetch, "Linux sysroot package cohort")) {
+  if (!canonicalBuildDirectory(paths.sysrootFetch, "Linux sysroot package cohort", true)) {
     run(process.execPath, [producer("fetch-native-sdk-sources.js"), "sysroot", paths.sysrootFetch, "--allow-network"],
       {label: "pinned glibc sysroot package fetch", env: {...environment, MOM_AOT_BUILD_ONLY: "1"}, cwd: repo});
   }
   verifySysrootPackages(paths.sysrootFetch);
-  if (!existingDirectory(paths.sysroot, "Linux sysroot")) {prepareLinuxSysroot(paths.sysrootFetch, paths.sysroot);}
+  if (!canonicalBuildDirectory(paths.sysroot, "Linux sysroot", true)) {prepareLinuxSysroot(paths.sysrootFetch, paths.sysroot);}
   return applyLinuxSysrootEnvironment({...environment, MOM_LINUX_SYSROOT: paths.sysroot});
 }
 
@@ -269,7 +243,7 @@ function localDpcppCudaRoots(roots = {dpcpp: "/opt/dpcpp", cuda: "/usr/local/cud
  *   prepare?: (target: string, input: Record<string, string>, output: string, environment: NodeJS.ProcessEnv) => unknown,
  *   verifyLinux?: (...args: any[]) => unknown}} [dependencies] */
 function prepareOrAdmitLinuxSources(workspace, dependencies = {}) {
-  existingDirectory(workspace, "Native SDK workspace");
+  canonicalBuildDirectory(workspace, "Native SDK workspace", true);
   const marker = path.join(workspace, markerName);
   regularFile(marker, "Native SDK workspace marker");
   if (fs.readFileSync(marker, "utf8") !== JSON.stringify({version: 1, checkout: repo}) + "\n") {
@@ -285,7 +259,7 @@ function prepareOrAdmitLinuxSources(workspace, dependencies = {}) {
     prepare = dependencies.prepare || prepareSdkSources,
     verifyLinux = dependencies.verifyLinux || ciSources.verifyLinuxSources;
   fs.accessSync(git, fs.constants.X_OK);
-  existingDirectory(paths.compilerFetch, "Pinned compiler source roots");
+  canonicalBuildDirectory(paths.compilerFetch, "Pinned compiler source roots", true);
   regularFile(state.fetchReceipt, "Pinned compiler source fetch receipt"); regularFile(state.rootsFile, "Pinned compiler source roots receipt");
   const receipt = readBuildJson(state.fetchReceipt), roots = readBuildJson(state.rootsFile);
   assertFetch(receipt, roots, "compiler", state.source);
@@ -295,7 +269,7 @@ function prepareOrAdmitLinuxSources(workspace, dependencies = {}) {
     throw new Error("Pinned Linux source preparation plan does not bind the stable workspace output");
   }
   verifyCompiler(state.compilerPreparedReceipt, state.compilerPrepared, verifyPreparedSdkSources);
-  if (existingDirectory(paths.linuxSources, "Prepared Linux sources")) {
+  if (canonicalBuildDirectory(paths.linuxSources, "Prepared Linux sources", true)) {
     verifyPreparedSourceRoots(state.preparedReceipt, paths.linuxSources, "linux");
     verifyLinux({env}, state, git);
   } else {
@@ -324,7 +298,7 @@ function prepareOrAdmitWindowsSources(workspace, dependencies = {}) {
     roots = readBuildJson(rootsFile), selected = Object.fromEntries(Object.keys(sdkComponents("windows")).map(name => [name, roots[name]])),
     env = {...(dependencies.environment || process.env), MOM_AOT_BUILD_ONLY: "1"},
     verify = dependencies.verify || verifyPreparedSdkSources;
-  if (!existingDirectory(output, "Prepared Windows sources")) {
+  if (!canonicalBuildDirectory(output, "Prepared Windows sources", true)) {
     (dependencies.prepare || prepareSdkSources)("windows", selected, output, env);
   }
   verifyPreparedSourceRoots(receipt, output, "windows");
@@ -348,7 +322,7 @@ function verifyPreparedSourceRoots(file, output, target) {
   const receipt = /** @type {{version?: number, target?: string, status?: string, prepared?: Record<string, {root?: string}>}} */ (readBuildJson(file)),
     names = Object.keys(sdkComponents(target)).sort(), prepared = receipt?.prepared;
   if (receipt?.version !== 2 || receipt.target !== target || receipt.status !== "PASS" || !prepared ||
-      Object.keys(prepared).sort().join(",") !== names.join(",")) {
+      !hasExactBuildFields(prepared, names)) {
     throw new Error("Prepared " + target + " source receipt has an unexpected component cohort");
   }
   for (const name of names) {
@@ -368,7 +342,7 @@ function verifyPreparedSourceRoots(file, output, target) {
  *   auditInputs?:(state:import("./native-dpcpp-cuda-inputs").DpcppCudaInputState,record:any)=>unknown}} [dependencies] */
 function stageLocalCompilerInputs(workspace, dependencies = {}) {
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local DPC++/CUDA input staging currently requires Linux x64");}
-  existingDirectory(workspace, "Native SDK workspace");
+  canonicalBuildDirectory(workspace, "Native SDK workspace", true);
   const root = admitWorkspace(workspace, repo), paths = supportPaths(root), state = localDpcppCudaState(paths),
     env = {...(dependencies.environment || process.env), MOM_AOT_BUILD_ONLY: "1"}, git = fs.realpathSync("/usr/bin/git"),
     prepareSources = dependencies.prepareSources || prepareOrAdmitLinuxSources,
@@ -379,7 +353,7 @@ function stageLocalCompilerInputs(workspace, dependencies = {}) {
   prepareSources(root);
   const admitSources = () => verifyLinux({env}, state.linux, git), audit = () => auditInputs(state, readBuildJson(state.manifest));
   admitSources();
-  const reused = existingDirectory(state.root, "Local DPC++/CUDA inputs");
+  const reused = canonicalBuildDirectory(state.root, "Local DPC++/CUDA inputs", true);
   if (reused) {
     regularFile(state.manifest, "Local DPC++/CUDA input manifest");
     audit();
@@ -455,7 +429,7 @@ function admitSupport(kind, paths, invoke, dependencies) {
 function buildLocalNativeSupportSdk(context, dependencies = {}) {
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local native support SDK bootstrap currently requires Linux x64");}
   if (!context || typeof context.workspace !== "string") {throw new Error("Native support SDK bootstrap needs an admitted source-LLVM context");}
-  existingDirectory(context.workspace, "Admitted native SDK workspace");
+  canonicalBuildDirectory(context.workspace, "Admitted native SDK workspace", true);
   const root = admitWorkspace(context.workspace, repo), paths = supportPaths(root);
   if (context.compilerFetch !== paths.compilerFetch || context.compilerSources !== paths.compilerSources ||
       context.buildInputs !== paths.buildInputs || context.llvmSdk !== paths.llvmSdk) {
@@ -468,7 +442,7 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
     admitIo = dependencies.verifyIo || verifyIoSdk, admitOpenSsl = dependencies.verifyOpenSsl || verifyOpenSslSdk,
     archive = path.join(paths.buildInputs, archiveName), fetcher = producer("fetch-native-sdk-sources.js"),
     hermes = {source: paths.hermesSource, sdkRoot: paths.hermesSdk},
-    hermesReused = existingDirectory(paths.hermesSdk, "Hermes SDK"),
+    hermesReused = canonicalBuildDirectory(paths.hermesSdk, "Hermes SDK", true),
     jobs = localBuildJobs(env), supportJobs = ciRecipeJobs(jobs);
 
   if (path.basename(support.hermes.cxx) !== "icpx" || path.basename(support.openmp.cxx) !== "icpx") {
@@ -476,12 +450,12 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
   }
 
   invoke("systemd memory-limit preflight", process.execPath, [__filename, "--memory-probe"]);
-  existingDirectory(paths.buildInputs, "LLVM/OpenSSL source archive cohort"); regularFile(archive, "Pinned LLVM 21.1.8 source archive");
+  canonicalBuildDirectory(paths.buildInputs, "LLVM/OpenSSL source archive cohort", true); regularFile(archive, "Pinned LLVM 21.1.8 source archive");
   invoke("offline LLVM/OpenSSL source archive verification", process.execPath, [fetcher, "verify-build", paths.buildInputs]);
   invoke("LLVM 21 source SDK re-admission", process.execPath, [__filename, "--audit-support", "llvm-sdk", root]);
   invoke("pinned Linux source preparation and re-admission", process.execPath, [__filename, "--prepare-linux-sources", root]);
 
-  if (!existingDirectory(paths.hermesSource, "Hermes source fetch")) {
+  if (!canonicalBuildDirectory(paths.hermesSource, "Hermes source fetch", true)) {
     invoke("pinned Hermes source fetch", process.execPath,
       [fetcher, "hermes", support.hermes.git, paths.hermesSource, "--allow-network"]);
   }
@@ -492,7 +466,7 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
     admitSupport("hermes-sdk", paths, invoke, dependencies);
   }
 
-  if (!existingDirectory(paths.ioSource, "I/O source archive cohort")) {
+  if (!canonicalBuildDirectory(paths.ioSource, "I/O source archive cohort", true)) {
     invoke("pinned I/O source archive fetch", process.execPath, [fetcher, "io", paths.ioSource, "--allow-network"]);
   }
   invoke("offline I/O source archive verification", process.execPath, [fetcher, "verify-io", paths.ioSource]);
@@ -501,14 +475,14 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
     opensslConfig = {version: 1, jobs: supportJobs, tools: support.openssl},
     ioCommands = ciSupport.ioOpenSslBuildCommands(/** @type {Parameters<typeof ciSupport.ioOpenSslBuildCommands>[0]} */ (/** @type {unknown} */ (ioPaths)),
       support.cmake, support.ninja, support.openssl, String(supportJobs));
-  const ioReused = existingDirectory(paths.ioSdk, "Native I/O SDK");
+  const ioReused = canonicalBuildDirectory(paths.ioSdk, "Native I/O SDK", true);
   if (ioReused) {admitIo(ioPaths, {cmake: support.cmake, ninja: support.ninja, openssl: support.openssl});} else {
     const command = ioCommands[0];
     if (!command) {throw new Error("CI I/O SDK producer command is missing");}
     invoke("static I/O SDK producer", process.execPath, [path.join(repo, command.script), ...command.args]);
     admitIo(ioPaths, {cmake: support.cmake, ninja: support.ninja, openssl: support.openssl});
   }
-  const opensslReused = existingDirectory(paths.opensslSdk, "Static OpenSSL SDK");
+  const opensslReused = canonicalBuildDirectory(paths.opensslSdk, "Static OpenSSL SDK", true);
   admitToolDescriptor(paths.opensslTools, opensslConfig, opensslReused);
   if (opensslReused) {admitOpenSsl(ioPaths, support.openssl);} else {
     const command = ioCommands[1];
@@ -518,11 +492,11 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
   }
   admitSupport("io-openssl", paths, invoke, dependencies);
 
-  if (!existingDirectory(paths.zstdSource, "zstd source archive cohort")) {
+  if (!canonicalBuildDirectory(paths.zstdSource, "zstd source archive cohort", true)) {
     invoke("pinned zstd source archive fetch", process.execPath, [fetcher, "zstd", paths.zstdSource, "--allow-network"]);
   }
   invoke("offline zstd source archive verification", process.execPath, [fetcher, "verify-zstd", paths.zstdSource]);
-  const zstdConfig = {version: 1, jobs: 4, tools: support.zstd}, zstdReused = existingDirectory(paths.zstdSdk, "static zstd SDK");
+  const zstdConfig = {version: 1, jobs: 4, tools: support.zstd}, zstdReused = canonicalBuildDirectory(paths.zstdSdk, "static zstd SDK", true);
   admitToolDescriptor(paths.zstdTools, zstdConfig, zstdReused);
   if (zstdReused) {admitSupport("zstd-sdk", paths, invoke, dependencies);} else {
     const state = /** @type {Parameters<typeof ciSupport.zstdBuildCommand>[0]} */ ({source: paths.zstdSource,
@@ -532,7 +506,7 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
     admitSupport("zstd-sdk", paths, invoke, dependencies);
   }
 
-  const openmpConfig = {version: 1, jobs: supportJobs, tools: support.openmp}, openmpReused = existingDirectory(paths.openmpSdk, "static OpenMP SDK");
+  const openmpConfig = {version: 1, jobs: supportJobs, tools: support.openmp}, openmpReused = canonicalBuildDirectory(paths.openmpSdk, "static OpenMP SDK", true);
   admitToolDescriptor(paths.openmpTools, openmpConfig, openmpReused);
   const openmpState = /** @type {Parameters<typeof ciSupport.openmpBuildCommand>[0]} */ ({source: paths.buildInputs, archive,
     sdkRoot: paths.openmpSdk, toolsFile: paths.openmpTools});
@@ -554,7 +528,7 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
 function buildLocalCompilerInputs(context, dependencies = {}) {
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local compiler-input staging currently requires Linux x64");}
   if (!context || typeof context.workspace !== "string") {throw new Error("Compiler-input staging needs an admitted source-LLVM context");}
-  existingDirectory(context.workspace, "Admitted native SDK workspace");
+  canonicalBuildDirectory(context.workspace, "Admitted native SDK workspace", true);
   const root = admitWorkspace(context.workspace, repo), paths = supportPaths(root);
   if (context.compilerFetch !== paths.compilerFetch || context.compilerSources !== paths.compilerSources ||
       context.buildInputs !== paths.buildInputs || context.llvmSdk !== paths.llvmSdk) {
@@ -563,10 +537,10 @@ function buildLocalCompilerInputs(context, dependencies = {}) {
   const env = {...(dependencies.environment || process.env), MOM_AOT_BUILD_ONLY: "1"},
     runnerTools = dependencies.tools || (dependencies.resolveTools || localTools)(env, dependencies.versionOf || executableVersion),
     invoke = scopedInvoker(runnerTools, env, dependencies.run || runCommand), archive = path.join(paths.buildInputs, archiveName),
-    hadInputs = existingDirectory(paths.dpcppCudaRoot, "Local DPC++/CUDA inputs");
+    hadInputs = canonicalBuildDirectory(paths.dpcppCudaRoot, "Local DPC++/CUDA inputs", true);
   if (!hadInputs) {localDpcppCudaRoots(dependencies.installedRoots);}
   invoke("systemd memory-limit preflight", process.execPath, [__filename, "--memory-probe"]);
-  existingDirectory(paths.buildInputs, "LLVM/OpenSSL source archive cohort"); regularFile(archive, "Pinned LLVM 21.1.8 source archive");
+  canonicalBuildDirectory(paths.buildInputs, "LLVM/OpenSSL source archive cohort", true); regularFile(archive, "Pinned LLVM 21.1.8 source archive");
   invoke("offline LLVM/OpenSSL source archive verification", process.execPath,
     [producer("fetch-native-sdk-sources.js"), "verify-build", paths.buildInputs]);
   invoke("LLVM 21 source SDK re-admission", process.execPath, [__filename, "--audit-support", "llvm-sdk", root]);
@@ -582,7 +556,7 @@ function buildLocalCompilerInputs(context, dependencies = {}) {
 function buildLocalGnuHeaders(context, dependencies = {}) {
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local GNU target-header staging currently requires Linux x64");}
   if (!context || typeof context.workspace !== "string") {throw new Error("GNU header staging needs an admitted source-LLVM context");}
-  existingDirectory(context.workspace, "Admitted native SDK workspace");
+  canonicalBuildDirectory(context.workspace, "Admitted native SDK workspace", true);
   const root = admitWorkspace(context.workspace, repo), paths = supportPaths(root);
   if (context.compilerFetch !== paths.compilerFetch || context.compilerSources !== paths.compilerSources ||
       context.buildInputs !== paths.buildInputs || context.llvmSdk !== paths.llvmSdk) {
@@ -590,7 +564,7 @@ function buildLocalGnuHeaders(context, dependencies = {}) {
   }
   const env = {...(dependencies.environment || process.env), MOM_AOT_BUILD_ONLY: "1"},
     runnerTools = dependencies.tools || (dependencies.resolveTools || localTools)(env, dependencies.versionOf || executableVersion),
-    invoke = scopedInvoker(runnerTools, env, dependencies.run || runCommand), hadHeaders = existingDirectory(paths.gnuHeadersRoot, "Local GNU target headers"),
+    invoke = scopedInvoker(runnerTools, env, dependencies.run || runCommand), hadHeaders = canonicalBuildDirectory(paths.gnuHeadersRoot, "Local GNU target headers", true),
     target = "x86_64-unknown-linux-gnu", script = producer("prepare-native-gnu-headers.js");
   invoke("systemd memory-limit preflight", process.execPath, [__filename, "--memory-probe"]);
   invoke("LLVM 21 source SDK re-admission", process.execPath, [__filename, "--audit-support", "llvm-sdk", root]);
@@ -640,7 +614,7 @@ function runLocalJitResourceChild(mode, workspace, tools, dependencies = {}) {
   if (!new Set(["build", "audit"]).has(mode)) {throw new Error("Invalid local Linux JIT resource operation");}
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local Linux JIT resource admission requires Linux x64");}
   (dependencies.verifyScope || verifyCurrentMemoryScope)();
-  existingDirectory(workspace, "Native SDK workspace");
+  canonicalBuildDirectory(workspace, "Native SDK workspace", true);
   const root = admitWorkspace(workspace, repo), paths = supportPaths(root), state = localLinuxJitResourceState(paths),
     env = {...process.env, MOM_AOT_BUILD_ONLY: "1"};
   (dependencies.validateTools || (selected => {
@@ -657,7 +631,7 @@ function runLocalJitResourceChild(mode, workspace, tools, dependencies = {}) {
   }))(tools);
   const expectedTools = localJitToolsReceipt(tools), expectedToolFile = paths.linuxJitTools, admissionFile = paths.linuxJitAdmission,
     toolsStat = fs.lstatSync(expectedToolFile, {throwIfNoEntry: false}), receiptStat = fs.lstatSync(admissionFile, {throwIfNoEntry: false}),
-    outputExists = existingDirectory(state.root, "Local Linux JIT resources");
+    outputExists = canonicalBuildDirectory(state.root, "Local Linux JIT resources", true);
   if (!toolsStat?.isFile() || toolsStat.isSymbolicLink() || toolsStat.nlink !== 1 || fs.realpathSync(expectedToolFile) !== expectedToolFile ||
       !isDeepStrictEqual(readBuildJson(expectedToolFile), expectedTools)) {
     throw new Error("Local Linux JIT tool descriptor is missing or changed; preserve the cache and investigate");
@@ -689,7 +663,7 @@ function runLocalJitResourceChild(mode, workspace, tools, dependencies = {}) {
 function buildLocalLinuxJitResources(context, dependencies = {}) {
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local Linux JIT resource bootstrap currently requires Linux x64");}
   if (!context || typeof context.workspace !== "string") {throw new Error("Linux JIT resource bootstrap needs an admitted source-LLVM context");}
-  existingDirectory(context.workspace, "Admitted native SDK workspace");
+  canonicalBuildDirectory(context.workspace, "Admitted native SDK workspace", true);
   const root = admitWorkspace(context.workspace, repo), paths = supportPaths(root);
   if (context.compilerFetch !== paths.compilerFetch || context.compilerSources !== paths.compilerSources ||
       context.buildInputs !== paths.buildInputs || context.llvmSdk !== paths.llvmSdk) {
@@ -714,7 +688,7 @@ function buildLocalLinuxJitResources(context, dependencies = {}) {
       headerRecord.workspace !== root || headerRecord.root !== paths.gnuHeadersRoot || headerRecord.target !== "x86_64-unknown-linux-gnu") {
     throw new Error("Local Linux JIT inputs were not admitted at their stable workspace paths");
   }
-  const descriptor = localJitToolsReceipt(tools), hadResources = existingDirectory(paths.linuxJitResources, "Local Linux JIT resources"),
+  const descriptor = localJitToolsReceipt(tools), hadResources = canonicalBuildDirectory(paths.linuxJitResources, "Local Linux JIT resources", true),
     admissionStat = fs.lstatSync(paths.linuxJitAdmission, {throwIfNoEntry: false});
   if (!hadResources && admissionStat) {throw new Error("Local JIT admission receipt exists without its resource output; preserve the workspace and investigate");}
   admitToolDescriptor(paths.linuxJitTools, descriptor, hadResources);
@@ -726,7 +700,7 @@ function buildLocalLinuxJitResources(context, dependencies = {}) {
 /** Execute existing producer verifiers from the bounded support-audit subprocess. @param {string} kind @param {string} workspace */
 function auditSupportInProcess(kind, workspace) {
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Native support SDK admission currently requires Linux x64");}
-  existingDirectory(workspace, "Native SDK workspace");
+  canonicalBuildDirectory(workspace, "Native SDK workspace", true);
   const marker = path.join(workspace, markerName);
   regularFile(marker, "Native SDK workspace marker");
   if (fs.readFileSync(marker, "utf8") !== JSON.stringify({version: 1, checkout: repo}) + "\n") {
@@ -886,13 +860,13 @@ function buildLocalNativeSdk(options = {}, dependencies = {}) {
     buildInputs = path.join(root, "llvm-inputs"), llvmOutput = path.join(root, "llvm21"),
     sourceReceipt = path.join(compilerSources, "sources.json");
   let sourcesReused = false;
-  if (existingDirectory(compilerSources, "Prepared compiler sources")) {
+  if (canonicalBuildDirectory(compilerSources, "Prepared compiler sources", true)) {
     regularFile(sourceReceipt, "Prepared compiler source receipt");
     verifyCompilerSourceRoots(sourceReceipt, compilerSources);
     invoke("compiler source re-admission", process.execPath, [__filename, "--audit-support", "compiler-sources", root]);
     verifyCompilerSourceRoots(sourceReceipt, compilerSources); sourcesReused = true;
   } else {
-    if (!existingDirectory(compilerFetch, "Compiler source fetch")) {
+    if (!canonicalBuildDirectory(compilerFetch, "Compiler source fetch", true)) {
       invoke("pinned compiler source fetch", process.execPath, [producer("fetch-native-sdk-sources.js"), "compiler", tools.git, compilerFetch, "--allow-network"]);
     }
     regularFile(path.join(compilerFetch, "roots.json"), "Fetched compiler source roots");
@@ -905,7 +879,7 @@ function buildLocalNativeSdk(options = {}, dependencies = {}) {
   }
 
   let llvmReused = false, llvmResumed = false;
-  if (existingDirectory(llvmOutput, "LLVM output")) {
+  if (canonicalBuildDirectory(llvmOutput, "LLVM output", true)) {
     const result = path.join(llvmOutput, "result.json");
     if (fs.lstatSync(result, {throwIfNoEntry: false})) {
       regularFile(result, "Completed LLVM admission receipt");
@@ -942,7 +916,7 @@ function buildLocalNativeSdk(options = {}, dependencies = {}) {
       invoke("LLVM 21 source SDK re-admission", process.execPath, [__filename, "--audit-support", "llvm-sdk", root]); llvmResumed = true;
     }
   } else {
-    if (!existingDirectory(buildInputs, "LLVM source archive cohort")) {
+    if (!canonicalBuildDirectory(buildInputs, "LLVM source archive cohort", true)) {
       invoke("pinned LLVM source archive fetch", process.execPath, [producer("fetch-native-sdk-sources.js"), "build", buildInputs, "--allow-network"]);
     }
     invoke("offline LLVM source archive verification", process.execPath, [producer("fetch-native-sdk-sources.js"), "verify-build", buildInputs]);

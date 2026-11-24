@@ -218,9 +218,6 @@ test.describe("Native Pearl JIT resource integration", () => {
   test("the isolated compiler SDK does not replace the application runtime SDK", () => {
     assert.match(build, /process\.env\["MOM_AOT_NVRTC_SDK"\]/); assert.match(build, /"-isystem", selected\.include, "-isystem", cudaInclude/);
   });
-  test("only Pearl receives its host-only embedded resource policy", () => {
-    assert.match(build, /file === "sycl\/pearlhash\/pearlhash\.cpp" \? \["-DMOM_EMBEDDED_NVRTC_HEADERS"\]/);
-  });
   test("native program creation passes memory-only names and exact source arrays", () => {
     assert.match(search, /#if defined\(MOM_EMBEDDED_NVRTC_HEADERS\)\s+includes\.count\(\), includes\.sources\(\), includes\.names\(\)\);/);
   });

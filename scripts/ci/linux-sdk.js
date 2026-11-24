@@ -13,7 +13,7 @@ const ciJit = require("../native-ci-linux-jit"),
   ciTar = require("../native-ci-tar"),
   dpcppInputs = require("../native-dpcpp-cuda-inputs"),
   {auditGnuHeaders} = require("../prepare-native-gnu-headers");
-const {fileHash, readBuildJson} = require("../build-source-inputs");
+const {fileHash, readBuildJson, readCanonicalBuildJson} = require("../build-source-inputs");
 const {canonicalFile, appendOutputs} = require("./seal");
 
 const repo = path.resolve(__dirname, "../..");
@@ -79,10 +79,11 @@ function sealLinuxJitResources(paths) {
   canonicalFile(resultFile, "Linux JIT resource result", 64 << 20);
   canonicalFile(manifestFile, "Linux JIT resource manifest", 64 << 20);
   canonicalFile(archive, "Linux JIT resource bundle");
-  const manifestSha256 = fileHash(manifestFile);
-  assertLinuxJitResourceResult(readBuildJson(resultFile), readBuildJson(manifestFile), manifestFile, manifestSha256);
+  const {value: result, sha256: resultSha256} = readCanonicalBuildJson(resultFile, 8 << 20, "Linux JIT resource result"),
+    {value: manifest, sha256: manifestSha256} = readCanonicalBuildJson(manifestFile, 8 << 20, "Linux JIT resource manifest");
+  assertLinuxJitResourceResult(result, manifest, manifestFile, manifestSha256);
   ciTar.listState(archive, [path.basename(root)]);
-  return {resources_bundle_sha256: fileHash(archive), resources_manifest_sha256: manifestSha256, resources_result_sha256: fileHash(resultFile)};
+  return {resources_bundle_sha256: fileHash(archive), resources_manifest_sha256: manifestSha256, resources_result_sha256: resultSha256};
 }
 
 /** Read the nine upstream output pins the Windows JIT resource producer admits.

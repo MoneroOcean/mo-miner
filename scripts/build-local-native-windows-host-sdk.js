@@ -3,21 +3,11 @@
 // Local WSL acquisition/extraction adapter for the shared build-only Windows host SDK.
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
 const local = require("./build-local-native-sdk");
-const {fileHash} = require("./build-source-inputs");
+const {canonicalBuildDirectory, fileHash} = require("./build-source-inputs");
 const {fetchWindowsHostSdkArchives, verifyWindowsHostSdkArchives} = require("./fetch-native-sdk-sources");
 const {prepareWindowsHostSdk} = require("./prepare-native-windows-sdk");
 const {windowsHostSdkInputs} = require("./native-windows-host-sdk-inputs");
 const repo = fs.realpathSync(path.resolve(__dirname, ".."));
-
-/** @param {string} directory @param {string} label */
-function existingDirectory(directory, label) {
-  const stat = fs.lstatSync(directory, {throwIfNoEntry: false});
-  if (!stat) {return false;}
-  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {
-    throw new Error(label + " is not a canonical directory: " + directory);
-  }
-  return true;
-}
 
 /** Hash the exact public producer receipt names; the shared reader validates their content and tree.
  * @param {string} root @returns {{resultSha256:string,descriptorSha256:string,filesSha256:string,overlaySha256:string}} */
@@ -43,12 +33,12 @@ async function buildLocalNativeWindowsHostSdk(input, dependencies = {}) {
   const workspace = (dependencies.admitWorkspace || local.admitWorkspace)(input.workspace, repo),
     root = path.join(workspace, "windows-host-sdk"), archiveRoot = path.join(root, "archives"), sdkRoot = path.join(root, "sdk"),
     workRoot = sdkRoot + ".work";
-  if (!existingDirectory(root, "Local Windows host-SDK workspace")) {fs.mkdirSync(root, {mode: 0o700});}
+  if (!canonicalBuildDirectory(root, "Local Windows host-SDK workspace", true)) {fs.mkdirSync(root, {mode: 0o700});}
   const entries = fs.readdirSync(root).sort();
   if (entries.some(name => !["archives", "sdk"].includes(name))) {
     throw new Error("Local Windows host-SDK workspace contains unknown entries; preserve it and investigate");
   }
-  const archivesExist = existingDirectory(archiveRoot, "Local Windows host-SDK archives"), sdkExists = existingDirectory(sdkRoot, "Local Windows host SDK"),
+  const archivesExist = canonicalBuildDirectory(archiveRoot, "Local Windows host-SDK archives", true), sdkExists = canonicalBuildDirectory(sdkRoot, "Local Windows host SDK", true),
     workStat = fs.lstatSync(workRoot, {throwIfNoEntry: false});
   if (workStat) {throw new Error("Local Windows host-SDK preparation has an incomplete work directory; preserve it and investigate");}
   if (sdkExists && !archivesExist) {throw new Error("Local Windows host SDK exists without its original verified archives; preserve it and investigate");}

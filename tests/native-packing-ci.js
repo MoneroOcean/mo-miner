@@ -67,7 +67,7 @@ function fixture(t, target = "linux") {
   });
   const preparePacking = () => prepareNativePackingTool(path.join(temp, "native-packing-tool"), env, spawn);
   const io = {stateRoot,
-    ci: {listState: realCi.listState,
+    ci: {listState: realCi.listState, tarExpandedBytes: realCi.tarExpandedBytes,
       extractState: (/** @type {Parameters<typeof realCi.extractState>} */ ...args) => {calls.push({stage: "restore"}); realCi.extractState(...args);},
       packState: (/** @type {Parameters<typeof realCi.packState>} */ ...args) => {calls.push({stage: "seal"}); return realCi.packState(...args);}},
     prepareNativePackingTool: (/** @type {string} */ directory, /** @type {NodeJS.ProcessEnv} */ toolEnv) =>
@@ -155,12 +155,27 @@ test.describe("SDK-free native packing CI handoff", {skip: (process.platform !==
     const f = fixture(t); fs.writeFileSync(path.join(f.tree, "unexpected"), "x"); f.seal();
     assert.throws(() => f.pack(), /unexpected members/); assert.equal(f.calls.length, 0);
   });
+  test("a linked metadata member fails before extraction", t => {
+    const f = fixture(t), receipt = path.join(f.tree, "result.json");
+    fs.unlinkSync(receipt);
+    fs.symlinkSync("entrypoint.json", receipt);
+    f.seal();
+    assert.throws(() => f.pack(), /link, special file or ambiguous member/);
+    assert.equal(f.calls.length, 0);
+  });
   test("a handoff for another target cannot select the packing platform", t => {
     const f = fixture(t); f.handoff.target = "x86_64-pc-windows-msvc"; f.seal(); assert.throws(() => f.pack(), /does not bind/);
     assert.deepEqual(f.calls.map(row => row.stage), ["restore"]);
   });
   test("changed producer bytes fail before tool acquisition", t => {
     const f = fixture(t); f.save("result.json", {changed: true}); f.seal(); assert.throws(() => f.pack(), /regular-file pin/);
+    assert.deepEqual(f.calls.map(row => row.stage), ["restore"]);
+  });
+  test("a null nested producer pin fails before tool acquisition", t => {
+    const f = fixture(t);
+    Object.assign(f.handoff.producerReceipt, {sha256: null});
+    f.seal();
+    assert.throws(() => f.pack(), /regular-file pin/);
     assert.deepEqual(f.calls.map(row => row.stage), ["restore"]);
   });
   test("the CLI reports failures with the native-ci prefix", () => {

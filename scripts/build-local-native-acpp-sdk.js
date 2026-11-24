@@ -8,12 +8,11 @@ const local = require("./build-local-native-sdk"), jit = require("./build-local-
 const {verifyPreparedRoots} = jit;
 const {verifyLinuxLlvmAdmission} = require("./build-native-llvm-sdk");
 const {auditDpcppCudaInputs} = require("./native-dpcpp-cuda-inputs");
-const {staticSyclSdkPlan} = require("./build-native-sycl-sdk");
 const {nativeStaticRuntimeInputs} = require("./native-release-sdk-inputs");
 const {nativeOpenmpInputs} = require("./build-native-openmp-sdk");
 const {archiveName} = require("./native-llvm-sdk");
 const {verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {canonicalBuildDirectory, hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {generatedIncludeInventory} = require("./native-windows-gpu-config");
 
 const repo = fs.realpathSync(path.resolve(__dirname, ".."));
@@ -48,7 +47,7 @@ function localAcppSdkContextFromWorkspace(workspace, rocmResult) {
 /** Require the real compiler and ROCm stage path results from one marked workspace.
  * @param {unknown} value */
 function localAcppSdkContext(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "inputs,paths,rocm,source") {
+  if (!hasExactBuildFields(value, ["inputs", "paths", "rocm", "source"])) {
     throw new Error("Local ACPP SDK needs only admitted compiler inputs and the ROCm SDK result");
   }
   const context = /** @type {{source?:{workspace?:unknown,compilerFetch?:unknown,compilerSources?:unknown,buildInputs?:unknown,llvmSdk?:unknown},
@@ -57,7 +56,7 @@ function localAcppSdkContext(value) {
   if (!source || !inputs || typeof source.workspace !== "string" || source.workspace !== inputs.workspace) {
     throw new Error("Local ACPP SDK stage results must share one admitted workspace");
   }
-  realDirectory(source.workspace, "Admitted native SDK workspace");
+  canonicalBuildDirectory(source.workspace, "Admitted native SDK workspace");
   const workspace = local.admitWorkspace(source.workspace, repo), support = local.supportPaths(workspace), expected = jit.localJitSdkContextFromWorkspace(workspace),
     expectedPaths = localAcppSdkPaths(workspace), rocmContext = rocm.localRocmSdkContextFromWorkspace(workspace),
     rocmState = rocm.localRocmSdkContext(rocmContext), result = /** @type {ReturnType<typeof rocm.buildLocalLinuxRocmSdk> | undefined} */ (context.rocm),
@@ -69,20 +68,12 @@ function localAcppSdkContext(value) {
     throw new Error("Local ACPP SDK inputs do not match the exact admitted workspace paths and ROCm result");
   }
   const reused = result.reused;
-  if (!reused || Object.keys(reused).sort().join(",") !== "reusedComgr,reusedHost,reusedSources" ||
+  if (!reused || !hasExactBuildFields(reused, ["reusedComgr", "reusedHost", "reusedSources"]) ||
       Object.values(reused).some(flag => typeof flag !== "boolean")) {
     throw new Error("Local ACPP SDK received an invalid ROCm reuse record");
   }
   return {workspace, source: expected.source, inputs: expected.inputs, rocm: result, paths: expectedPaths, support,
     rocmContext: rocmState};
-}
-
-/** @param {string} directory @param {string} label */
-function realDirectory(directory, label) {
-  const stat = fs.lstatSync(directory, {throwIfNoEntry: false});
-  if (!stat?.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {
-    throw new Error(label + " is missing or not a canonical directory: " + directory);
-  }
 }
 
 /** Require current compiler, CUDA, source, OpenMP and source-built ROCm receipts before ACPP work.
@@ -107,39 +98,29 @@ function auditLocalAcppSdkInputs(context, tools, dependencies = {}) {
       !isDeepStrictEqual(openmpRecord.tools, expectedOpenmpTools)) {
     throw new Error("Local OpenMP SDK does not bind the admitted workspace LLVM archive and current tools");
   }
-  if (directoryExists(selected.paths.prepared, "Local ACPP prepared source output") &&
-      !directoryExists(selected.paths.fetch, "Local ACPP fetch output")) {
+  if (canonicalBuildDirectory(selected.paths.prepared, "Local ACPP prepared source output", true) &&
+      !canonicalBuildDirectory(selected.paths.fetch, "Local ACPP fetch output", true)) {
     throw new Error("Prepared ACPP sources exist without their original fetch cohort; preserve the workspace");
   }
-  if (directoryExists(selected.paths.prepared, "Local ACPP prepared source output")) {
+  if (canonicalBuildDirectory(selected.paths.prepared, "Local ACPP prepared source output", true)) {
     ciSources.verifyAcppSource({env: process.env}, sourceState, tools.git);
   }
   return {cuda, rocm: rocmAudit, openmp, sourceState};
 }
 
-/** Use the public static-SYCL planner and exact CUDA/HIP roots for the combined SDK.
- * @param {unknown} context @param {ReturnType<typeof localAcppSdkTools>} tools
- * @param {NodeJS.ProcessEnv} [environment] */
-function localAcppSdkBuildEnvironment(context, tools, environment = process.env) {
-  const selected = localAcppSdkContext(context), support = selected.support,
-    rocmPaths = selected.rocm, toolDirectories = [...new Set([tools.cmake, tools.ninja, tools.git].map(file => path.dirname(file)))];
-  return {...environment, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(local.localBuildJobs(environment)), MOM_AOT_SYCL_BACKEND: "cuda-hip",
-    MOM_AOT_ROCM_STATIC_ROOT: rocmPaths.rocmSdk, MOM_AOT_LLD_ROOT: path.join(selected.source.llvmSdk, "sdk"),
-    ROCM_DEVICE_LIBS_PATH: path.join(rocmPaths.resources, "install/amdgcn/bitcode"),
-    MOM_AOT_COMGR_RECEIPT: rocmPaths.comgrReceipt, MOM_AOT_OPENMP_LIBRARY: path.join(support.openmpSdk, "sdk/libomp.a"),
-    PATH: [...toolDirectories, environment["PATH"] || ""].filter(Boolean).join(path.delimiter)};
-}
-
-/** Return the original public producer command and plan; don't duplicate its CMake recipe.
+/** Forward the admitted roots to the public static-SYCL builder, which owns the build plan.
  * @param {unknown} context @param {ReturnType<typeof localAcppSdkTools>} tools
  * @param {NodeJS.ProcessEnv} [environment] */
 function localAcppSdkBuildCommand(context, tools, environment = process.env) {
   const selected = localAcppSdkContext(context), llvmSdk = path.join(selected.source.llvmSdk, "sdk"),
-    env = localAcppSdkBuildEnvironment(context, tools, environment),
-    plan = staticSyclSdkPlan(selected.paths.preparedCheckout, llvmSdk, selected.inputs.cudaRoot,
-      selected.paths.sdk, local.localBuildJobs(env), env, {cc: tools.cc, cxx: tools.cxx});
+    rocmPaths = selected.rocm, toolDirectories = [...new Set([tools.cmake, tools.ninja, tools.git].map(file => path.dirname(file)))];
+  const env = {...environment, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(local.localBuildJobs(environment)), MOM_AOT_SYCL_BACKEND: "cuda-hip",
+    MOM_AOT_ROCM_STATIC_ROOT: rocmPaths.rocmSdk, MOM_AOT_LLD_ROOT: llvmSdk,
+    ROCM_DEVICE_LIBS_PATH: path.join(rocmPaths.resources, "install/amdgcn/bitcode"),
+    MOM_AOT_COMGR_RECEIPT: rocmPaths.comgrReceipt, MOM_AOT_OPENMP_LIBRARY: path.join(selected.support.openmpSdk, "sdk/libomp.a"),
+    PATH: [...toolDirectories, environment["PATH"] || ""].filter(Boolean).join(path.delimiter)};
   return {script: "scripts/build-native-sycl-sdk.js", args: [selected.paths.preparedCheckout, llvmSdk,
-    selected.inputs.cudaRoot, selected.paths.sdk, tools.cc, tools.cxx], env, plan};
+    selected.inputs.cudaRoot, selected.paths.sdk, tools.cc, tools.cxx], env};
 }
 
 /** Bind the public receipt reader's files to the same local CUDA/HIP, OpenMP and source roots.
@@ -152,8 +133,8 @@ function assertLocalAcppSdkBindings(context, sdk, record, tools, cuda, inputs) {
     cudaStatic = cuda.cuda?.staticRuntime, fingerprints = record.fingerprints, libraryHashes = record.libraries,
     hipLibraries = ["libamdhip64.a", "libhiprtc.a", "libhsakmt-staticdrm.a", "libelf.a", "libdrm_amdgpu.a", "libdrm.a", "libnuma.a"]
       .map(name => path.join(rocmResult.rocmSdk, "lib", name)), hsaRuntime = path.join(rocmResult.rocmSdk, "lib/libhsa-runtime64.a");
-  const expectedTopLevel = "backend,buildOnly,compilerVersions,cudaVersion,fingerprints,hostCompilerInputs,hostCompilers,inputs,libraries,publicationQualified,recipe,revision,scope,sysroot,version";
-  if (Object.keys(record).sort().join(",") !== expectedTopLevel || record.version !== 1 || record.backend !== "cuda-hip" ||
+  const expectedTopLevel = ["backend", "buildOnly", "compilerVersions", "cudaVersion", "fingerprints", "hostCompilerInputs", "hostCompilers", "inputs", "libraries", "publicationQualified", "recipe", "revision", "scope", "sysroot", "version"];
+  if (!hasExactBuildFields(record, expectedTopLevel) || record.version !== 1 || record.backend !== "cuda-hip" ||
       record.buildOnly !== true || record.publicationQualified !== false || record.cudaVersion !== 12060 ||
       record.revision !== "da2463e45aa90aa36306c45abcfc05b87de51bc6" || record.inputs?.source !== paths.preparedCheckout ||
       record.inputs.build !== path.join(paths.sdk, "build") || record.inputs.cxx !== path.join(selected.source.llvmSdk, "sdk/bin/clang++") ||
@@ -219,14 +200,14 @@ function admitLocalAcppGpuArtifacts(context) {
   if (!stat?.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > (1 << 20) || fs.realpathSync(file) !== file) {
     throw new Error("Local ACPP GPU artifact capture is missing or unsafe; preserve the workspace and rebuild explicitly");
   }
-  const current = localAcppGpuArtifacts(selected);
-  if (!isDeepStrictEqual(readBuildJson(file), current)) {throw new Error("Local ACPP plugin or generated headers differ from their original build capture");}
-  return {...current, capture: file, captureSha256: fileHash(file)};
+  const current = localAcppGpuArtifacts(selected), {value, sha256: captureSha256} = readBuildJsonSnapshot(file, 1 << 20);
+  if (!isDeepStrictEqual(value, current)) {throw new Error("Local ACPP plugin or generated headers differ from their original build capture");}
+  return {...current, capture: file, captureSha256};
 }
 
 /** @param {unknown} value @returns {{git:string,cmake:string,ninja:string,cc:string,cxx:string}} */
 function localAcppSdkTools(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "cc,cmake,cxx,git,ninja") {
+  if (!hasExactBuildFields(value, ["cc", "cmake", "cxx", "git", "ninja"])) {
     throw new Error("Local ACPP SDK requires the exact pinned Git, CMake, Ninja and host compiler tools");
   }
   const tools = /** @type {{git?:unknown,cmake?:unknown,ninja?:unknown,cc?:unknown,cxx?:unknown}} */ (value),
@@ -237,22 +218,12 @@ function localAcppSdkTools(value) {
   return /** @type {{git:string,cmake:string,ninja:string,cc:string,cxx:string}} */ (selected);
 }
 
-/** @param {string} directory @param {string} label */
-function directoryExists(directory, label) {
-  const stat = fs.lstatSync(directory, {throwIfNoEntry: false});
-  if (!stat) {return false;}
-  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {
-    throw new Error(label + " is not a canonical directory: " + directory);
-  }
-  return true;
-}
-
 /** Fetch/prepare only the pinned ACPP source tree; never repair partial outputs.
  * @param {unknown} context @param {ReturnType<typeof localAcppSdkTools>} tools
  * @param {NodeJS.ProcessEnv} env @param {typeof local.runCommand} run */
 function prepareLocalAcppSources(context, tools, env, run) {
-  const selected = localAcppSdkContext(context), paths = selected.paths, fetchExisted = directoryExists(paths.fetch, "Local ACPP fetch output"),
-    preparedExisted = directoryExists(paths.prepared, "Local ACPP prepared source output");
+  const selected = localAcppSdkContext(context), paths = selected.paths, fetchExisted = canonicalBuildDirectory(paths.fetch, "Local ACPP fetch output", true),
+    preparedExisted = canonicalBuildDirectory(paths.prepared, "Local ACPP prepared source output", true);
   if (preparedExisted && !fetchExisted) {
     throw new Error("Prepared ACPP sources exist without their original fetch cohort; preserve the workspace");
   }
@@ -281,7 +252,7 @@ function runLocalAcppSdkChild(context, tools, dependencies = {}) {
     auditSdk = dependencies.auditSdk || auditLocalAcppSdk;
   if (!isDeepStrictEqual(suppliedTools, expectedTools)) {throw new Error("Local ACPP SDK internal tools differ from the current pinned tool selection");}
   auditInputs(context, suppliedTools);
-  const sources = prepareLocalAcppSources(context, suppliedTools, env, run), outputExisted = directoryExists(selected.paths.sdk, "Local ACPP SDK output"),
+  const sources = prepareLocalAcppSources(context, suppliedTools, env, run), outputExisted = canonicalBuildDirectory(selected.paths.sdk, "Local ACPP SDK output", true),
     capture = path.join(selected.workspace, "acpp-gpu-artifacts.json");
   if (!outputExisted && fs.lstatSync(capture, {throwIfNoEntry: false})) {
     throw new Error("Local ACPP GPU capture exists without its SDK; preserve the workspace and investigate");
@@ -306,8 +277,8 @@ function buildLocalLinuxAcppSdk(context, dependencies = {}) {
     resolved = dependencies.tools || (dependencies.resolveTools || local.localTools)(env, dependencies.versionOf),
     tools = localAcppSdkTools({git: resolved.git, cmake: resolved.cmake, ninja: resolved.ninja, cc: resolved.cc, cxx: resolved.cxx}),
     invoke = local.scopedInvoker(resolved, env, dependencies.run || local.runCommand), before = {
-      sources: directoryExists(selected.paths.fetch, "Local ACPP fetch output"), prepared: directoryExists(selected.paths.prepared, "Local ACPP prepared source output"),
-      sdk: directoryExists(selected.paths.sdk, "Local ACPP SDK output")};
+      sources: canonicalBuildDirectory(selected.paths.fetch, "Local ACPP fetch output", true), prepared: canonicalBuildDirectory(selected.paths.prepared, "Local ACPP prepared source output", true),
+      sdk: canonicalBuildDirectory(selected.paths.sdk, "Local ACPP SDK output", true)};
   invoke("systemd memory-limit preflight", process.execPath, [__filename, "--memory-probe"]);
   invoke("Local Linux static ACPP SDK build-only slice", process.execPath,
     [__filename, "--local-acpp-sdk", selected.workspace, tools.git, tools.cmake, tools.ninja, tools.cc, tools.cxx]);
@@ -339,6 +310,6 @@ if (require.main === module) {
   try {main(process.argv.slice(2));} catch (error) {console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1;}
 }
 
-module.exports = {localAcppSdkPaths, localAcppSdkContextFromWorkspace, localAcppSdkContext, localAcppSdkBuildEnvironment,
+module.exports = {localAcppSdkPaths, localAcppSdkContextFromWorkspace, localAcppSdkContext,
   localAcppSdkBuildCommand, auditLocalAcppSdkInputs, assertLocalAcppSdkBindings, auditLocalAcppSdk,
   localAcppSdkTools, prepareLocalAcppSources, admitLocalAcppGpuArtifacts, runLocalAcppSdkChild, buildLocalLinuxAcppSdk, main};

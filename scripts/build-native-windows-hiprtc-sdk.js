@@ -6,7 +6,7 @@ const fs = require("node:fs"), path = require("node:path"), {spawnSync} = requir
 const {isDeepStrictEqual} = require("node:util");
 const {validateWindowsLlvmSdkConfig, windowsToolEnvironment, vfsFiles, dependencyHashes} = require("./build-native-windows-controller");
 const {revision: comgrRevision, verifyWindowsDeviceResources} = require("./build-native-windows-comgr-sdk");
-const {fileHash, buildFileInputs, readBuildJson, readBuildText, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, buildPathsOverlap, fileHash, buildFileInputs, readBuildJson, readBuildJsonSnapshot, readBuildText, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {auditCoffArchiveInputs} = require("./native-coff-archive");
 const {isStaticArchive} = require("./native-audit");
 
@@ -72,17 +72,11 @@ function directoryInputs(root, label) {
   return buildFileInputs(files);
 }
 
-/** @param {string} left @param {string} right */
-function pathsOverlap(left, right) {
-  const a = path.resolve(left), b = path.resolve(right);
-  return a === b || a.startsWith(b + path.sep) || b.startsWith(a + path.sep);
-}
-
 /** Admit the completed Windows COMGR producer's generated header, not a HIP SDK or host LLVM copy.
  * @param {string} resultFile @param {string} descriptorFile */
 function verifyComgrHeader(resultFile, descriptorFile) {
   canonicalFile(resultFile, "COMGR result receipt");
-  const receiptSha256 = fileHash(resultFile), receipt = readBuildJson(resultFile), plan = receipt.plan;
+  const {value: receipt, sha256: receiptSha256} = readBuildJsonSnapshot(resultFile), plan = receipt.plan;
   if (!plan || receipt.version !== 1 || receipt.role !== "windows-comgr-static-host" || receipt.stage !== "complete" ||
       receipt.buildOnly !== true || receipt.compiled !== true || receipt.executed !== false || receipt.publicationQualified !== false ||
       receipt.revision !== comgrRevision || plan.output !== path.dirname(resultFile) || path.join(plan.output, "result.json") !== resultFile ||
@@ -104,7 +98,7 @@ function verifyComgrHeader(resultFile, descriptorFile) {
  * deviceReceipt: string, deviceInstall: string, llvmAr: string, output: string}} input */
 function windowsHiprtcPlan(input) {
   const keys = ["comgrResult", "descriptorFile", "deviceInstall", "deviceReceipt", "hipInclude", "llvmAr", "output", "source"];
-  if (!input || Object.keys(input).sort().join(",") !== keys.sort().join(",") || !Object.values(input).every(literal)) {
+  if (!input || !hasExactBuildFields(input, keys) || !Object.values(input).every(literal)) {
     throw new Error("Windows HIPRTC needs explicit canonical absolute source, descriptor, HIP/COMGR/resource SDK, librarian and new output roots");
   }
   canonicalDirectory(input.source, "CLR source root"); canonicalDirectory(input.hipInclude, "official HIP include root");
@@ -140,7 +134,7 @@ function windowsHiprtcPlan(input) {
     config.tools.clangResourceInclude, config.windowsSdk.overlay, config.windowsSdk.sourceRoot, ...config.windowsSdk.includeRoots,
     ...config.windowsSdk.libraryRoots, ...config.windowsSdk.msvcLibraries, ...config.windowsSdk.ucrtLibraries,
     ...virtual.map(([, file]) => file), comgr.header, deviceHeader.path, deviceObject.path];
-  if (excluded.some(root => pathsOverlap(root, input.output))) {throw new Error("Windows HIPRTC output overlaps a source, receipt, tool or SDK input");}
+  if (excluded.some(root => buildPathsOverlap(root, input.output))) {throw new Error("Windows HIPRTC output overlaps a source, receipt, tool or SDK input");}
   const stagedComgrHeader = path.join(input.output, "include/amd_comgr/amd_comgr.h");
   const objects = [...sourceFiles.map(name => path.join(input.output, path.basename(name, ".cpp") + ".obj")),
     path.join(input.output, "hipRTC_header.obj")];

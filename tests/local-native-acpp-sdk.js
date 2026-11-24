@@ -5,7 +5,6 @@ const {describe, test} = require("node:test"), assert = require("node:assert/str
 const local = require("../scripts/build-local-native-sdk");
 const {localAcppSdkPaths, localAcppSdkContextFromWorkspace, localAcppSdkContext, localAcppSdkBuildCommand,
   assertLocalAcppSdkBindings, prepareLocalAcppSources, admitLocalAcppGpuArtifacts, buildLocalLinuxAcppSdk} = require("../scripts/build-local-native-acpp-sdk");
-const {staticSyclSdkPlan} = require("../scripts/build-native-sycl-sdk");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {linuxGlibcBaseline, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
 
@@ -67,20 +66,17 @@ describe("Local static ACPP SDK slice", {skip: process.platform !== "linux" || p
       cudaRoot: path.join(f.root, "foreign-cuda")}}), /exact admitted workspace paths and ROCm result/);
   });
 
-  test("delegates the combined CUDA+HIP build recipe to the public static-SYCL planner", t => {
+  test("forwards the combined CUDA+HIP inputs to the public static-SYCL builder", t => {
     const f = fixture(t), tools = fakeTools(f.root), command = localAcppSdkBuildCommand(f.context, tools, {PATH: "/usr/bin"}),
       llvmSdk = path.join(f.workspace, "llvm21/sdk"), env = command.env;
-    assert.deepEqual(command.plan, staticSyclSdkPlan(f.context.paths.preparedCheckout, llvmSdk,
-      f.context.inputs.cudaRoot, f.context.paths.sdk, 2, env, {cc: tools.cc, cxx: tools.cxx}));
     assert.equal(command.script, "scripts/build-native-sycl-sdk.js");
     assert.deepEqual(command.args, [f.context.paths.preparedCheckout, llvmSdk, f.context.inputs.cudaRoot,
       f.context.paths.sdk, tools.cc, tools.cxx]);
-    assert.equal(command.plan.backend, "cuda-hip");
-    assert.deepEqual(command.plan.hip, {rocm: f.context.rocm.rocmSdk, lld: llvmSdk,
-      bitcode: path.join(f.context.rocm.resources, "install/amdgcn/bitcode"), comgr: f.context.rocm.comgrReceipt});
-    for (const token of ["-DWITH_CUDA_BACKEND=ON", "-DWITH_ROCM_BACKEND=ON", "-DACPP_STATIC_RUNTIME=ON"]) {
-      assert.ok(command.plan.commands[0]?.includes(token), token);
-    }
+    assert.equal(env["MOM_AOT_SYCL_BACKEND"], "cuda-hip");
+    assert.equal(env["MOM_AOT_ROCM_STATIC_ROOT"], f.context.rocm.rocmSdk);
+    assert.equal(env["MOM_AOT_LLD_ROOT"], llvmSdk);
+    assert.equal(env["ROCM_DEVICE_LIBS_PATH"], path.join(f.context.rocm.resources, "install/amdgcn/bitcode"));
+    assert.equal(env["MOM_AOT_COMGR_RECEIPT"], f.context.rocm.comgrReceipt);
     assert.equal(env["MOM_AOT_BUILD_ONLY"], "1");
     assert.equal(env["MOM_AOT_OPENMP_LIBRARY"], path.join(f.workspace, "openmp-sdk/sdk/libomp.a"));
     assert.equal(env["MOM_BUILD_JOBS"], "2");

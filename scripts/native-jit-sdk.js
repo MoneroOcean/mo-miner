@@ -4,7 +4,7 @@
 // free; a plan alone is not proof that sources, resources or compiled archives are qualified.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {sdkComponents} = require("./prepare-native-sdk-sources");
-const {fileHash, sourceInputs, verifySourceInputs, buildFileInputs, completeBuildInputs, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, buildPathsOverlap, fileHash, sourceInputs, verifySourceInputs, buildFileInputs, completeBuildInputs, readBuildJson} = require("./build-source-inputs");
 const {nativeSdkEnvironment} = require("./build-environment");
 const repo = path.resolve(__dirname, "..");
 // One footprint for source emission and resource admission; no separate generated algorithm.
@@ -19,21 +19,28 @@ const literal = value => typeof value === "string" && value.length <= 4096 && pa
   path.normalize(value) === value && !/[;"$\\]/.test(value) && !Array.from(value).some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
 /** @typedef {{cmake: string, ninja: string, cc?: string, cxx?: string, toolchain?: string}} Tools */
 
+/** A host compiler override is a pair. Windows also needs its target toolchain file.
+ * @param {Tools | undefined} tools @param {"linux" | "windows"} target */
+function validJitSdkTools(tools, target) {
+  if (!tools || typeof tools !== "object") {return false;}
+  const keys = ["cmake", "ninja"];
+  if (Object.hasOwn(tools, "cc") || Object.hasOwn(tools, "cxx")) {keys.push("cc", "cxx");}
+  if (Object.hasOwn(tools, "toolchain")) {keys.push("toolchain");}
+  return hasExactBuildFields(tools, keys) && (target !== "windows" || !!tools.toolchain) && Object.values(tools).every(literal);
+}
+
 /** Preserve the original target dependency order, static compiler and in-process frontend.
  * The proof target supplies upstream's actual transitive archive closure to the existing
  * isolation code; do not maintain a second list of LLVM libraries here.
  * @param {'linux'|'windows'} target @param {Record<string,string>} roots @param {string} sdk
  * @param {string} resources @param {string} output @param {Tools} tools @param {number} jobs */
 function jitSdkPlan(target, roots, sdk, resources, output, tools, jobs) {
-  const toolKeys = tools && Object.keys(tools).sort().join(",");
-  if (!["linux", "windows"].includes(target) || !roots || Object.keys(roots).sort().join(",") !== Object.keys(sdkComponents("compiler")).sort().join(",") ||
-      !["cmake,ninja", "cmake,ninja,toolchain", "cc,cmake,cxx,ninja", "cc,cmake,cxx,ninja,toolchain"].includes(toolKeys || "") ||
-      target === "windows" && !tools.toolchain || ![...Object.values(roots), sdk, resources, output, ...Object.values(tools)].every(literal) ||
+  if (!["linux", "windows"].includes(target) || !hasExactBuildFields(roots, Object.keys(sdkComponents("compiler"))) ||
+      !validJitSdkTools(tools, target) || ![...Object.values(roots), sdk, resources, output].every(literal) ||
       !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {throw new Error("Static JIT SDK needs a supported target, complete original roots, literal tools/resources and jobs in1..16");}
-  const nested = (/** @type {string} */ a, /** @type {string} */ b) => {const p = path.relative(a, b); return !p || !path.isAbsolute(p) && p !== ".." && !p.startsWith(".." + path.sep);};
   for (const input of [...Object.values(roots), sdk, resources, repo, tools.cmake, tools.ninja,
     ...(tools.cc && tools.cxx ? [tools.cc, tools.cxx] : []), ...(tools.toolchain ? [tools.toolchain] : [])]) {
-    if (nested(input, output) || nested(output, input)) {throw new Error("Static JIT SDK output overlaps an input");}
+    if (buildPathsOverlap(input, output)) {throw new Error("Static JIT SDK output overlaps an input");}
   }
   const build = path.join(output, "build"), projects = ["sycl", "llvm-spirv", "libdevice", "sycl-jit"];
   const embeddedJit23C = path.join(sdk, "bin", target === "windows" ? "clang-cl" : "clang");
@@ -123,7 +130,7 @@ function buildJitEmitter(sdk, output, environment = process.env, targetHeaders =
   console.log("[native-sdk] Built original CPU-only source emitter; no compiler SDK or GPU execution.");
   return receipt;
 }
-module.exports = {jitSdkPlan, jitEmitterPlan, buildJitEmitter, jitSourceInputs, literal};
+module.exports = {jitSdkPlan, jitEmitterPlan, buildJitEmitter, jitSourceInputs, literal, validJitSdkTools};
 if (require.main === module) {
   try {
     const [mode, sdk, output, headers, extra] = process.argv.slice(2);

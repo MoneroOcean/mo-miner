@@ -3,7 +3,7 @@
 // This is a reviewed-notice drift check, not an SDK admission or legal-completeness claim.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto"),
   {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildText} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildText} = require("./build-source-inputs");
 const {nativeNoticeFile} = require("./package-native-release");
 const {nativePathSource} = require("./native-bundle");
 const {gitSourceComponents} = require("./fetch-native-sdk-sources");
@@ -234,9 +234,9 @@ function checkNativeNoticeReview(manifestPath = manifestDefault, noticePath = no
   }
   const notice = nativeNoticeFile(noticePath);
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest) ||
-      Object.keys(manifest).sort().join(",") !== "dependencies,notice,redistributionEvidence,version" || manifest.version !== 1 ||
+      !hasExactBuildFields(manifest, ["dependencies", "notice", "redistributionEvidence", "version"]) || manifest.version !== 1 ||
       !manifest.notice || typeof manifest.notice !== "object" || Array.isArray(manifest.notice) ||
-      Object.keys(manifest.notice).sort().join(",") !== "bytes,sha256" ||
+      !hasExactBuildFields(manifest.notice, ["bytes", "sha256"]) ||
       !Number.isSafeInteger(manifest.notice.bytes) || manifest.notice.bytes < 1 ||
       typeof manifest.notice.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(manifest.notice.sha256)) {
     throw new Error("Native notice review manifest has an unsupported schema");

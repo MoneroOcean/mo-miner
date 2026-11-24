@@ -5,7 +5,7 @@
 // and artifact names as the first attempt. Hosted runners start empty; a root left by an earlier job
 // on the same machine is rejected when the next job starts.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {createHash} = require("node:crypto");
-const {fileHash} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash} = require("./build-source-inputs");
 
 /** The work-root suffix the workflow exports (`ci`); test fixtures pass a unique value to stay isolated.
  * @param {NodeJS.ProcessEnv} [environment] */
@@ -17,6 +17,52 @@ function ciSuffix(environment = process.env) {
 
 /** @param {unknown} value @returns {value is string} */
 function validCiSuffix(value) {return typeof value === "string" && /^[a-z0-9][a-z0-9-]{0,39}$/.test(value);}
+
+const applicationBuildFiles = Object.freeze(["application-config.json", "entrypoint.json", "handoff.json", "result.json"]);
+
+/** Shared build handoff name for the producers, packer and package job.
+ * @param {string} platform @param {string} suffix */
+function applicationBuildName(platform, suffix) {return `native-${platform}-application-build-${suffix}`;}
+
+/** Derive release artifact names from the same run and target for packing and packaging.
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {{suffix: string, target: "linux" | "win32", platform: "linux" | "windows",
+ *   binary: string, applicationBuild: string, packedBuild: string} | null} */
+function releaseArtifactNames(env) {
+  const suffix = env["MOM_NATIVE_CI_SUFFIX"], target = env["NATIVE_PLATFORM"];
+  if (!validCiSuffix(suffix) || (target !== "linux" && target !== "win32")) {return null;}
+  const platform = target === "win32" ? "windows" : "linux";
+  return {suffix, target, platform, binary: target === "win32" ? "mom.exe" : "mom",
+    applicationBuild: applicationBuildName(platform, suffix), packedBuild: `native-${platform}-packed-build-${suffix}`};
+}
+
+/** @param {NodeJS.ProcessEnv} env @param {string} name */
+function sha256Pin(env, name) {
+  const value = env[name];
+  return value !== undefined && /^[a-f0-9]{64}$/.test(value) ? value : null;
+}
+
+/** @param {NodeJS.ProcessEnv} env @param {string} name */
+function runnerPath(env, name) {
+  const value = env[name];
+  if (value === undefined || !path.isAbsolute(value)) {throw new Error(name + " must be an absolute runner path");}
+  return value;
+}
+
+/** Verify a release handoff leaf and return the metadata used by its consumer. A null pin
+ * selects a file whose digest is computed here, such as the locally produced package.
+ * @param {string} file @param {unknown} pin @param {number} maximum @param {string} [label] */
+function admitReleaseFile(file, pin, maximum, label = file) {
+  const stat = fs.lstatSync(file);
+  const rejection = "Native release " + label + " differs from its bounded regular-file pin";
+  if (!stat.isFile() || stat.nlink !== 1 || stat.size < 1 || stat.size > maximum ||
+      fs.realpathSync(file) !== file || (pin !== null && (typeof pin !== "string" || !/^[a-f0-9]{64}$/.test(pin)))) {
+    throw new Error(rejection);
+  }
+  const sha256 = fileHash(file);
+  if (pin !== null && sha256 !== pin) {throw new Error(rejection);}
+  return {bytes: stat.size, mode: stat.mode, sha256};
+}
 
 /** CI producers and their same-run consumers share the workflow's validated build parallelism.
  * @param {NodeJS.ProcessEnv} [environment] */
@@ -57,12 +103,6 @@ function runNode(file, args, env, timeout = 50 * 60 * 1000) {
 
 /** @param {string} value */
 function jsonHash(value) {return createHash("sha256").update(value).digest("hex");}
-
-/** @param {unknown} value @param {string[]} keys */
-function hasExactKeys(value, keys) {
-  return !!value && typeof value === "object" && !Array.isArray(value) &&
-    Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
-}
 
 /** Shrink each synchronous child timeout against the one shared component deadline.
  * @param {number} deadlineMs @param {number} maximumMs @param {number} [nowMs] */
@@ -140,5 +180,6 @@ function ciJobChildTimeout(environment, maximumMs) {
   return timeoutMs;
 }
 
-module.exports = {ciSuffix, validCiSuffix, ciBuildJobs, ciScopedEntries, removeTree, runNode, runNodeProcessGroup, jsonHash, hasExactKeys,
-  linuxNativeComponentChildTimeout, appendWorkflowOutputs, canonicalExecutable, ioOpenSslChildTimeout, ciJobChildTimeout};
+module.exports = {ciSuffix, validCiSuffix, ciBuildJobs, ciScopedEntries, removeTree, runNode, runNodeProcessGroup, jsonHash, hasExactKeys: hasExactBuildFields,
+  linuxNativeComponentChildTimeout, appendWorkflowOutputs, canonicalExecutable, ioOpenSslChildTimeout, ciJobChildTimeout,
+  applicationBuildFiles, applicationBuildName, releaseArtifactNames, sha256Pin, runnerPath, admitReleaseFile};

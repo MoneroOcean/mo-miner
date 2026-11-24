@@ -1808,24 +1808,31 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const source = fs.readFileSync(path.join(__dirname, "..", "scripts", "multicompiler-entrypoint.sh"), "utf8");
-      const setups = [...source.matchAll(/^[ ]*if [^\n]+\n[ ]+export PATH="\/opt\/dpcpp\/bin:[^\n]+\n[ ]+export LD_LIBRARY_PATH=[^\n]+\n[ ]*fi/gm)];
-      assert.equal(setups.length, 2, "both ordinary and reuse setup paths must be tested");
-      for (const setup of setups) {
-        for (const backend of ["intel_igpu", "intel", "opencl", "nvidia"]) {
-          const result = spawnSync("bash", ["-c", setup[0] +
-            '\nprintf "%s\\n%s\\n%s\\n%s\\n" "$PATH" "$LD_LIBRARY_PATH" "$OCL_ICD_FILENAMES" "$ONEAPI_DEVICE_SELECTOR"'], {
-            encoding: "utf8",
-            env: {PATH: "/usr/bin:/bin", LD_LIBRARY_PATH: "/oneapi/lib", backend,
-              OCL_ICD_FILENAMES: "existing-icd", ONEAPI_DEVICE_SELECTOR: "level_zero:gpu"},
-          });
-          assert.equal(result.status, 0, result.stderr);
-          const portable = backend !== "intel";
-          assert.deepEqual(result.stdout.trimEnd().split("\n"), [
-            portable ? "/opt/dpcpp/bin:/usr/bin:/bin" : "/usr/bin:/bin",
-            portable ? "/opt/dpcpp/lib:/oneapi/lib" : "/oneapi/lib",
-            "existing-icd", "level_zero:gpu",
-          ], backend);
-        }
+      const setup = source.match(/^use_worker_toolchain\(\) \{\n[\s\S]*?\n\}\n/m);
+      assert.ok(setup, "worker toolchain setup is defined");
+      assert.equal(source.match(/^[ ]*use_worker_toolchain$/gm)?.length, 2,
+        "both ordinary and reuse paths select the worker toolchain");
+      const cuda = (/** @type {string} */ value, /** @type {string} */ dir) =>
+        `/usr/local/cuda/${dir}:${value}`;
+      for (const backend of ["intel_igpu", "intel", "opencl", "nvidia", "amd"]) {
+        /** @type {import("node:child_process").SpawnSyncReturns<string>} */
+        const result = spawnSync("bash", ["-c", setup[0] + "use_worker_toolchain\n" +
+          'printf "%s\\n%s\\n" "$PATH" "$LD_LIBRARY_PATH"\n' +
+          '[ -v OCL_ICD_FILENAMES ] && echo "$OCL_ICD_FILENAMES" || echo unset\n' +
+          'echo "$ONEAPI_DEVICE_SELECTOR"'], {
+          encoding: "utf8",
+          env: {PATH: "/usr/bin:/bin", LD_LIBRARY_PATH: "/oneapi/lib", backend,
+            OCL_ICD_FILENAMES: "existing-icd", ONEAPI_DEVICE_SELECTOR: "level_zero:gpu"},
+        });
+        assert.equal(result.status, 0, result.stderr);
+        const portable = ["intel_igpu", "opencl", "nvidia"].includes(backend);
+        const binPath = portable ? "/opt/dpcpp/bin:/usr/bin:/bin" : "/usr/bin:/bin";
+        const libPath = portable ? "/opt/dpcpp/lib:/oneapi/lib" : "/oneapi/lib";
+        assert.deepEqual(result.stdout.trimEnd().split("\n"), [
+          backend === "nvidia" ? cuda(binPath, "bin") : binPath,
+          backend === "nvidia" ? cuda(libPath, "lib64") : libPath,
+          backend === "opencl" ? "unset" : "existing-icd", "level_zero:gpu",
+        ], backend);
       }
     });
 

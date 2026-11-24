@@ -5,7 +5,7 @@
 // installed prefix and receipt chain without dereferencing those historical absolute paths.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto"),
   {isDeepStrictEqual} = require("node:util");
-const {sourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, buildPathsOverlap, containsBuildPath, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {archiveName, archiveSha256} = require("./native-llvm-sdk");
 const llvmBuilder = require("./build-native-llvm-sdk");
 
@@ -25,15 +25,6 @@ function safeRelative(name) {
   return typeof name === "string" && name.length > 0 && name.length <= 2048 && !name.startsWith("/") && !name.includes("\\") &&
     !hasControl(name) && name.split("/").every(part => part && part !== "." && part !== "..");
 }
-
-/** @param {string} root @param {string} file */
-function contained(root, file) {
-  const relative = path.relative(root, file);
-  return relative === "" || !path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep);
-}
-
-/** @param {string} left @param {string} right */
-function overlaps(left, right) {return contained(left, right) || contained(right, left);}
 
 /** @param {string} directory @param {string} label */
 function canonicalDirectory(directory, label) {
@@ -102,7 +93,7 @@ function stableJson(file, maximum, label) {
 function stableSymlink(root, file, label) {
   const before = fs.lstatSync(file, {bigint: true}), target = fs.readlinkSync(file), resolved = path.resolve(path.dirname(file), target);
   if (!before.isSymbolicLink() || before.nlink !== 1n || !target || hasControl(target) || path.isAbsolute(target) ||
-      !contained(root, resolved) || !fs.existsSync(resolved) || !contained(root, fs.realpathSync(file))) {
+      !containsBuildPath(root, resolved) || !fs.existsSync(resolved) || !containsBuildPath(root, fs.realpathSync(file))) {
     throw new Error(label + " must resolve to an existing path inside the installed SDK");
   }
   return {target, identity: identityOf(before)};
@@ -112,7 +103,7 @@ function stableSymlink(root, file, label) {
 function sameSymlink(root, file, target, identity, label) {
   const stat = fs.lstatSync(file, {bigint: true});
   if (!stat.isSymbolicLink() || !sameIdentity(stat, identity) || fs.readlinkSync(file) !== target ||
-      !contained(root, path.resolve(path.dirname(file), target)) || !contained(root, fs.realpathSync(file))) {
+      !containsBuildPath(root, path.resolve(path.dirname(file), target)) || !containsBuildPath(root, fs.realpathSync(file))) {
     throw new Error(label + " changed during handoff production");
   }
 }
@@ -221,9 +212,6 @@ function bundleInventory(root, maxFilesAllowed = maxFiles + receiptNames.length 
 /** @param {unknown} value @returns {value is any} */
 function object(value) {return !!value && typeof value === "object" && !Array.isArray(value);}
 
-/** @param {unknown} value @param {string[]} keys */
-function exactKeys(value, keys) {return object(value) && Object.keys(value).sort().join("\0") === keys.slice().sort().join("\0");}
-
 /** @param {string} output @param {any} receipts @param {Record<string, {sha256:string}>} pins
  * @param {{resultSha256:string,runId:string}} identity */
 function verifyOriginalReceiptChain(output, receipts, pins, identity) {
@@ -265,7 +253,7 @@ function exportLinuxLlvmSdk(admittedOutput, outputRoot, reader = llvmBuilder.ver
   const sourceOutput = canonicalDirectory(admittedOutput, "Admitted Linux LLVM output"),
     sourceSdk = path.join(sourceOutput, "sdk"), outputParent = canonicalDirectory(path.dirname(outputRoot), "Linux LLVM SDK handoff parent");
   if (!path.isAbsolute(outputRoot) || path.resolve(outputRoot) !== outputRoot || fs.existsSync(outputRoot) ||
-      overlaps(sourceOutput, outputRoot)) {
+      buildPathsOverlap(sourceOutput, outputRoot)) {
     throw new Error("Linux LLVM installed-SDK handoff requires a fresh disjoint output");
   }
   const admitted = reader(sourceOutput), resultPin = stableJson(path.join(sourceOutput, "result.json"), maxReceiptBytes, "Original LLVM result receipt"),
@@ -388,9 +376,9 @@ function verifySnapshot(snapshot, files, bytes, sdk) {
   }
   for (const row of files) {
     const expected = snapshot.files[row.path];
-    if (!expected || row.type === "file" && (!exactKeys(expected, ["bytes", "sha256", "type"]) || expected.type !== "file" ||
+    if (!expected || row.type === "file" && (!hasExactBuildFields(expected, ["bytes", "sha256", "type"]) || expected.type !== "file" ||
         expected.bytes !== row.bytes || expected.sha256 !== row.sha256) ||
-        row.type === "symlink" && (!exactKeys(expected, ["target", "type"]) || expected.type !== "symlink" || expected.target !== row.target)) {
+        row.type === "symlink" && (!hasExactBuildFields(expected, ["target", "type"]) || expected.type !== "symlink" || expected.target !== row.target)) {
       throw new Error("LLVM installed SDK member differs from its admitted receipt: " + row.path);
     }
   }
@@ -425,19 +413,19 @@ function linuxLlvmSdkHandoffInputs(bundleRoot, expectation) {
   }
   const manifestPath = path.join(root, "handoff.json"), manifestPin = stableJson(manifestPath, maxManifestBytes, "Linux LLVM SDK handoff manifest"),
     handoff = manifestPin.value;
-  if (!exactKeys(handoff, ["version", "format", "role", "runId", "buildOnly", "compiled", "executed", "publicationQualified",
+  if (!hasExactBuildFields(handoff, ["version", "format", "role", "runId", "buildOnly", "compiled", "executed", "publicationQualified",
     "original", "sourceArchive", "sdk", "receipts", "files", "recipe"]) || handoff.version !== 1 || handoff.format !== format ||
       handoff.role !== role || handoff.buildOnly !== true || handoff.compiled !== true ||
       handoff.executed !== false || handoff.publicationQualified !== false || manifestPin.pin.sha256 !== expectation.handoffSha256 ||
       typeof handoff.runId !== "string" || !/^[0-9a-f-]{36}$/i.test(handoff.runId) ||
-      !exactKeys(handoff.original, ["output", "prefix", "resultSha256"]) ||
+      !hasExactBuildFields(handoff.original, ["output", "prefix", "resultSha256"]) ||
       ![handoff.original.output, handoff.original.prefix].every(value => typeof value === "string" && path.isAbsolute(value) && path.normalize(value) === value) ||
       handoff.original.prefix !== path.join(handoff.original.output, "sdk") || !/^[a-f0-9]{64}$/.test(handoff.original.resultSha256 || "") ||
-      !exactKeys(handoff.sourceArchive, ["name", "sha256", "bundled"]) || handoff.sourceArchive.name !== archiveName ||
+      !hasExactBuildFields(handoff.sourceArchive, ["name", "sha256", "bundled"]) || handoff.sourceArchive.name !== archiveName ||
       handoff.sourceArchive.sha256 !== archiveSha256 || handoff.sourceArchive.bundled !== false ||
-      !exactKeys(handoff.sdk, ["root", "files", "bytes", "directories"]) || handoff.sdk.root !== "sdk" || !Number.isSafeInteger(handoff.sdk.files) ||
+      !hasExactBuildFields(handoff.sdk, ["root", "files", "bytes", "directories"]) || handoff.sdk.root !== "sdk" || !Number.isSafeInteger(handoff.sdk.files) ||
       handoff.sdk.files < 1 || handoff.sdk.files > maxFiles || !Number.isSafeInteger(handoff.sdk.bytes) || handoff.sdk.bytes < 1 || handoff.sdk.bytes > maxSdkBytes ||
-      !exactKeys(handoff.receipts, receiptNames) || !Array.isArray(handoff.files) || handoff.files.length !== handoff.sdk.files ||
+      !hasExactBuildFields(handoff.receipts, receiptNames) || !Array.isArray(handoff.files) || handoff.files.length !== handoff.sdk.files ||
       !object(handoff.recipe)) {
     throw new Error("Linux LLVM SDK handoff manifest is invalid or belongs to another run");
   }
@@ -448,7 +436,7 @@ function linuxLlvmSdkHandoffInputs(bundleRoot, expectation) {
   const receiptPins = /** @type {Record<string, ReturnType<typeof stableRegular>>} */ ({}), receipts = /** @type {any} */ ({});
   for (const name of receiptNames) {
     const row = handoff.receipts[name];
-    if (!exactKeys(row, ["path", "bytes", "sha256", "mode"]) || row.path !== name ||
+    if (!hasExactBuildFields(row, ["path", "bytes", "sha256", "mode"]) || row.path !== name ||
         !Number.isSafeInteger(row.bytes) || row.bytes < 1 || row.bytes > maxReceiptBytes || !/^[a-f0-9]{64}$/.test(row.sha256 || "") ||
         !Number.isSafeInteger(row.mode) || (row.mode & 0o7022) !== 0) {
       throw new Error("Linux LLVM SDK handoff receipt pin is malformed: " + name);
@@ -502,11 +490,11 @@ function validateFileRows(rows) {
   for (const row of rows) {
     if (!object(row) || !safeRelative(row.path) || seen.has(row.path)) {throw new Error("Linux LLVM SDK handoff contains a duplicate or unsafe file path");}
     seen.add(row.path);
-    if (row.type === "file" && exactKeys(row, ["path", "type", "bytes", "sha256", "mode"]) &&
+    if (row.type === "file" && hasExactBuildFields(row, ["path", "type", "bytes", "sha256", "mode"]) &&
         Number.isSafeInteger(row.bytes) && row.bytes >= 0 && row.bytes <= maxMemberBytes && /^[a-f0-9]{64}$/.test(row.sha256 || "") &&
         Number.isSafeInteger(row.mode) && row.mode > 0 && row.mode <= 0o777 && (row.mode & 0o7022) === 0) {
       bytes += row.bytes;
-    } else if (row.type === "symlink" && exactKeys(row, ["path", "type", "target"]) && typeof row.target === "string" &&
+    } else if (row.type === "symlink" && hasExactBuildFields(row, ["path", "type", "target"]) && typeof row.target === "string" &&
         row.target.length > 0 && row.target.length <= 2048 && !path.isAbsolute(row.target) && !hasControl(row.target)) {
       bytes += Buffer.byteLength(row.target);
     } else {throw new Error("Linux LLVM SDK handoff file row is malformed: " + row.path);}

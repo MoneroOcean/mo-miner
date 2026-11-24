@@ -3,16 +3,17 @@
 // Build AdaptiveCpp's original Windows static host archives against the retained Windows
 // LLVM 21 COFF build tree. Linux LLVM executables and Windows target libraries stay separate.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {isDeepStrictEqual} = require("node:util");
+const {createHash} = require("node:crypto");
 const {validateWindowsLlvmSdkConfig, windowsToolEnvironment, vfsFiles} = require("./build-native-windows-controller");
 const {admitSyclSource} = require("./native-sycl-inputs");
-const {buildFileInputs, fileHash, readBuildJson, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, containsBuildPath, buildPathsOverlap, buildFileInputs, fileHash, readBuildBytes, readBuildJson, sourceInputs, verifySourceInputs, nativeBuildJobs} = require("./build-source-inputs");
 const {absolutePath} = require("./build-native-release");
 const {isStaticArchive} = require("./native-audit");
 const {nativeRuntimeLibraries} = require("./native-sdk-runtime");
 const {auditCoffArchiveInputs} = require("./native-coff-archive");
 const {windowsIntelRuleOverride} = require("./prepare-native-jit-toolchain");
 const {verifyWindowsLlvmAdmission} = require("./build-native-windows-llvm-sdk");
-const {pathsOverlap, sdkStage, selectHostCompilers, hostCompilerEvidence} = require("./build-native-sycl-sdk");
+const {sdkStage, selectHostCompilers, hostCompilerEvidence} = require("./build-native-sycl-sdk");
 const repo = path.resolve(__dirname, "..");
 const targetTriple = "x86_64-pc-windows-msvc";
 const gitTool = "/usr/bin/git";
@@ -64,12 +65,6 @@ function requirePaths(values, label) {
 /** @param {string} root @param {string} name */
 function nativeTool(root, name) {return path.join(root, name);}
 
-/** @param {string} root @param {string} file */
-function contained(root, file) {
-  const relative = path.relative(root, file);
-  return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));
-}
-
 /** @param {string} file @param {string} label */
 function canonicalFile(file, label) {
   const stat = fs.lstatSync(file, {throwIfNoEntry: false});
@@ -85,13 +80,13 @@ function canonicalFile(file, label) {
  * rocmDeviceLibs: string, output: string, jobs: number, tools: {cmake: string, ninja: string}}} input
  * @param {{source: string, build: string}} [admittedLlvmLayout] */
 function windowsAcppStaticHostPlan(input, admittedLlvmLayout) {
-  if (!input || Object.keys(input).sort().join(",") !== ["amdhip64", "cuda", "cudaDeviceLibs", "cudartStatic", "descriptor", "descriptorFile",
-    "jobs", "nativeTools", "output", "rocm", "rocmDeviceLibs", "rocmReceipt", "source", "targetLlvm", "tools"].sort().join(",")) {
+  if (!hasExactBuildFields(input, ["amdhip64", "cuda", "cudaDeviceLibs", "cudartStatic", "descriptor", "descriptorFile",
+    "jobs", "nativeTools", "output", "rocm", "rocmDeviceLibs", "rocmReceipt", "source", "targetLlvm", "tools"])) {
     throw new Error("Windows ACPP plan needs the explicit source, LLVM, CUDA, ROCm and output inputs");
   }
   const config = validateWindowsLlvmSdkConfig(input.descriptor), {tools: windowsTools, windowsSdk} = config;
   const selectedTools = input.tools;
-  if (!selectedTools || Object.keys(selectedTools).sort().join(",") !== "cmake,ninja") {throw new Error("Select the LLVM producer's CMake and Ninja executables");}
+  if (!selectedTools || !hasExactBuildFields(selectedTools, ["cmake", "ninja"])) {throw new Error("Select the LLVM producer's CMake and Ninja executables");}
   const native = {clang: nativeTool(input.nativeTools, "clang"), "clang++": nativeTool(input.nativeTools, "clang++"),
     "llvm-ar": nativeTool(input.nativeTools, "llvm-ar"), llc: nativeTool(input.nativeTools, "llc"),
     "lld-link": nativeTool(input.nativeTools, "lld-link"), opt: nativeTool(input.nativeTools, "opt"),
@@ -100,7 +95,7 @@ function windowsAcppStaticHostPlan(input, admittedLlvmLayout) {
   const targetLlvmSource = admittedLlvmLayout?.source || path.join(input.targetLlvm, "source"),
     targetBuild = admittedLlvmLayout?.build || path.join(input.targetLlvm, "build");
   if (![targetLlvmSource, targetBuild].every(literal) ||
-      admittedLlvmLayout && Object.keys(admittedLlvmLayout).sort().join(",") !== "build,source") {
+      admittedLlvmLayout && !hasExactBuildFields(admittedLlvmLayout, ["build", "source"])) {
     throw new Error("Windows ACPP needs the admitted LLVM source/build layout");
   }
   const roots = [input.source, input.descriptorFile, input.targetLlvm, targetLlvmSource, targetBuild, input.nativeTools, input.cuda, input.cudartStatic,
@@ -111,7 +106,7 @@ function windowsAcppStaticHostPlan(input, admittedLlvmLayout) {
   requirePaths(roots, "roots");
   if (!Number.isInteger(input.jobs) || input.jobs < 1 || input.jobs > 16) {throw new Error("Windows ACPP jobs must be in 1..16");}
   for (const inputRoot of roots.slice(0, -1)) {
-    if (pathsOverlap(inputRoot, input.output)) {throw new Error("Windows ACPP output overlaps a source, SDK, tool or compiler input");}
+    if (buildPathsOverlap(inputRoot, input.output)) {throw new Error("Windows ACPP output overlaps a source, SDK, tool or compiler input");}
   }
   for (const file of [input.cudartStatic, input.amdhip64]) {
     if (!/\.lib$/i.test(file)) {throw new Error("Windows ACPP CUDA and HIP runtimes must be explicit COFF archives");}
@@ -245,12 +240,11 @@ function commandSwitches(command) {
     .map(match => (match[1] || "").toUpperCase());
 }
 
-/** CMake's actual compile database must retain the Windows /MT, exception and RTTI ABI.
+/** Bind archive membership and the receipt hash to the same audited compile database.
  * @param {string} file @param {string} source @param {string} build @param {string} compiler */
 function auditAcppCompileCommands(file, source, build, compiler) {
-  const stat = fs.statSync(file);
-  if (!stat.isFile() || stat.size < 2 || stat.size > (64 << 20)) {throw new Error("Invalid Windows ACPP compile database");}
-  const entries = JSON.parse(fs.readFileSync(file, "utf8"));
+  const bytes = readBuildBytes(file, 64 << 20);
+  const entries = JSON.parse(bytes.toString("utf8"));
   if (!Array.isArray(entries) || !entries.length || entries.length > 100000) {throw new Error("Windows ACPP compile database is empty or excessive");}
   const sourceRoot = fs.realpathSync(source) + path.sep, buildRoot = fs.realpathSync(build), outputs = new Set();
   for (const entry of entries) {
@@ -284,12 +278,14 @@ function auditAcppCompileCommands(file, source, build, compiler) {
     // CMake may serialize outputs as absolute or build-relative paths; these records describe
     // every configured target, not just the nine explicitly built archive targets.
     const output = path.resolve(entry.directory, entry.output), relative = path.relative(buildRoot, output);
-    if (!output.endsWith(".obj") || path.isAbsolute(relative) || relative === ".." || relative.startsWith(".." + path.sep) || outputs.has(output)) {
+    const object = relative.split(path.sep).join("/");
+    if (!output.endsWith(".obj") || path.isAbsolute(relative) || relative === ".." || relative.startsWith(".." + path.sep) || outputs.has(object)) {
       throw new Error("Windows ACPP compile command has an output outside the selected build tree");
     }
-    outputs.add(output);
+    outputs.add(object);
   }
-  return {path: file, sha256: fileHash(file), commands: entries.length};
+  return {receipt: {path: file, sha256: createHash("sha256").update(bytes).digest("hex"), commands: entries.length},
+    objects: [...outputs]};
 }
 
 /** The shared source admission supplies full log paths, not names relative to output.
@@ -381,7 +377,7 @@ function verifyWindowsRocmResources(receiptFile, deviceRoot) {
   if (!isDeepStrictEqual(files, recorded) || !files.some(file => path.basename(file) === "ockl.bc") ||
       !files.some(file => path.basename(file) === "ocml.bc") || !files.some(file => path.basename(file) === "hip.bc") ||
       !files.some(file => /^oclc_abi_version_[0-9]+\.bc$/.test(path.basename(file))) ||
-      recorded.some(file => !contained(deviceRoot, file))) {
+      recorded.some(file => !containsBuildPath(deviceRoot, file))) {
     throw new Error("Windows HIP device-library membership differs from its pinned target receipt");
   }
   for (const file of files) {
@@ -490,7 +486,8 @@ function buildWindowsAcppStaticHost(input, environment = process.env) {
   sdkStage(plan.configure, path.join(input.output, "stage-0.log"), env);
   verifyAcppCache(path.join(plan.build, "CMakeCache.txt"), plan, input.source);
   const compilerIdentity = verifyIntelCompilerIdentity(plan.build);
-  const compileCommands = auditAcppCompileCommands(path.join(plan.build, "compile_commands.json"), input.source, plan.build, hostCompilers.cxx);
+  const {receipt: compileCommands, objects: configuredObjects} =
+    auditAcppCompileCommands(path.join(plan.build, "compile_commands.json"), input.source, plan.build, hostCompilers.cxx);
   const configuredFiles = buildFileInputs([path.join(plan.build, "CMakeCache.txt"), path.join(plan.build, "build.ninja"), compileCommands.path,
     compilerIdentity.c, compilerIdentity.cxx]);
   sdkStage(plan.compile, path.join(input.output, "stage-1.log"), env);
@@ -501,8 +498,6 @@ function buildWindowsAcppStaticHost(input, environment = process.env) {
   verifySourceInputs(recipe, sourceInputs(repo, [], [...recipeFiles]), "Windows ACPP build recipe");
   for (const [file, hash] of Object.entries(fingerprints)) {if (fileHash(file) !== hash) {throw new Error("Windows ACPP input changed during build: " + file);}}
   for (const [file, hash] of Object.entries(configuredFiles)) {if (fileHash(file) !== hash) {throw new Error("Windows ACPP configure graph changed during build: " + file);}}
-  const archiveCommands = /** @type {Array<{directory: string, output: string}>} */ (readBuildJson(compileCommands.path));
-  const configuredObjects = archiveCommands.map(row => path.relative(plan.build, path.resolve(row.directory, row.output)).split(path.sep).join("/"));
   const outputArchives = plan.artifacts.map(file => {
     if (!isStaticArchive(file)) {throw new Error("Windows ACPP output is not a static COFF archive: " + file);}
     const relative = path.relative(plan.build, file).split(path.sep).join("/");
@@ -514,7 +509,7 @@ function buildWindowsAcppStaticHost(input, environment = process.env) {
   });
   const unexpected = plan.forbiddenOutputs.filter(file => fs.existsSync(file));
   if (unexpected.length) {throw new Error("Windows ACPP archive-only build produced a plugin or tool: " + unexpected[0]);}
-  const finalCompileCommands = auditAcppCompileCommands(compileCommands.path, input.source, plan.build, hostCompilers.cxx);
+  const {receipt: finalCompileCommands} = auditAcppCompileCommands(compileCommands.path, input.source, plan.build, hostCompilers.cxx);
   if (!isDeepStrictEqual(compileCommands, finalCompileCommands)) {throw new Error("Windows ACPP compile database changed during build");}
   const result = {version: 1, role: "windows-acpp-static-host", targetLlvmGeneration: targetLlvm.admission.generationId,
     targetReceiptSha256: fileHash(targetReceiptFile), revision: admitted.revision,
@@ -540,7 +535,7 @@ if (require.main === module) {
     }
     buildWindowsAcppStaticHost({source, descriptorFile, descriptor: readBuildJson(descriptorFile), targetLlvm, nativeTools,
       cuda, cudartStatic, cudaDeviceLibs, rocm, amdhip64, rocmDeviceLibs, rocmReceipt, output,
-      jobs: Number(process.env["MOM_BUILD_JOBS"] || "2")});
+      jobs: nativeBuildJobs(process.env)});
   } catch (error) {console.error(error instanceof Error ? error.message : "Windows ACPP static host SDK build failed"); process.exitCode = 1;}
 }
 

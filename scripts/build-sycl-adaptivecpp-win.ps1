@@ -27,11 +27,6 @@ Initialize-MomBuildEnvironment $RepoRoot
 # the wrong CRT and only fails at the final x64 DLL link. Always import vcvars64.
 Import-MomVcVars64
 
-function Invoke-Checked([scriptblock]$Command, [string]$Name) {
-  & $Command
-  if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE" }
-}
-
 $acpp = Join-Path $ToolchainDir 'bin\acpp'
 $clang = Join-Path $ToolchainDir 'bin\clang.exe'
 if (-not (Test-Path $acpp)) { throw "AdaptiveCpp wrapper not found at $acpp" }
@@ -62,14 +57,9 @@ $env:ACPP_VISIBILITY_MASK = $Backend
 $env:PATH = "$ToolchainDir\bin;$env:PATH"
 
 $obj = Resolve-MomBuildPath (Join-Path $RepoRoot "build\.incremental\sycl-acpp-$Backend")
-$publishedOutput = Resolve-MomBuildPath (Join-Path $OutDir 'sycl.dll')
-$out = Join-Path $obj 'sycl.dll'
-$buildRoot = Resolve-MomBuildPath 'build'
-Assert-MomBuildArtifactPath $out $buildRoot
-Assert-MomBuildArtifactPath $publishedOutput $buildRoot
-New-Item -ItemType Directory -Force $obj, (Split-Path -Parent $publishedOutput) | Out-Null
-$publishSeparate = (Resolve-MomBuildPath $publishedOutput) -ne (Resolve-MomBuildPath $out)
-if ($publishSeparate) { Remove-Item -LiteralPath $publishedOutput -Force -ErrorAction SilentlyContinue }
+$dll = Initialize-MomSyclOutput $obj $OutDir
+$out = $dll.Out
+$publishedOutput = $dll.Published
 $python = (Get-Command python.exe -ErrorAction Stop).Source
 $buildContext = Initialize-MomIncrementalBuild $obj @($python, $acpp, $clang, $PSCommandPath,
   (Join-Path $RepoRoot 'scripts\windows-incremental-build.ps1')) @($ToolchainDir,
@@ -113,5 +103,5 @@ $objects += $hoohashObject
 
 Invoke-MomIncrementalLink $python (@($acpp, '--acpp-targets=generic', '-shared') + $objects + $backendFlags + @('-o', $out)) $objects $out (Join-Path $obj 'link.json') $buildContext
 Remove-MomObsoleteCompileOutputs $obj $objects
-if ($publishSeparate) { Copy-Item -LiteralPath $out -Destination $publishedOutput -Force }
+if ($dll.PublishSeparate) { Copy-Item -LiteralPath $out -Destination $publishedOutput -Force }
 Write-Host ("Built {0} ({1:N1} MB, AdaptiveCpp generic/{2})" -f $out, ((Get-Item $out).Length/1MB), $Backend)

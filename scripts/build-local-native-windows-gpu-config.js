@@ -11,7 +11,7 @@ const {windowsHostSdkInputs} = require("./native-windows-host-sdk-inputs");
 const images = require("./build-local-native-cuda-images");
 const acppSdk = require("./build-local-native-acpp-sdk"), {acppFrontendRows} = require("./native-linux-llvm-tools");
 const {composeWindowsDpcppGpuConfig, composeWindowsAcppGpuConfig, resolveAcppFrontend} = require("./native-windows-gpu-config");
-const {fileHash, readBuildJson, buildFileInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJsonSnapshot, buildFileInputs} = require("./build-source-inputs");
 const repo = fs.realpathSync(path.resolve(__dirname, ".."));
 
 /** Only the current workspace's installed LLVM tools may construct the descriptors.
@@ -45,7 +45,7 @@ function localWindowsGpuTools(root, admission) {
 function admitLocalWindowsDpcppGpuInputs(input, dependencies = {}) {
   (dependencies.verifyScope || local.verifyCurrentMemoryScope)();
   if (process.platform !== "linux" || process.arch !== "x64" || !input ||
-      Object.keys(input).sort().join(",") !== "tools,windowsSdkPins,windowsSdkRoot,windowsSourceSha256,workspace" ||
+      !hasExactBuildFields(input, ["tools", "windowsSdkPins", "windowsSdkRoot", "windowsSourceSha256", "workspace"]) ||
       !/^[a-f0-9]{64}$/.test(input.windowsSourceSha256 || "")) {
     throw new Error("Local Windows DPC++ GPU inputs require Linux x64 and explicit workspace/source pins");
   }
@@ -59,8 +59,7 @@ function admitLocalWindowsDpcppGpuInputs(input, dependencies = {}) {
     throw new Error("Prepared Windows sources do not belong to the admitted workspace");
   }
   const llvm = (dependencies.verifyLlvm || verifyLinuxLlvmAdmission)(paths.llvmSdk), tools = localWindowsGpuTools(paths.llvmSdk, llvm),
-    state = local.localDpcppCudaState(paths), manifest = readBuildJson(state.manifest),
-    manifestSha256 = fileHash(state.manifest);
+    state = local.localDpcppCudaState(paths), {value: manifest, sha256: manifestSha256} = readBuildJsonSnapshot(state.manifest);
   (dependencies.auditCuda || auditDpcppCudaInputs)(state, manifest, manifestSha256);
   const host = (dependencies.readHost || windowsHostSdkInputs)(input.windowsSdkRoot, input.windowsSdkPins),
     imageState = images.localCudaImagePaths(workspace),

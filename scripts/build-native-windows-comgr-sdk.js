@@ -5,9 +5,8 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
 const {validateWindowsLlvmSdkConfig, windowsToolEnvironment, vfsFiles} = require("./build-native-windows-controller");
-const {fileHash, buildFileInputs, sourceInputs, readBuildJson, readBuildText} = require("./build-source-inputs");
+const {hasExactBuildFields, buildPathsOverlap, fileHash, buildFileInputs, sourceInputs, readBuildJson, readBuildText} = require("./build-source-inputs");
 const {windowsIntelRuleOverride} = require("./prepare-native-jit-toolchain");
-const {pathsOverlap} = require("./build-native-sycl-sdk");
 const {jitBuildOutputs} = require("./native-jit-stages");
 const {isStaticArchive} = require("./native-audit");
 const {nativeRuntimeLibraries} = require("./native-sdk-runtime");
@@ -27,7 +26,7 @@ const hostSources = Object.freeze(["src/comgr-cache.cpp", "src/comgr-cache-comma
   "src/comgr-metadata.cpp", "src/comgr-objdump.cpp", "src/comgr-signal.cpp", "src/comgr-spirv-command.cpp",
   "src/comgr-symbol.cpp", "src/comgr-symbolizer.cpp", "src/time-stat/time-stat.cpp"]);
 const recipeFiles = Object.freeze(["scripts/build-native-windows-comgr-sdk.js", "scripts/build-native-windows-controller.js",
-  "scripts/build-native-windows-llvm-sdk.js", "scripts/build-native-sycl-sdk.js",
+  "scripts/build-native-windows-llvm-sdk.js",
   "scripts/build-native-release.js", "scripts/build-source-inputs.js", "scripts/prepare-native-jit-toolchain.js",
   "scripts/native-jit-stages.js", "scripts/native-audit.js", "scripts/native-comgr-inputs.js", "scripts/native-sdk-runtime.js", ...patches]);
 const requiredDeviceLibraries = Object.freeze(["asanrtl.bc", "hip.bc", "ockl.bc", "ocml.bc", "opencl.bc"]);
@@ -135,7 +134,7 @@ function verifyWindowsDeviceResources(receiptFile, install) {
     throw new Error("Windows HIP device-library membership is not the preserved 71-file set");
   }
   const actualFiles = [...actualNames.map(name => path.join(bitcodeRoot, name)), configFile].sort();
-  if (Object.keys(receipt.device).sort().join("\n") !== actualFiles.join("\n") || actualNames.some(name => !receipt.device[path.join(bitcodeRoot, name)]) ||
+  if (!hasExactBuildFields(receipt.device, actualFiles) || actualNames.some(name => !receipt.device[path.join(bitcodeRoot, name)]) ||
       !requiredDeviceLibraries.every(name => actualNames.includes(name))) {
     throw new Error("Windows HIP device-library membership differs from its pinned receipt");
   }
@@ -183,10 +182,10 @@ function verifyNativeLibrarianIdentity(llvmLib, llvmAr, llvmArVersion) {
  * @param {{source: string, build: string}} [admittedLlvmLayout] */
 function windowsComgrSdkPlan(input, admittedLlvmLayout) {
   const expectedKeys = ["descriptor", "descriptorFile", "deviceInstall", "deviceReceipt", "hostCompiler", "jobs", "nativeLlvm", "output", "source", "targetLlvm", "tools"];
-  if (!input || Object.keys(input).sort().join(",") !== expectedKeys.sort().join(",")) {throw new Error("Windows COMGR plan needs the explicit source, compiler, SDK and output inputs");}
+  if (!input || !hasExactBuildFields(input, expectedKeys)) {throw new Error("Windows COMGR plan needs the explicit source, compiler, SDK and output inputs");}
   const config = validateWindowsLlvmSdkConfig(input.descriptor), {windowsSdk, tools: windowsTools} = config;
   const git = canonicalFile("/usr/bin/git", "trusted Git executable");
-  if (!input.tools || Object.keys(input.tools).sort().join(",") !== "cmake,ninja" ||
+  if (!input.tools || !hasExactBuildFields(input.tools, ["cmake", "ninja"]) ||
       ![input.source, input.descriptorFile, input.targetLlvm, input.nativeLlvm, input.hostCompiler, input.deviceReceipt, input.deviceInstall,
         input.output, input.tools.cmake, input.tools.ninja, windowsTools.clangCl, windowsTools.lldLink, windowsTools.clangResourceInclude,
         windowsSdk.overlay, windowsSdk.sourceRoot, ...windowsSdk.includeRoots, ...windowsSdk.libraryRoots,
@@ -203,7 +202,7 @@ function windowsComgrSdkPlan(input, admittedLlvmLayout) {
   const targetLlvmSource = admittedLlvmLayout?.source || path.join(input.targetLlvm, "source"),
     targetLlvmBuild = admittedLlvmLayout?.build || path.join(input.targetLlvm, "build");
   if (![targetLlvmSource, targetLlvmBuild].every(literal) ||
-      admittedLlvmLayout && Object.keys(admittedLlvmLayout).sort().join(",") !== "build,source") {
+      admittedLlvmLayout && !hasExactBuildFields(admittedLlvmLayout, ["build", "source"])) {
     throw new Error("Windows COMGR needs the admitted LLVM source/build layout");
   }
   const nativeBin = path.join(input.nativeLlvm, "bin"), build = path.join(input.output, "build"), sourceRoot = path.join(input.output, "source");
@@ -522,7 +521,7 @@ function configureWindowsComgrSdk(input, environment = process.env) {
     plan.config.tools.clangCl, plan.config.tools.lldLink, plan.config.tools.clangResourceInclude, plan.tools.cmake, plan.tools.ninja];
   for (const root of inputRoots) {
     const selected = fs.existsSync(root) ? fs.realpathSync(root) : path.resolve(root);
-    if (pathsOverlap(selected, destination)) {throw new Error("Windows COMGR output overlaps an input");}
+    if (buildPathsOverlap(selected, destination)) {throw new Error("Windows COMGR output overlaps an input");}
   }
   fs.mkdirSync(input.output, {mode: 0o700}); fs.mkdirSync(plan.sourceRoot, {mode: 0o700}); fs.mkdirSync(plan.hostProject, {mode: 0o700});
   fs.mkdirSync(plan.build, {mode: 0o700});

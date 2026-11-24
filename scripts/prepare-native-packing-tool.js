@@ -2,7 +2,7 @@
 
 // Both CI and local builds use this exact pinned host tool; it is never distributed.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
-const {fileHash} = require("./build-source-inputs");
+const {hasBuildDirectoryEntries, fileHash} = require("./build-source-inputs");
 const tool = require("./native-packing-tool.json");
 
 /** Read only the catalog's exact canonical regular file, without following links.
@@ -30,7 +30,7 @@ function prepareNativePackingTool(output, env = process.env, spawn = spawnSync) 
   const stat = fs.lstatSync(output, {throwIfNoEntry: false});
   if (stat) {
     if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(output) !== output ||
-        fs.readdirSync(output).sort().join(",") !== "upx,upx.tar.xz") {
+        !hasBuildDirectoryEntries(output, ["upx", "upx.tar.xz"])) {
       throw new Error("Packing tool cache is unknown or incomplete; preserve it for diagnosis");
     }
     admitPackingFile(path.join(output, "upx.tar.xz"), tool.archive); admitPackingFile(path.join(output, "upx"), tool.executable);

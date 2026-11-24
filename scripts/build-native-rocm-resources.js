@@ -6,7 +6,7 @@ const fs = require("node:fs"), path = require("node:path"), {spawnSync} = requir
 const {revision} = require("./native-comgr-inputs");
 const {sdkStage, selectHostCompilers, sdkHostEnvironment, verifyCompilerEnvironment, hostCompilerEvidence} = require("./build-native-sycl-sdk");
 const {sdkSourceEnvironment, sdkSourceFiles, verifySdkExport} = require("./prepare-native-sdk-sources");
-const {sourceInputs, verifySourceInputs, fileHash, readBuildJson, completeBuildInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, sourceInputs, verifySourceInputs, fileHash, readBuildJson, completeBuildInputs, nativeBuildJobs} = require("./build-source-inputs");
 const {comgrDeviceInputs} = require("./build-native-comgr-sdk");
 const clrRevision = "5b591b2ff64aac4c1c08be879b0d5f89fd713d50";
 const repo = path.resolve(__dirname, ".."), recipes = ["scripts/build-native-rocm-resources.js",
@@ -20,9 +20,9 @@ const literal = value => typeof value === "string" && path.isAbsolute(value) && 
 
 /** @param {unknown} value @returns {Config} */
 function validateConfig(value) {
-  const c = /** @type {Config} */ (value);
+  const c = /** @type {Config} */ (value), keys = ["clr", "cmake", "hipHeaders", "llvm", "source", "target", "version"];
   if (!c || c.version !== 1 || !["linux", "win32"].includes(c.target) ||
-      !["clr,cmake,hipHeaders,llvm,source,target,version", "clr,cmake,hipHeaders,hostCompilers,llvm,source,target,version"].includes(Object.keys(c).sort().join(",")) ||
+      (!hasExactBuildFields(c, keys) && !hasExactBuildFields(c, [...keys, "hostCompilers"])) ||
       ![c.source, c.clr, c.llvm, c.cmake, c.hipHeaders].every(literal) || /\s/.test(c.hipHeaders)) {
     throw new Error("ROCm resources need an explicit Linux/Windows target and literal absolute source/tool/header paths");
   }
@@ -82,7 +82,7 @@ function resourcePlan(c, output, jobs) {
  * @param {unknown} input @param {string} output @param {NodeJS.ProcessEnv} [environment] */
 function buildResources(input, output, environment = process.env) {
   if (process.platform !== "linux" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {throw new Error("ROCm resource production requires Linux and MOM_AOT_BUILD_ONLY=1");}
-  const c = validateConfig(input), plan = resourcePlan(c, output, Number(environment["MOM_BUILD_JOBS"] || "2"));
+  const c = validateConfig(input), plan = resourcePlan(c, output, nativeBuildJobs(environment));
   if (fs.existsSync(output)) {throw new Error("Select a new output; existing evidence is never overwritten");}
   const destination = path.join(fs.realpathSync(path.dirname(output)), path.basename(output));
   for (const root of [repo, c.source, c.clr, c.llvm, c.hipHeaders, ...Object.values(plan.hostCompilers)]) {

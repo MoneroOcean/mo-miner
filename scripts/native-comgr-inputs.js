@@ -3,7 +3,7 @@
 // Shared producer/consumer contract for a locally built compiler component. This verifies
 // content/provenance continuity; a receipt is not a signature for untrusted downloaded code.
 const fs = require("node:fs"), path = require("node:path");
-const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, sourceInputs, verifySourceInputs, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {isStaticArchive} = require("./native-audit");
 const {verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
 const revision = "27682a16360e33e37c4f3cc6adf9a620733f8fe1";
@@ -18,13 +18,13 @@ const recipeFiles = ["scripts/build-native-comgr-sdk.js", "scripts/build-native-
  * @param {string} receipt */
 function comgrSdkInputs(receipt) {
   if (!path.isAbsolute(receipt)) {throw new Error("COMGR receipt must be absolute");}
-  const receiptSha = fileHash(receipt), record = readBuildJson(receipt);
+  const {value: record, sha256: receiptSha} = readBuildJsonSnapshot(receipt);
   const root = path.dirname(fs.realpathSync(receipt)), repo = path.resolve(__dirname, "..");
   const archive = path.join(root, "build/libamd_comgr.a"), header = path.join(root, "build/include/amd_comgr.h");
   if (record?.version !== 1 || record.revision !== revision || record.llvmVersion !== "21.1.8" ||
       record.buildOnly !== true || record.publicationQualified !== false || record.archive !== archive || record.header !== header ||
       record.license !== path.join(root, "source/amd/comgr/LICENSE.txt") || record.notices !== path.join(root, "source/amd/comgr/NOTICES.txt") ||
-      !record.sdkRoots || Object.keys(record.sdkRoots).sort().join(",") !== "device,lld,llvm" ||
+      !record.sdkRoots || !hasExactBuildFields(record.sdkRoots, ["device", "lld", "llvm"]) ||
       Object.values(record.sdkRoots).some(value => typeof value !== "string" || !path.isAbsolute(value) || fs.realpathSync(value) !== value)) {
     throw new Error("Invalid pinned source COMGR receipt");
   }

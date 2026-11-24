@@ -9,7 +9,7 @@ const ciSources = require("../native-ci-linux-sources"),
   ciWindowsLlvm = require("../native-ci-windows-llvm"),
   dpcppInputs = require("../native-dpcpp-cuda-inputs");
 const {ciSuffix} = require("../native-ci-job");
-const {fileHash, readBuildJson} = require("../build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot} = require("../build-source-inputs");
 const {sdkComponents} = require("../prepare-native-sdk-sources");
 const {linuxLlvmToolHandoffInputs} = require("../native-linux-llvm-tools");
 const {windowsControllerHandoffInputs} = require("../native-windows-controller-handoff");
@@ -68,16 +68,8 @@ function jobEnvironment(environment, nowSeconds = Math.floor(Date.now() / 1000))
   if (deadline <= nowSeconds) {throw new Error("The Windows DPC++ job deadline is expired");}
   const pins = readPins(environment);
   if (deadline - nowSeconds < 120) {throw new Error("Insufficient time remains before the job deadline");}
-  const runnerTemp = requiredEnv(environment, "RUNNER_TEMP"),
-    suffix = ciSuffix(environment),
-    workRoot = path.join(runnerTemp, "mom-native-windows-host-sdk-" + suffix);
-  const hostSdk = {
-    MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH: String(deadline),
-    MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT: workRoot,
-    MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR: path.join(workRoot, "archives"),
-    MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR: path.join(workRoot, "native-windows-host-sdk-" + suffix),
-    MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR: path.join(runnerTemp, "native-windows-host-sdk-" + suffix + "-metadata.tar"),
-  };
+  const hostSdk = ciWindowsLlvm.windowsHostSdkEnvironment(
+    requiredEnv(environment, "RUNNER_TEMP"), ciSuffix(environment), deadline);
   return {deadline, pins, hostSdk};
 }
 
@@ -180,7 +172,7 @@ function buildComponent() {
   const roots = /** @type {Record<string, string> | undefined} */ (readBuildJson(source.rootsFile)),
     compilerNames = Object.keys(sdkComponents("compiler")),
     windowsNames = Object.keys(sdkComponents("windows")), preparedWindows = path.join(source.prepared, "windows");
-  if (!roots || Object.keys(roots).sort().join("\0") !== compilerNames.sort().join("\0") ||
+  if (!roots || !hasExactBuildFields(roots, compilerNames) ||
       windowsNames.some(name => roots[name] !== path.join(source.source, "roots", name)) || fs.existsSync(preparedWindows)) {
     throw new Error("Pinned Windows source roots are incomplete or the preparation output is not fresh");
   }
@@ -227,9 +219,9 @@ function sealComponent(env) {
     root = path.join("/tmp", `native-windows-dpcpp-static-${suffix}`),
     archive = path.join(fs.realpathSync(requiredEnv(env, "RUNNER_TEMP")), `native-windows-dpcpp-static-${suffix}.tar`),
     receipt = path.join(root, "component.json"), result = windowsDpcppComponentInputs(root),
-    metadata = /** @type {{link: {libraries: string[], wholeArchives: string[], objects: string[]}}} */ (readBuildJson(receipt));
+    {value: metadata, sha256: receiptSha256} = readBuildJsonSnapshot(receipt);
   if (env["MOM_NATIVE_WINDOWS_DPCPP_STATIC_COMPONENT_ROOT"] !== root || fs.existsSync(archive) ||
-      !result.files[receipt] || result.files[receipt] !== fileHash(receipt)) {
+      !result.files[receipt] || result.files[receipt] !== receiptSha256) {
     throw new Error("Windows DPC++ component does not match the fresh same-run seal paths");
   }
   const name = path.basename(root), rows = [...metadata.link.libraries, ...metadata.link.wholeArchives, ...metadata.link.objects],

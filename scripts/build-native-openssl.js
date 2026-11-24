@@ -2,7 +2,8 @@
 
 // Build-only original OpenSSL inputs for the native controller; sources are caller-supplied.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {createHash} = require("node:crypto");
-const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, sourceInputs, verifySourceInputs, readBuildJsonSnapshot} = require("./build-source-inputs");
+const {runLoggedSdkStage} = require("./native-sdk-stage");
 const {nativeSdkEnvironment} = require("./build-environment");
 const {isStaticArchive} = require("./native-audit");
 const {requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
@@ -12,7 +13,7 @@ const opensslPin = Object.freeze({version: "3.5.9", sha256: "603f5602e2eef00d77f
   sourceDateEpoch: 1790640000});
 const configureOptions = Object.freeze(["no-shared", "no-module", "no-dso", "no-engine", "no-tests", "no-comp", "no-zlib", "no-zstd", "no-brotli"]);
 const sourceLeaves = ["scripts/build-native-openssl.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js",
-  "scripts/native-linux-sysroot.js"];
+  "scripts/native-linux-sysroot.js", "scripts/native-sdk-stage.js"];
 const maxArchiveBytes = 128 << 20, maxInventoryBytes = 1 << 30, maxInventoryFiles = 100000;
 const isHash = (/** @type {unknown} */ value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 
@@ -28,7 +29,7 @@ function toolNames(platform) {return platform === "win32" ? ["ar", "cc", "link",
 /** @param {unknown} value @param {string} platform */
 function validateTools(value, platform) {
   const names = toolNames(platform), tools = /** @type {Record<string, string>} */ (value);
-  if (!tools || typeof tools !== "object" || Array.isArray(tools) || Object.keys(tools).sort().join(",") !== names.join(",") ||
+  if (!hasExactBuildFields(tools, names) ||
       Object.values(tools).some(file => !absolute(file))) {throw new Error("OpenSSL SDK needs explicit absolute platform tools");}
   return tools;
 }
@@ -190,22 +191,12 @@ function executableFormat(file, platform) {
   return stat;
 }
 
-/** @param {string[]} command @param {string} cwd @param {NodeJS.ProcessEnv} env @param {string} output @param {string} stage */
-function runStage(command, cwd, env, output, stage) {
-  const logPath = path.join(output, "logs", stage + ".log"), fd = fs.openSync(logPath, "wx");
-  fs.writeFileSync(path.join(output, "logs", stage + ".json"), JSON.stringify(command) + "\n", {flag: "wx"});
-  try {
-    const result = spawnSync(command[0] || "", command.slice(1), {cwd, env, stdio: ["ignore", fd, fd], timeout: 45 * 60 * 1000});
-    if (result.error || result.signal || result.status !== 0) {throw new Error("OpenSSL SDK stage failed: " + stage + "; inspect " + logPath, {cause: result.error});}
-  } finally {fs.closeSync(fd);}
-}
-
 /** Build from the exact original source archive; no download, host OpenSSL, CLI execution or release claim.
  * @param {string} archive @param {string} output @param {{version: number, jobs: number, tools: Record<string,string>}} config
  * @param {NodeJS.ProcessEnv} [environment] @param {string} [configSha256] */
 function buildNativeOpenSsl(archive, output, config, environment = process.env, configSha256) {
   if (environment["MOM_AOT_BUILD_ONLY"] !== "1") {throw new Error("OpenSSL SDK production requires MOM_AOT_BUILD_ONLY=1");}
-  if (!config || Object.keys(config).sort().join(",") !== "jobs,tools,version" || config.version !== 1 ||
+  if (!config || !hasExactBuildFields(config, ["jobs", "tools", "version"]) || config.version !== 1 ||
       !Number.isInteger(config.jobs) || config.jobs < 1 || config.jobs > 16) {throw new Error("Invalid OpenSSL SDK version-1 tool descriptor");}
   const platform = process.platform;
   if (platform !== "linux" && platform !== "win32") {throw new Error("Static OpenSSL production supports Linux and Windows only");}
@@ -238,11 +229,13 @@ function buildNativeOpenSsl(archive, output, config, environment = process.env, 
     throw new Error("OpenSSL archive or tools changed during preflight");
   }
   fs.mkdirSync(selectedOutput, {mode: 0o700}); fs.mkdirSync(path.join(selectedOutput, "logs")); fs.mkdirSync(plan.source); fs.mkdirSync(plan.build);
-  runStage([tar, "-xzf", archive, "-C", plan.source, "--strip-components=1"], selectedOutput, env, selectedOutput, "extract");
+  const runStage = (/** @type {string[]} */ command, /** @type {string} */ cwd, /** @type {string} */ stage) =>
+    runLoggedSdkStage(command, cwd, env, selectedOutput, stage, "OpenSSL SDK", 45 * 60 * 1000);
+  runStage([tar, "-xzf", archive, "-C", plan.source, "--strip-components=1"], selectedOutput, "extract");
   const sourceBefore = inventory(plan.source), license = path.join(plan.source, "LICENSE.txt");
   if (!fs.statSync(path.join(plan.source, "Configure")).isFile()) {throw new Error("Pinned OpenSSL source lacks Configure");}
   const stages = [plan.configure, plan.buildCommand, ...(plan.installCommand.length ? [plan.installCommand] : [])];
-  for (const [index, command] of stages.entries()) {runStage(command, plan.build, env, selectedOutput, ["configure", "build", "install-dev"][index] || "stage");}
+  for (const [index, command] of stages.entries()) {runStage(command, plan.build, ["configure", "build", "install-dev"][index] || "stage");}
 
   fs.mkdirSync(path.join(selectedOutput, "include"));
   if (platform === "win32") {stageWindowsHeaders(plan.source, plan.build, plan.headers);} else {
@@ -318,8 +311,8 @@ function copyTree(source, target) {
  * files: Record<string, string>, receipt: string, receiptSha256: string, notices: {component: string, path: string, sha256: string}[]}} */
 function nativeOpenSslInputs(root, platform = process.platform) {
   if ((platform !== "linux" && platform !== "win32") || !absolute(root) || !samePath(fs.realpathSync(root), root)) {throw new Error("Select a canonical OpenSSL SDK root");}
-  const receiptPath = path.join(root, "result.json"), receiptSha256 = fileHash(receiptPath),
-    receipt = readBuildJson(receiptPath), extension = platform === "win32" ? ".lib" : ".a";
+  const receiptPath = path.join(root, "result.json"), {value: receipt, sha256: receiptSha256} = readBuildJsonSnapshot(receiptPath),
+    extension = platform === "win32" ? ".lib" : ".a";
   if (receipt.version !== 1 || receipt.platform !== platform || receipt.target !== (platform === "win32" ? "VC-WIN64A" : "linux-x86_64") || receipt.opensslVersion !== opensslPin.version ||
       receipt.archive?.sha256 !== opensslPin.sha256 || !absolute(receipt.archive?.path) || !Number.isInteger(receipt.archive?.bytes) ||
       receipt.archive.bytes <= 0 || receipt.archive.bytes > maxArchiveBytes || !Number.isInteger(receipt.archive.members) ||
@@ -331,7 +324,7 @@ function nativeOpenSslInputs(root, platform = process.platform) {
   }
   if (platform === "linux") {verifyLinuxSysrootRecord(receipt.sysroot, "Static OpenSSL SDK");}
   const selectedTools = toolNames(platform), recordedTools = receipt.tools;
-  if (!recordedTools || typeof recordedTools !== "object" || Array.isArray(recordedTools) || Object.keys(recordedTools).sort().join(",") !== selectedTools.join(",") ||
+  if (!hasExactBuildFields(recordedTools, selectedTools) ||
       Object.values(recordedTools).some(row => !row || !absolute(row.path) || !isHash(row.sha256))) {throw new Error("Static OpenSSL SDK tool receipt is incomplete");}
   const expectedConfigure = opensslSdkPlan(root, Object.fromEntries(Object.entries(recordedTools).map(([name, row]) => [name, row.path])), 1, platform).configure;
   if (JSON.stringify(receipt.configure) !== JSON.stringify(expectedConfigure)) {throw new Error("Static OpenSSL SDK Configure plan mismatch");}
@@ -362,8 +355,8 @@ if (require.main === module) {
     const [archive, output, configFile, extra] = process.argv.slice(2);
     if (!archive || !output || !configFile || extra || !absolute(configFile)) {throw new Error("Usage: MOM_AOT_BUILD_ONLY=1 node scripts/build-native-openssl.js /pinned/openssl-3.5.9.tar.gz /new/sdk /absolute/tools.json");}
     regularInput(configFile, "tool descriptor");
-    const config = readBuildJson(configFile);
-    buildNativeOpenSsl(archive, output, config, process.env, fileHash(configFile));
+    const {value: config, sha256} = readBuildJsonSnapshot(configFile);
+    buildNativeOpenSsl(archive, output, config, process.env, sha256);
   } catch (error) {console.error(error instanceof Error ? error.message : "Static OpenSSL build failed"); process.exitCode = 1;}
 }
 

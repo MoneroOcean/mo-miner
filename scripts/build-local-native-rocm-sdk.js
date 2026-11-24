@@ -6,7 +6,7 @@ const fs = require("node:fs"), path = require("node:path"), {spawnSync} = requir
 const local = require("./build-local-native-sdk"), ciRocm = require("./native-ci-linux-rocm"),
   ciSources = require("./native-ci-linux-sources"),
   rocmProducer = require("./build-native-rocm-host-runtime");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {canonicalBuildDirectory, hasExactBuildFields, hasBuildDirectoryEntries, fileHash, readBuildJson} = require("./build-source-inputs");
 const {sdkSourceFiles} = require("./prepare-native-sdk-sources");
 const {verifyLinuxLlvmAdmission} = require("./build-native-llvm-sdk");
 const {gitSourceComponents} = require("./fetch-native-sdk-sources");
@@ -54,14 +54,13 @@ function localRocmSdkContextFromWorkspace(workspace) {
  * function's own result (callers pass it on to the auditors), re-validating its source paths.
  * @param {unknown} value */
 function localRocmSdkContext(value) {
-  const keys = value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).sort().join(",") : "";
-  if (keys !== "source" && keys !== "paths,source,workspace") {
+  if (!hasExactBuildFields(value, ["source"]) && !hasExactBuildFields(value, ["paths", "source", "workspace"])) {
     throw new Error("Local ROCm SDK needs only an admitted source-LLVM stage result");
   }
   const row = /** @type {{source?:{workspace?:unknown,compilerFetch?:unknown,compilerSources?:unknown,buildInputs?:unknown,llvmSdk?:unknown}}} */ (value),
     source = row.source;
   if (!source || typeof source.workspace !== "string") {throw new Error("Local ROCm SDK source result is incomplete");}
-  realDirectory(source.workspace, "Admitted native SDK workspace");
+  canonicalBuildDirectory(source.workspace, "Admitted native SDK workspace");
   const workspace = local.admitWorkspace(source.workspace, repo), expected = localRocmSdkContextFromWorkspace(workspace),
     paths = localRocmSdkPaths(workspace);
   if (source.compilerFetch !== expected.source.compilerFetch || source.compilerSources !== expected.source.compilerSources ||
@@ -69,14 +68,6 @@ function localRocmSdkContext(value) {
     throw new Error("Local ROCm SDK inputs do not match the exact admitted workspace paths");
   }
   return {workspace, source: expected.source, paths};
-}
-
-/** @param {string} directory @param {string} label */
-function realDirectory(directory, label) {
-  const stat = fs.lstatSync(directory, {throwIfNoEntry: false});
-  if (!stat?.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {
-    throw new Error(label + " is missing or not a canonical directory: " + directory);
-  }
 }
 
 /** @param {string} file @param {string} label @param {boolean} [singleLink] */
@@ -100,13 +91,13 @@ function verifyRocmBuildInputs(context, dependencies = {}) {
 /** @param {ReturnType<typeof localRocmBuildState>} state @param {{cc:string,cxx:string,cmake:string}} tools
  * @param {string} [git] */
 function auditLocalHipHeaders(state, tools, git = "/usr/bin/git") {
-  realDirectory(state.hipHeadersRoot, "Local ROCm HIP header root");
-  realDirectory(state.hipIncludeRoot, "Local ROCm HIP include root");
-  if (fs.readdirSync(state.hipHeadersRoot).sort().join(",") !==
-      ["archives", "build", "cmake-configure.log", "configure-plan.json", "header-package.json", "include", "patches", "source"].join(",")) {
+  canonicalBuildDirectory(state.hipHeadersRoot, "Local ROCm HIP header root");
+  canonicalBuildDirectory(state.hipIncludeRoot, "Local ROCm HIP include root");
+  if (!hasBuildDirectoryEntries(state.hipHeadersRoot,
+    ["archives", "build", "cmake-configure.log", "configure-plan.json", "header-package.json", "include", "patches", "source"])) {
     throw new Error("Local ROCm HIP header root has missing or unexpected producer outputs");
   }
-  for (const directory of [state.hipCommonRoot, state.clrHipamdRoot]) {realDirectory(directory, "Local ROCm HIP source export");}
+  for (const directory of [state.hipCommonRoot, state.clrHipamdRoot]) {canonicalBuildDirectory(directory, "Local ROCm HIP source export");}
   const packageFile = path.join(state.hipHeadersRoot, "header-package.json");
   regularFile(packageFile, "ROCm HIP header package receipt", true);
   const record = readBuildJson(packageFile), pins = gitSourceComponents(sourceTarget), hipRevision = pins["hip"]?.revision,
@@ -115,7 +106,7 @@ function auditLocalHipHeaders(state, tools, git = "/usr/bin/git") {
     keys = ["version", "pins", "sourceExports", "patch", "configure", "hiprtcCmake", "generatedHeader", "files", "requiredHiprtcHeaders", "buildOnly", "publicationQualified"];
   /** @param {Record<string,string>} value */
   const mapHash = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-  if (Object.keys(record).sort().join(",") !== [...keys].sort().join(",") || record.version !== 1 || record.buildOnly !== true ||
+  if (!hasExactBuildFields(record, keys) || record.version !== 1 || record.buildOnly !== true ||
       record.publicationQualified !== false || !isDeepStrictEqual(record.pins, {hip: hipRevision, clr: clrRevision}) ||
       !record.sourceExports || record.sourceExports.hipCommon?.root !== "source/hip-common" ||
       record.sourceExports.hipCommon.revision !== hipRevision || record.sourceExports.hipCommon.fileCount !== Object.keys(common).length ||
@@ -128,7 +119,7 @@ function auditLocalHipHeaders(state, tools, git = "/usr/bin/git") {
   const packagePaths = Object.keys(include).map(name => path.join(state.hipIncludeRoot, ...name.split("/")));
   for (const file of packagePaths) {regularFile(file, "ROCm HIP header package member", true);}
   const patch = record.patch, patchSource = path.join(repo, "scripts/patches/rocm-hip-headers-only.patch");
-  if (!patch || Object.keys(patch).sort().join(",") !== "applyLog,checkLog,originalSha256,patchedSha256,path,sha256,stripComponents,target" ||
+  if (!patch || !hasExactBuildFields(patch, ["applyLog", "checkLog", "originalSha256", "patchedSha256", "path", "sha256", "stripComponents", "target"]) ||
       patch.path !== "patches/rocm-hip-headers-only.patch" || patch.sha256 !== fileHash(patchSource) || patch.stripComponents !== 2 ||
       patch.target !== "source/clr-hipamd/CMakeLists.txt" || !/^[a-f0-9]{64}$/.test(patch.originalSha256 || "") ||
       patch.patchedSha256 !== clr["CMakeLists.txt"] || patch.checkLog !== "patches/check.json" || patch.applyLog !== "patches/apply.json") {
@@ -136,13 +127,13 @@ function auditLocalHipHeaders(state, tools, git = "/usr/bin/git") {
   }
   regularFile(state.hipPatchFile, "Saved ROCm HIP header patch", true);
   if (fileHash(state.hipPatchFile) !== patch.sha256) {throw new Error("Saved ROCm HIP header patch changed");}
-  realDirectory(state.hipPatchRoot, "ROCm HIP patch evidence root");
+  canonicalBuildDirectory(state.hipPatchRoot, "ROCm HIP patch evidence root");
   /** @type {Array<[string,boolean]>} */
   const patchLogs = [[state.hipPatchCheckLog, true], [state.hipPatchApplyLog, false]];
   for (const [file, check] of patchLogs) {
     regularFile(file, "ROCm HIP patch log", true);
     const evidence = readBuildJson(file), command = [git, "-C", state.clrHipamdRoot, "apply", "-p2", ...(check ? ["--check"] : []), "--", state.hipPatchFile];
-    if (Object.keys(evidence).sort().join(",") !== "command,error,signal,status,stderr,stdout" || evidence.status !== 0 ||
+    if (!hasExactBuildFields(evidence, ["command", "error", "signal", "status", "stderr", "stdout"]) || evidence.status !== 0 ||
         evidence.signal !== null || evidence.error !== null || typeof evidence.stdout !== "string" || typeof evidence.stderr !== "string" ||
         !isDeepStrictEqual(evidence.command, command)) {
       throw new Error("ROCm HIP patch evidence did not pass its exact public command");
@@ -238,10 +229,10 @@ function localRocmSourceState(paths) {
  * @param {ReturnType<typeof localRocmSdkPaths>} paths @param {NodeJS.ProcessEnv} env @param {string} git
  * @param {typeof ciSources.verifyRocmSources} [verify] */
 function verifyLocalRocmSources(paths, env, git, verify = ciSources.verifyRocmSources) {
-  realDirectory(paths.source, "Local pinned ROCm source cohort");
+  canonicalBuildDirectory(paths.source, "Local pinned ROCm source cohort");
   regularFile(paths.fetchReceipt, "Pinned ROCm source fetch receipt", true);
   regularFile(paths.rootsFile, "Pinned ROCm source roots receipt", true);
-  realDirectory(paths.pythonSourceRoot, "Pinned ROCm parser source directory");
+  canonicalBuildDirectory(paths.pythonSourceRoot, "Pinned ROCm parser source directory");
   regularFile(paths.pythonArchive, "Pinned ROCm parser source archive", true);
   regularFile(paths.pythonSourceReceipt, "Pinned ROCm parser source receipt", true);
   return verify({env}, localRocmSourceState(paths), git);
@@ -323,14 +314,14 @@ function auditLocalRocmSdkInputs(context, tools, dependencies = {}) {
 /** Keep Intel driver spellings for COMGR; aliases may resolve only inside the pinned SDK.
  * @param {unknown} value @param {string} [compilerBin] @returns {{cc:string,cxx:string,cmake:string}} */
 function localRocmTools(value, compilerBin = path.join(oneapiCompilerRoot, "2026.2/bin")) {
-  if (!value || typeof value !== "object" || Object.keys(value).sort().join(",") !== "cc,cmake,cxx") {
+  if (!hasExactBuildFields(value, ["cc", "cmake", "cxx"])) {
     throw new Error("Local ROCm COMGR SDK requires only its pinned host compiler and CMake paths");
   }
   const tools = /** @type {{cc?:unknown,cxx?:unknown,cmake?:unknown}} */ (value), selected = {cc: tools.cc, cxx: tools.cxx, cmake: tools.cmake};
   if (!path.isAbsolute(compilerBin) || path.resolve(compilerBin) !== compilerBin) {throw new Error("Pinned Intel compiler directory must be canonical");}
-  realDirectory(compilerBin, "Pinned Intel 2026.2 compiler directory");
+  canonicalBuildDirectory(compilerBin, "Pinned Intel 2026.2 compiler directory");
   const compilerRoot = path.dirname(compilerBin);
-  realDirectory(compilerRoot, "Pinned Intel 2026.2 SDK root");
+  canonicalBuildDirectory(compilerRoot, "Pinned Intel 2026.2 SDK root");
   /** @param {string} file @param {string} label */
   const compilerFile = (file, label) => {
     const stat = fs.statSync(file, {throwIfNoEntry: false});
@@ -387,13 +378,13 @@ function runLocalRocmSdkChild(context, tools, dependencies = {}) {
   const host = localRocmHostInputs(selected, comgrTools, env, dependencies);
   regularFile(git, "Pinned source-fetch Git executable"); fs.accessSync(git, fs.constants.X_OK);
   const sourceState = localRocmSourceState(paths);
-  const reusedSources = localDirectory(paths.source, "Local ROCm sources");
+  const reusedSources = canonicalBuildDirectory(paths.source, "Local ROCm sources", true);
   if (!reusedSources) {
     if (fs.lstatSync(paths.pythonSourceRoot, {throwIfNoEntry: false})) {throw new Error("ROCm parser source exists without its ROCm source cohort; preserve the workspace");}
     const fetcher = path.join(repo, "scripts/fetch-native-sdk-sources.js");
     run(process.execPath, [fetcher, ...ciSources.rocmSourceFetchArgs(sourceState, git)],
       {label: "Pinned ROCm Git source acquisition", env, cwd: repo});
-    realDirectory(paths.source, "Fetched local ROCm source cohort");
+    canonicalBuildDirectory(paths.source, "Fetched local ROCm source cohort");
     regularFile(paths.fetchReceipt, "Pinned ROCm source fetch receipt", true);
     regularFile(paths.rootsFile, "Pinned ROCm source roots receipt", true);
     assertFetch(readBuildJson(paths.fetchReceipt), readBuildJson(paths.rootsFile), "rocm", paths.source,
@@ -403,7 +394,7 @@ function runLocalRocmSdkChild(context, tools, dependencies = {}) {
   verifyLocalRocmSources(paths, env, git, verifySources);
 
   const buildState = localRocmBuildState(selected), outputFlags = [paths.hipHeadersRoot, paths.resourcesRoot, paths.sdkRoot],
-    outputExists = outputFlags.map(root => localDirectory(root, "Local ROCm COMGR output")), configExists = Boolean(fs.lstatSync(paths.resourcesConfig, {throwIfNoEntry: false})),
+    outputExists = outputFlags.map(root => canonicalBuildDirectory(root, "Local ROCm COMGR output", true)), configExists = Boolean(fs.lstatSync(paths.resourcesConfig, {throwIfNoEntry: false})),
     admissionStat = fs.lstatSync(paths.comgrAdmission, {throwIfNoEntry: false});
   let reusedComgr = outputExists.every(Boolean);
   if (!outputExists.some(Boolean)) {
@@ -427,7 +418,7 @@ function runLocalRocmSdkChild(context, tools, dependencies = {}) {
 
   const hostState = host.state, hostTools = host.tools, hostConfig = host.config,
     hostPaths = [paths.hostSdkRoot, paths.runtimeOutput],
-    hostExists = hostPaths.map(root => localDirectory(root, "Local ROCm host SDK output")), hostAdmissionStat = fs.lstatSync(paths.hostAdmission, {throwIfNoEntry: false});
+    hostExists = hostPaths.map(root => canonicalBuildDirectory(root, "Local ROCm host SDK output", true)), hostAdmissionStat = fs.lstatSync(paths.hostAdmission, {throwIfNoEntry: false});
   if (hostExists.some(Boolean)) {
     if (!hostExists.every(Boolean) || !hostAdmissionStat?.isFile() || hostAdmissionStat.isSymbolicLink() ||
         !fs.lstatSync(paths.hostConfig, {throwIfNoEntry: false})?.isFile()) {
@@ -462,14 +453,6 @@ function rocmSdkResult(context, reused) {
     buildOnly: true, executed: false, publicationQualified: false};
 }
 
-/** @param {string} directory @param {string} label */
-function localDirectory(directory, label) {
-  const stat = fs.lstatSync(directory, {throwIfNoEntry: false});
-  if (!stat) {return false;}
-  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {throw new Error(label + " is not a canonical directory: " + directory);}
-  return true;
-}
-
 /** @typedef {{run?:typeof local.runCommand,tools?:ReturnType<typeof local.localTools>,resolveTools?:typeof local.localTools,
  * versionOf?:(file:string)=>string,environment?:NodeJS.ProcessEnv,
  * validateTools?:(tools:unknown)=>{cc:string,cxx:string,cmake:string}}} LocalRocmWrapperDependencies */
@@ -482,7 +465,7 @@ function buildLocalLinuxRocmSdk(context, dependencies = {}) {
     resolved = dependencies.tools || (dependencies.resolveTools || local.localTools)(env, dependencies.versionOf),
     tools = {cc: resolved.cc, cxx: resolved.cxx, cmake: resolved.cmake}, validateTools = dependencies.validateTools || localRocmTools,
     selectedTools = validateTools(tools), invoke = local.scopedInvoker(resolved, env, dependencies.run || local.runCommand), p = selected.paths,
-    reusedSources = localDirectory(p.source, "Local ROCm sources"),
+    reusedSources = canonicalBuildDirectory(p.source, "Local ROCm sources", true),
     reusedComgr = [p.hipHeadersRoot, p.resourcesRoot, p.sdkRoot, p.comgrAdmission].every(file => Boolean(fs.lstatSync(file, {throwIfNoEntry: false}))),
     reusedHost = [p.hostSdkRoot, p.runtimeOutput, p.hostAdmission].every(file => Boolean(fs.lstatSync(file, {throwIfNoEntry: false})));
   invoke("systemd memory-limit preflight", process.execPath, [__filename, "--memory-probe"]);

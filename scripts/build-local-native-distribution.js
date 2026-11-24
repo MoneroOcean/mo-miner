@@ -3,7 +3,7 @@
 // Local release assembly uses the same candidate, dependency audit and archive producers as CI.
 // SDK preparation stays separate so a JavaScript edit never rebuilds vendor compilers.
 const fs = require("node:fs"), path = require("node:path");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {fileHash, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {checkNativeNoticeReview} = require("./check-native-notices");
 const {prepareNativePackingTool} = require("./prepare-native-packing-tool");
 const local = require("./build-local-native-sdk");
@@ -34,7 +34,7 @@ function buildLocalNativeDistribution(sdk, output, environment = process.env, de
   local.admitWorkspace(sdk.workspace, repo);
   const version = require("./build-release").releaseVersion(environment),
     notices = path.join(repo, "THIRD-PARTY-NOTICES.txt"), review = (dependencies.review || checkNativeNoticeReview)(),
-    config = readBuildJson(sdk.configFile), configHash = fileHash(sdk.configFile);
+    {value: config, sha256: configHash} = readBuildJsonSnapshot(sdk.configFile);
   if (!review.notice || review.notice.sha256 !== fileHash(notices) ||
       !config.notices || config.notices.path !== notices || config.notices.sha256 !== review.notice.sha256) {
     throw new Error("Local SDK descriptor must bind the current reviewed distribution notices");

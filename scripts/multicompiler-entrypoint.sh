@@ -130,24 +130,31 @@ source_fingerprint() {
     awk '{print $1}'
 }
 
-# Concurrent Linux GPU measurements reuse an immutable worker produced by an earlier ordinary
-# development container invocation. Fail closed if that worker is absent or stale and, most
-# importantly, do not
-# rename or otherwise mutate the shared build tree in this mode.
+# These backends use open-source DPC++ instead of oneAPI. KawPow's NVIDIA JIT also needs
+# the CUDA tools, and generic OpenCL uses the system ICD dispatcher to see all vendors.
+use_worker_toolchain() {
+  case "$backend" in
+    nvidia|opencl|intel_igpu)
+      export PATH="/opt/dpcpp/bin:$PATH"
+      export LD_LIBRARY_PATH="/opt/dpcpp/lib:${LD_LIBRARY_PATH:-}"
+      ;;
+  esac
+  case "$backend" in
+    opencl) unset OCL_ICD_FILENAMES ;;
+    nvidia)
+      export PATH="/usr/local/cuda/bin:$PATH"
+      export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+      ;;
+  esac
+}
+
+# Concurrent GPU measurements require a current immutable worker and leave the build tree in place.
 case "${MOM_REUSE_BUILT_WORKER:-0}" in
   0) ;;
   1)
-    if [ "$backend" = nvidia ] || [ "$backend" = opencl ] || [ "$backend" = intel_igpu ]; then
-      export PATH="/opt/dpcpp/bin:$PATH"
-      export LD_LIBRARY_PATH="/opt/dpcpp/lib:${LD_LIBRARY_PATH:-}"
-    fi
+    use_worker_toolchain
     if [ "$backend" = opencl ]; then
-      unset OCL_ICD_FILENAMES
       export ONEAPI_DEVICE_SELECTOR="${ONEAPI_DEVICE_SELECTOR:-opencl:$opencl_device_type}"
-    fi
-    if [ "$backend" = nvidia ]; then
-      export PATH="/usr/local/cuda/bin:$PATH"
-      export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
     fi
     reused_worker="$PWD/build/lin/Release/$default/mom.node"
     if [ ! -s "$reused_worker" ]; then
@@ -222,35 +229,18 @@ restore_platform_tree() {
   if [ -d "$platforms_hold" ]; then mv "$platforms_hold" build; else mkdir -p build; fi
 }
 trap restore_platform_tree EXIT
-# NVIDIA, Intel integrated, and generic OpenCL workers use the open-source DPC++ tree, not oneAPI. Keep
-# its compiler/runtime first; NVIDIA also needs CUDA tools for KawPow's runtime SYCL-source JIT.
-# Without this, libsycl-jit resolves its resource directory as /lib/clang/... and silently falls
-# back to the roughly 3x slower AOT ProgPoW kernel. Packaged workers carry the same files beside the
-# addon; native and container development use the installed SDK paths instead.
-if [ "$backend" = nvidia ] || [ "$backend" = opencl ] || [ "$backend" = intel_igpu ]; then
-  export PATH="/opt/dpcpp/bin:$PATH"
-  export LD_LIBRARY_PATH="/opt/dpcpp/lib:${LD_LIBRARY_PATH:-}"
-fi
-if [ "$backend" = opencl ]; then
-  # The oneAPI base image pins its private Intel ICD. Generic mode must use the system dispatcher so
-  # every mounted vendor ICD is visible, including vendors unknown when this image was built.
-  unset OCL_ICD_FILENAMES
-fi
-if [ "$backend" = nvidia ]; then
-  export PATH="/usr/local/cuda/bin:$PATH"
-  export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
-fi
+use_worker_toolchain
 
 publish() {
-  local source=$1 key=$2 destination binary_sha
-  if [ "$(source_fingerprint "$key")" != "$worker_source_fingerprint" ]; then
+  local source=$1 key=$2 fingerprint=$3 destination binary_sha
+  if [ "$(source_fingerprint "$key")" != "$fingerprint" ]; then
     echo "Worker source inputs changed during build; refusing to publish $key" >&2
     exit 2
   fi
   mkdir -p "$artifact_dir/$key"
   destination="$artifact_dir/$key/mom.node"
   install -m 0755 "$source" "$destination"
-  printf '%s\n' "$worker_source_fingerprint" >"$destination.sources.sha256"
+  printf '%s\n' "$fingerprint" >"$destination.sources.sha256"
   binary_sha="$(sha256sum "$destination" | awk '{print $1}')"
   printf '%s\n' \
     'schema=1' \
@@ -260,14 +250,22 @@ publish() {
     "cpu=${MOM_CPU_MARCH:-unset}" >"$destination.build-profile"
 }
 
-build_oneapi() {
-  worker_source_fingerprint=$(source_fingerprint oneapi)
-  # CPU flags are part of the artifact ABI. In particular, a cached developer build made with
-  # -march=native must never be reused after MOM_PORTABLE_BUILD=1 is selected for packaging.
-  local out="$cache_root/oneapi"
-  active_cache="$out"
+build_with_cached_tree() {
+  local key=$1 fingerprint
+  shift
+  fingerprint=$(source_fingerprint "$key")
+  active_cache="$cache_root/$key"
   rm -rf build
-  [ ! -d "$out" ] || mv "$out" build
+  [ ! -d "$active_cache" ] || mv "$active_cache" build
+  "$@"
+  rm -rf "$active_cache"
+  mv build "$active_cache"
+  active_cache=
+  publish "$cache_root/$key/Release/mom.node" "$key" "$fingerprint"
+}
+
+build_oneapi() {
+  # Content state includes CPU flags so a developer build cannot satisfy a portable build.
   local -a state_args=(build oneapi icx icpx)
   node scripts/linux-build-state.js prepare "${state_args[@]}"
   # Content preparation owns graph/toolchain invalidation and removes stale Makefiles.
@@ -277,55 +275,25 @@ build_oneapi() {
   fi
   JOBS="$jobs" CC=icx CXX="$PWD/scripts/cxx-oneapi.sh" node-gyp build --nodedir=/usr/local --jobs "$jobs" -- "${mom_make_dependency_args[@]}"
   node scripts/linux-build-state.js finish "${state_args[@]}"
-  rm -rf "$out"
-  mv build "$out"
-  active_cache=
-  publish "$out/Release/mom.node" oneapi
-}
-
-build_dpcpp() {
-  worker_source_fingerprint=$(source_fingerprint dpcpp)
-  local out="$cache_root/dpcpp"
-  active_cache="$out"
-  rm -rf build
-  [ ! -d "$out" ] || mv "$out" build
-  bash scripts/combined-build.sh
-  rm -rf "$out"
-  mv build "$out"
-  active_cache=
-  publish "$out/Release/mom.node" dpcpp
-}
-
-build_dpcpp_opencl() {
-  worker_source_fingerprint=$(source_fingerprint dpcpp-opencl)
-  local out="$cache_root/dpcpp-opencl"
-  active_cache="$out"
-  rm -rf build
-  [ ! -d "$out" ] || mv "$out" build
-  MOM_DPCPP_IMPL=dpcpp-opencl MOM_COMBINED_TARGETS=spir64 MOM_INTEL_AOT_DEVICE= \
-    bash scripts/combined-build.sh
-  rm -rf "$out"
-  mv build "$out"
-  active_cache=
-  publish "$out/Release/mom.node" dpcpp-opencl
 }
 
 build_acpp() {
-  local target=$1 path=$2 out=$3 key=$4
-  worker_source_fingerprint=$(source_fingerprint "$key")
-  PATH="$path/bin:$PATH" LD_LIBRARY_PATH="$path/lib:$LD_LIBRARY_PATH" \
+  local target=$1 toolchain=$2 key="acpp-$1" fingerprint
+  fingerprint=$(source_fingerprint "$key")
+  PATH="$toolchain/bin:$PATH" LD_LIBRARY_PATH="$toolchain/lib:$LD_LIBRARY_PATH" \
     ACPP_TARGETS=generic ACPP_VISIBILITY_MASK="$target" MOM_ADAPTIVE_BACKEND="$target" \
-    MOM_ADAPTIVE_BUILD_DIR="$out" bash scripts/adaptivecpp-entrypoint.sh true
-  publish "$out/Release/mom.node" "$key"
+    MOM_ADAPTIVE_BUILD_DIR="$cache_root/$key" bash scripts/adaptivecpp-entrypoint.sh true
+  publish "$cache_root/$key/Release/mom.node" "$key" "$fingerprint"
 }
 
 for compiler in "${build_compilers[@]}"; do
   case "$compiler" in
-    oneapi) build_oneapi ;;
-    dpcpp) build_dpcpp ;;
-    dpcpp-opencl) build_dpcpp_opencl ;;
-    acpp-cuda) build_acpp cuda /opt/adaptivecpp-cuda "$cache_root/acpp-cuda" acpp-cuda ;;
-    acpp-hip) build_acpp hip /opt/adaptivecpp-hip "$cache_root/acpp-hip" acpp-hip ;;
+    oneapi) build_with_cached_tree "$compiler" build_oneapi ;;
+    dpcpp) build_with_cached_tree "$compiler" bash scripts/combined-build.sh ;;
+    dpcpp-opencl)
+      build_with_cached_tree "$compiler" env MOM_DPCPP_IMPL=dpcpp-opencl MOM_COMBINED_TARGETS=spir64 \
+        MOM_INTEL_AOT_DEVICE= bash scripts/combined-build.sh ;;
+    acpp-*) build_acpp "${compiler#acpp-}" "/opt/adaptivecpp-${compiler#acpp-}" ;;
   esac
 done
 if [ "$backend" = opencl ]; then

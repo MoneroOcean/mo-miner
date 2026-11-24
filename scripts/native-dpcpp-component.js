@@ -3,7 +3,7 @@
 // Install only the original runtime/link closure, not compiler tools, test executables or
 // build trees. The actual Ninja link edge owns archive membership; no second library list.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {fileHash, readBuildJson, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {pins} = require("./native-dpcpp-pins");
 const {verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
 const {isStaticArchive} = require("./native-audit");
@@ -55,7 +55,7 @@ function dpcppObject(file) {
  * @param {string} root */
 function dpcppComponentInputs(root) {
   if (!absolute(root) || fs.realpathSync(root) !== root) {throw new Error("Select a canonical DPC++ component root");}
-  const receipt = path.join(root, "component.json"), receiptSha256 = fileHash(receipt), r = readBuildJson(receipt);
+  const receipt = path.join(root, "component.json"), {value: r, sha256: receiptSha256} = readBuildJsonSnapshot(receipt);
   if (r.version !== 1 || r.kind !== "dpcpp-linux" || !isDeepStrictEqual(r.pins, pins) || !r.files || typeof r.files !== "object" || Array.isArray(r.files) ||
       !Array.isArray(r.libraries) || r.libraries.length > 32 || r.libraries.some((/** @type {unknown} */ n) => typeof n !== "string" || !/^lib\/[A-Za-z0-9_.-]+\.a$/.test(n)) ||
       new Set(r.libraries).size !== r.libraries.length || requiredLibraries.some(n => !r.libraries.includes("lib/" + n))) {throw new Error("Invalid complete DPC++ component receipt");}
@@ -83,7 +83,7 @@ function dpcppComponentInputs(root) {
  * @param {string} producer @param {string} ninja @param {string} output @param {NodeJS.ProcessEnv} [environment] */
 function exportDpcppComponent(producer, ninja, output, environment = process.env) {
   if (process.platform !== "linux" || environment["MOM_AOT_BUILD_ONLY"] !== "1" || ![producer, ninja, output].every(absolute)) {throw new Error("DPC++ component export requires Linux, explicit paths and MOM_AOT_BUILD_ONLY=1");}
-  const sourceSha256 = fileHash(producer), r = readBuildJson(producer), root = path.dirname(fs.realpathSync(producer)), build = path.join(root, "build");
+  const {value: r, sha256: sourceSha256} = readBuildJsonSnapshot(producer), root = path.dirname(fs.realpathSync(producer)), build = path.join(root, "build");
   if (r.version !== 1 || r.target !== "linux" || r.buildOnly !== true || r.executed !== false || !isDeepStrictEqual(r.pins, pins) ||
       r.archive !== path.join(build, "libmom-sycl-static.a") || fileHash(r.archive) !== r.sha256 || !r.inputs?.[ninja] || fileHash(ninja) !== r.inputs[ninja]) {throw new Error("DPC++ producer or matching Ninja identity differs");}
   verifyLinuxSysrootRecord(r.sysroot, "DPC++ static SDK");

@@ -4,7 +4,8 @@
 // Never modify an Engineering checkout, fetch a moving revision, or execute MoM here.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, sourceInputs, verifySourceInputs, readBuildJson, readBuildText} = require("./build-source-inputs");
+const {hasExactBuildFields, requireBuildFields, hasBuildDirectoryEntries, buildPathsOverlap, containsBuildPath, fileHash, sourceInputs,
+  verifySourceInputs, readBuildJson, readBuildText} = require("./build-source-inputs");
 const {nativeSdkEnvironment} = require("./build-environment");
 const {isStaticArchive} = require("./native-audit");
 const {requireLinuxSysroot, linuxSysrootRecord} = require("./native-linux-sysroot");
@@ -12,8 +13,9 @@ const repo = path.resolve(__dirname, "..");
 const hermesPins = Object.freeze({revision: "26fbb82fad39d9d06901adb1d6d630dacc84c877",
   promiseSha256: "071f4322f9dba4fa06992065bc5f1eb9b11e49c9b1b6336d31f377b3e9801184"});
 const resumeBaseline = Object.freeze({producer: "872a5c25eeacdd0d3438d7ca2cc4d9bda961f452f5f9269d3b3b42b22a16ae2a",
-  sourceInputsOld: "cbe016232d5ca594d97f58657673723802173efbaf42f70e0c5de05aa57441f0",
-  sourceInputsCurrent: "74e04fdb0227950aba00b27af02065f02ab700a30bf8b807f0fd1b84dc139330",
+  windowsSourceInputs: "cbe016232d5ca594d97f58657673723802173efbaf42f70e0c5de05aa57441f0",
+  linuxSourceInputs: "74e04fdb0227950aba00b27af02065f02ab700a30bf8b807f0fd1b84dc139330",
+  sourceInputsCurrent: "e5c42597fd7a865bdee84d36feffd22e00a11b1803613448cfc5eb509735bd4e",
   windowsPatch: "b1afebda35a3873d60848853720f944f795559796783684c208c294d54a333d5", changedFile: "lib/VM/CMakeLists.txt"});
 /** CMake values must not become lists/interpolation or command-line fragments.
  * @param {unknown} value @returns {value is string} */
@@ -35,16 +37,13 @@ const hermesRecipeFiles = platform => ["scripts/build-native-hermes.js", "script
  * @param {string} input @param {string} output @param {HermesTools} tools
  * @param {number} jobs @param {NodeJS.Platform} [platform] @param {string} [toolchain] */
 function hermesSdkPlan(input, output, tools, jobs, platform = process.platform, toolchain) {
-  if (!["linux", "win32"].includes(platform) || !tools || Object.keys(tools).sort().join(",") !== "cc,cmake,cxx,git,ninja" ||
+  if (!["linux", "win32"].includes(platform) || !hasExactBuildFields(tools, ["cc", "cmake", "cxx", "git", "ninja"]) ||
       ![input, output, ...Object.values(tools)].every(literal) || !Number.isInteger(jobs) || jobs < 1 || jobs > 16 ||
       (toolchain !== undefined && (platform !== "linux" || !literal(toolchain)))) {
     throw new Error("Hermes SDK needs Linux/Windows, explicit absolute source/output/tools and jobs in 1..16");
   }
-  for (const [parent, child] of [[input, output], [output, input], [repo, output]]) {
-    const relative = path.relative(parent || "", child || "");
-    if (!relative || (!relative.startsWith(".." + path.sep) && relative !== ".." && !path.isAbsolute(relative))) {
-      throw new Error("Hermes SDK output must not overlap sources or the maintained repository");
-    }
+  if (buildPathsOverlap(input, output) || containsBuildPath(repo, output)) {
+    throw new Error("Hermes SDK output must not overlap sources or the maintained repository");
   }
   const source = path.join(output, "source"), build = path.join(output, "build"), windows = platform === "win32";
   const cmakePath = (/** @type {string} */ file) => file.replaceAll("\\", "/");
@@ -92,9 +91,6 @@ function hermesSourceFiles(source, names) {
 }
 
 /** Resume accepts unchanged Linux sources or the scoped Windows DateUtil source delta. */
-function exactKeys(/** @type {unknown} */ value, /** @type {string[]} */ keys, /** @type {string} */ label) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) {throw new Error("Hermes resume " + label + " has unknown or missing fields");}
-}
 function samePath(/** @type {unknown} */ actual, /** @type {string} */ expected, /** @type {NodeJS.Platform} */ platform) {
   if (typeof actual !== "string" || !path.isAbsolute(actual)) {return false;} return platform === "win32" ? path.win32.normalize(actual).toLowerCase() === path.win32.normalize(expected).toLowerCase() : path.resolve(actual) === path.resolve(expected);
 }
@@ -122,28 +118,33 @@ function validateHermesCMakeCache(/** @type {ReturnType<typeof hermesSdkPlan>} *
 function validateHermesResumeMetadata(/** @type {any} */ result, /** @type {any} */ before,
   /** @type {ReturnType<typeof hermesSdkPlan>} */ plan, /** @type {{files: Record<string, string>, graph: Record<string, string>}} */ recipe,
   /** @type {Record<string, string>} */ fingerprints, /** @type {NodeJS.Platform} */ platform) {
-  exactKeys(result, ["version", "target", "pins", "source", "build", "artifacts", "fingerprints", "sources", "recipe", "buildOnly", "publicationQualified",
-    ...(platform === "linux" ? ["sysroot"] : [])], "result");
-  exactKeys(before, ["pins", "recipe", "fingerprints", "sources", "configure", "compile"], "before receipt");
+  requireBuildFields(result, ["version", "target", "pins", "source", "build", "artifacts", "fingerprints", "sources", "recipe", "buildOnly", "publicationQualified",
+    ...(platform === "linux" ? ["sysroot"] : [])], "Hermes resume result");
+  requireBuildFields(before, ["pins", "recipe", "fingerprints", "sources", "configure", "compile"], "Hermes resume before receipt");
   if (result.version !== 1 || result.target !== platform || !isDeepStrictEqual(result.pins, hermesPins) || result.buildOnly !== true || result.publicationQualified !== false ||
       !samePath(result.source, plan.source, platform) || !samePath(result.build, plan.build, platform) ||
       !isDeepStrictEqual(before.pins, hermesPins) || !isDeepStrictEqual(before.configure, plan.configure) || !isDeepStrictEqual(before.compile, plan.compile) ||
       !isDeepStrictEqual(before.sources, result.sources) || !isDeepStrictEqual(before.recipe, result.recipe) || !isDeepStrictEqual(before.fingerprints, result.fingerprints)) {
     throw new Error("Hermes resume receipt, source/build paths, pins or CMake plan differ");
   }
-  exactKeys(result.recipe, ["files", "graph"], "recipe");
+  requireBuildFields(result.recipe, ["files", "graph"], "Hermes resume recipe");
   if (Object.keys(result.recipe.files).length) {throw new Error("Hermes resume recipe contains unexpected source roots");}
-  exactKeys(result.recipe.graph, Object.keys(recipe.graph), "recipe graph");
-  const graphDelta = platform === "win32" ? new Set(["scripts/build-native-hermes.js", "scripts/build-source-inputs.js", "runtime/hermes-clang-cl.patch"])
-    : new Set(["scripts/build-native-hermes.js"]);
+  requireBuildFields(result.recipe.graph, Object.keys(recipe.graph), "Hermes resume recipe graph");
+  const sourceInputsFile = "scripts/build-source-inputs.js", windows = platform === "win32";
+  // The legacy cache pins the helper used by its original producer, even when the current helper changes.
+  /** @type {Record<string, string>} */
+  const previous = {"scripts/build-native-hermes.js": resumeBaseline.producer,
+    [sourceInputsFile]: windows ? resumeBaseline.windowsSourceInputs : resumeBaseline.linuxSourceInputs,
+    ...(windows ? {"runtime/hermes-clang-cl.patch": resumeBaseline.windowsPatch} : {})};
+  if (recipe.graph[sourceInputsFile] !== resumeBaseline.sourceInputsCurrent) {
+    throw new Error("Hermes resume producer/recipe baseline is not recognized");
+  }
   for (const [name, hash] of Object.entries(result.recipe.graph)) {
-    if (graphDelta.has(name)) {
-      const expected = name === "scripts/build-native-hermes.js" ? resumeBaseline.producer : name === "scripts/build-source-inputs.js" ? resumeBaseline.sourceInputsOld : resumeBaseline.windowsPatch;
-      const current = name === "scripts/build-source-inputs.js" ? resumeBaseline.sourceInputsCurrent : recipe.graph[name];
-      if (hash !== expected || recipe.graph[name] !== current || hash === current) {throw new Error("Hermes resume producer/recipe baseline is not recognized");}
+    if (Object.hasOwn(previous, name)) {
+      if (hash !== previous[name] || hash === recipe.graph[name]) {throw new Error("Hermes resume producer/recipe baseline is not recognized");}
     } else if (hash !== recipe.graph[name]) {throw new Error("Hermes resume recipe changed: " + name);}
   }
-  exactKeys(result.fingerprints, Object.keys(fingerprints), "tool fingerprints");
+  requireBuildFields(result.fingerprints, Object.keys(fingerprints), "Hermes resume tool fingerprints");
   const patchPath = path.join(repo, "runtime/hermes-clang-cl.patch");
   for (const [file, hash] of Object.entries(result.fingerprints)) {
     const expected = platform === "win32" && file === patchPath ? resumeBaseline.windowsPatch : fingerprints[file];
@@ -151,9 +152,9 @@ function validateHermesResumeMetadata(/** @type {any} */ result, /** @type {any}
       throw new Error("Hermes resume tool/patch fingerprint changed: " + file);
     }
   }
-  exactKeys(result.artifacts, Object.keys(plan.artifacts), "artifacts");
+  requireBuildFields(result.artifacts, Object.keys(plan.artifacts), "Hermes resume artifacts");
   for (const [name, file] of Object.entries(plan.artifacts)) {
-    exactKeys(result.artifacts[name], ["path", "sha256", "bytes"], "artifact");
+    requireBuildFields(result.artifacts[name], ["path", "sha256", "bytes"], "Hermes resume artifact");
     const artifact = result.artifacts[name];
     if (!samePath(artifact.path, file, platform) || !/^[a-f0-9]{64}$/.test(artifact.sha256) || !Number.isSafeInteger(artifact.bytes) || artifact.bytes < 1) {
       throw new Error("Hermes resume artifact metadata differs: " + name);
@@ -166,7 +167,7 @@ function validateHermesResumeCache(/** @type {string} */ output, /** @type {Retu
   const directory = (/** @type {string} */ file) => {const stat = fs.lstatSync(file); if (!stat.isDirectory() || stat.isSymbolicLink()) {throw new Error("Unsafe Hermes resume directory: " + file);}};
   const regular = (/** @type {string} */ file) => {const stat = fs.lstatSync(file); if (!stat.isFile() || stat.isSymbolicLink()) {throw new Error("Unsafe Hermes resume file: " + file);} return stat;};
   directory(output);
-  if (fs.readdirSync(output).sort().join("\0") !== ["before.json", "build", "logs", "result.json", "source"].sort().join("\0")) {throw new Error("Hermes resume output contains unknown paths or prior generations");}
+  if (!hasBuildDirectoryEntries(output, ["before.json", "build", "logs", "result.json", "source"])) {throw new Error("Hermes resume output contains unknown paths or prior generations");}
   for (const name of ["source", "build", "logs"]) {directory(path.join(output, name));}
   const resultPath = path.join(output, "result.json"), beforePath = path.join(output, "before.json"), cacheFile = path.join(plan.build, "CMakeCache.txt");
   for (const file of [resultPath, beforePath, cacheFile, path.join(plan.build, "build.ninja")]) {regular(file);}

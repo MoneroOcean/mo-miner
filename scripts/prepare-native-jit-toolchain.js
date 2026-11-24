@@ -4,7 +4,7 @@
 // compilation, archiving and MASM; no compiler wrapper or generated algorithm is needed.
 const fs = require("node:fs"), path = require("node:path");
 const {validateWindowsLlvmSdkConfig, validateWindowsControllerConfig, vfsFiles} = require("./build-native-windows-controller");
-const {buildFileInputs, fileHash, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, buildFileInputs, fileHash, readBuildJson} = require("./build-source-inputs");
 const repo = path.resolve(__dirname, "..");
 /** @param {string} p */
 const literal = p => path.isAbsolute(p) && p.length <= 4096 && !/[;"$\\]/.test(p) &&
@@ -16,7 +16,7 @@ const cmake = value => "[==[" + value + "]==]";
  * strict full-controller validation used by existing callers. @param {unknown} value */
 function validateWindowsJitDescriptor(value) {
   if (value && typeof value === "object" && !Array.isArray(value) &&
-      Object.keys(value).sort().join(",") === "tools,version,windowsSdk") {
+      hasExactBuildFields(value, ["tools", "version", "windowsSdk"])) {
     return validateWindowsLlvmSdkConfig(value);
   }
   return validateWindowsControllerConfig(value);
@@ -115,7 +115,7 @@ function windowsIntelRuleOverride(linkerFlags, runtimeLibraries, explicitSourceO
 function windowsJitToolchainPlan(descriptor, sdk, nativeTools, output, hostCompilers) {
   const config = validateWindowsJitDescriptor(descriptor), {windowsSdk, tools} = config, bin = path.dirname(tools.lldLink);
   const host = /** @type {{cc: string, cxx: string} | undefined} */ (hostCompilers);
-  if (hostCompilers !== undefined && (!host || Object.keys(host).sort().join(",") !== "cc,cxx" ||
+  if (hostCompilers !== undefined && (!host || !hasExactBuildFields(host, ["cc", "cxx"]) ||
       ![host.cc, host.cxx, tools.clangResourceInclude].every(file => typeof file === "string" && literal(file)))) {
     throw new Error("Windows JIT host compilers must be a paired literal C/C++ selection");
   }

@@ -4,7 +4,7 @@
 const fs = require("node:fs"), path = require("node:path");
 const {isDeepStrictEqual} = require("node:util");
 const {canonicalExecutable, ciBuildJobs, ioOpenSslChildTimeout, runNode, runNodeProcessGroup} = require("./native-ci-job");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJson} = require("./build-source-inputs");
 const {ioPins, nativeIoInputs} = require("./build-native-io");
 const {nativeOpenSslInputs, opensslPin} = require("./build-native-openssl");
 const {verifyZstdArchive} = require("./fetch-native-sdk-sources");
@@ -42,7 +42,7 @@ function assertHermesSdkFingerprints(fingerprints, tools, patches) {
     path.isAbsolute(value) && path.resolve(value) === value && !Array.from(value).some(char => char.charCodeAt(0) < 32 ||
       char.charCodeAt(0) >= 127 && char.charCodeAt(0) <= 159);
   if (!fingerprints || typeof fingerprints !== "object" || Array.isArray(fingerprints) ||
-      Object.keys(tools).sort().join("\0") !== toolNames.join("\0") ||
+      !hasExactBuildFields(tools, toolNames) ||
       !isDeepStrictEqual(patches, knownPatches) || !Object.values(tools).every(canonicalAbsolute)) {
     throw new Error("Hermes SDK fingerprint plan is not the known bounded tool/patch set");
   }
@@ -148,10 +148,10 @@ function auditIoOpenSsl(paths, verifyTimeoutMs = 2 * 60 * 1000) {
   if (ioReceipt.target !== "linux" || ioReceipt.buildOnly !== true || ioReceipt.publicationQualified !== false ||
       !isDeepStrictEqual(ioReceipt.inputs, expectedIoInputs) || !isDeepStrictEqual(ioReceipt.fingerprints, expectedIoFingerprints) ||
       !opensslReceipt.archive || opensslReceipt.archive.path !== opensslArchive || opensslReceipt.archive.sha256 !== opensslPin.sha256 ||
-      !toolsDescriptor || Object.keys(toolsDescriptor).sort().join(",") !== "jobs,tools,version" ||
+      !toolsDescriptor || !hasExactBuildFields(toolsDescriptor, ["jobs", "tools", "version"]) ||
       toolsDescriptor.version !== 1 || ![2, 4].includes(toolsDescriptor.jobs) || !isDeepStrictEqual(toolsDescriptor.tools, expectedTools) ||
       opensslReceipt.config?.sha256 !== fileHash(paths.opensslTools) ||
-      !opensslReceipt.tools || Object.keys(opensslReceipt.tools).sort().join(",") !== Object.keys(expectedTools).sort().join(",")) {
+      !opensslReceipt.tools || !hasExactBuildFields(opensslReceipt.tools, Object.keys(expectedTools))) {
     throw new Error("Native I/O/OpenSSL SDK receipts do not bind this run's pinned sources and tools");
   }
   for (const [name, file] of Object.entries(expectedTools)) {

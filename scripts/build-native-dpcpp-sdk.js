@@ -5,7 +5,7 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {verifyPreparedSdkSources, sdkSourceFiles, validateSourceRoots} = require("./prepare-native-sdk-sources");
 const {pins, sdkIdentity, auditBuild} = require("./native-dpcpp-pins");
-const {fileHash, readBuildJson, sourceInputs, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, buildPathsOverlap, fileHash, readBuildJson, sourceInputs, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
 const {nativeSdkEnvironment} = require("./build-environment");
 const {compilerEnvironment: sdkCompilerEnvironment, sdkHostEnvironment, verifyCompilerEnvironment} = require("./build-native-sycl-sdk");
 const {isStaticArchive} = require("./native-audit");
@@ -35,14 +35,12 @@ const literal = value => typeof value === "string" && value.length <= 4096 && pa
  * @param {Record<string, string>} roots @param {string} sdk @param {string} cuda
  * @param {string} jit @param {string} output @param {Tools} tools @param {number} jobs */
 function linuxStaticSdkPlan(roots, sdk, cuda, jit, output, tools, jobs) {
-  const toolKeys = tools && Object.keys(tools).sort().join(",");
-  if (!roots || Object.keys(roots).sort().join(",") !== "computeHeaders,dpcpp,emhash,hwloc,levelZero,openclHeaders,openclLoader,umf" ||
-      !["cmake,ninja", "cc,cmake,cxx,ninja"].includes(toolKeys || "") || ![...Object.values(roots), sdk, cuda, jit, output, ...Object.values(tools)].every(literal) ||
+  const toolKeys = ["cmake", "ninja"];
+  if (!roots || !hasExactBuildFields(roots, ["computeHeaders", "dpcpp", "emhash", "hwloc", "levelZero", "openclHeaders", "openclLoader", "umf"]) ||
+      (!hasExactBuildFields(tools, toolKeys) && !hasExactBuildFields(tools, [...toolKeys, "cc", "cxx"])) || ![...Object.values(roots), sdk, cuda, jit, output, ...Object.values(tools)].every(literal) ||
       !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {throw new Error("Linux static SDK needs all original roots, explicit tools/JIT and jobs in1..16");}
   for (const input of [...Object.values(roots), sdk, cuda, path.dirname(jit), repo, ...Object.values(tools)]) {
-    const rel = path.relative(input, output), reverse = path.relative(output, input);
-    const nested = (/** @type {string} */ p) => !p || (!path.isAbsolute(p) && p !== ".." && !p.startsWith(".." + path.sep));
-    if (nested(rel) || nested(reverse)) {throw new Error("Linux static SDK output overlaps an input");}
+    if (buildPathsOverlap(input, output)) {throw new Error("Linux static SDK output overlaps an input");}
   }
   const build = path.join(output, "build"), hostCompilers = {cc: tools.cc || path.join(sdk, "bin/clang"), cxx: tools.cxx || path.join(sdk, "bin/clang++")};
   // Autoconf's deferred $CC expansion needs safe command names, not shell quotes in env values.

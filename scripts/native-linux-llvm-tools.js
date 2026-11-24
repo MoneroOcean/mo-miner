@@ -3,7 +3,7 @@
 // A deliberately small same-run transport for the Linux-built tools needed by the
 // Windows LLVM host and GPU-factory builds. This is not a second Linux SDK admission path.
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
 const {archiveName, archiveSha256} = require("./native-llvm-sdk");
 const {verifyLinuxLlvmAdmission} = require("./build-native-llvm-sdk");
 
@@ -29,7 +29,7 @@ const maxReceiptBytes = 8 << 20, maxArchiveBytes = 2 * 1024 ** 3, maxEntries = 3
  * @param {{testOnlySourceArchiveName:string,testOnlySourceArchiveSha256:string}|undefined} testPolicy */
 function sourceArchivePolicy(testPolicy) {
   if (testPolicy === undefined) {return {name: archiveName, sha256: archiveSha256};}
-  if (!testPolicy || Object.keys(testPolicy).sort().join(",") !== "testOnlySourceArchiveName,testOnlySourceArchiveSha256" ||
+  if (!testPolicy || !hasExactBuildFields(testPolicy, ["testOnlySourceArchiveName", "testOnlySourceArchiveSha256"]) ||
       typeof testPolicy.testOnlySourceArchiveName !== "string" || !/^[A-Za-z0-9_.-]{1,128}$/.test(testPolicy.testOnlySourceArchiveName) ||
       testPolicy.testOnlySourceArchiveName === "." || testPolicy.testOnlySourceArchiveName === ".." ||
       !/^[a-f0-9]{64}$/.test(testPolicy.testOnlySourceArchiveSha256 || "")) {
@@ -214,17 +214,17 @@ function validateHandoff(handoff, expectedSha256, archivePolicy, role) {
     throw new Error("Linux LLVM tool handoff is malformed or lacks its external hash pin");
   }
   const row = /** @type {any} */ (handoff);
-  const expectedKeys = role === "tools" ? "archiveSha256,buildOnly,compiled,files,format,publicationQualified,receipts,recipe,runId,sourceArchive,version" :
-      "archiveSha256,buildOnly,compiled,files,format,frontend,publicationQualified,receipts,recipe,runId,sourceArchive,version",
+  const expectedKeys = role === "tools" ? ["archiveSha256", "buildOnly", "compiled", "files", "format", "publicationQualified", "receipts", "recipe", "runId", "sourceArchive", "version"] :
+      ["archiveSha256", "buildOnly", "compiled", "files", "format", "frontend", "publicationQualified", "receipts", "recipe", "runId", "sourceArchive", "version"],
     expectedFormat = role === "tools" ? format : acppFrontendFormat;
-  if (Object.keys(row).sort().join(",") !== expectedKeys ||
+  if (!hasExactBuildFields(row, expectedKeys) ||
       row.version !== 1 || row.format !== expectedFormat ||
       typeof row.runId !== "string" || !/^[0-9a-f-]{36}$/.test(row.runId) || row.buildOnly !== true || row.compiled !== true ||
       row.publicationQualified !== false || !/^[a-f0-9]{64}$/.test(row.archiveSha256 || "") || !Array.isArray(row.files) ||
       row.files.length < (role === "tools" ? toolRows.length : 3) + receiptNames.length + 1 ||
       row.files.length > (role === "tools" ? toolRows.length : maxFrontendFiles + 3) + receiptNames.length + 1 ||
       !row.receipts || typeof row.receipts !== "object" || Array.isArray(row.receipts) ||
-      Object.keys(row.receipts).sort().join(",") !== receiptNames.slice().sort().join(",") || !row.sourceArchive ||
+      !hasExactBuildFields(row.receipts, receiptNames) || !row.sourceArchive ||
       row.sourceArchive.path !== archivePolicy.name || row.sourceArchive.sha256 !== archivePolicy.sha256 ||
       row.sourceArchive.sha256 !== row.archiveSha256 || !Number.isSafeInteger(row.sourceArchive.bytes) ||
       row.sourceArchive.bytes < 1 || row.sourceArchive.bytes > maxArchiveBytes ||
@@ -232,7 +232,7 @@ function validateHandoff(handoff, expectedSha256, archivePolicy, role) {
     throw new Error("Linux LLVM tool handoff is invalid or differs from its external hash pin");
   }
   if (role === "acpp-frontend" && (!row.frontend || typeof row.frontend !== "object" || Array.isArray(row.frontend) ||
-      Object.keys(row.frontend).sort().join(",") !== "clang,clangxx,resourceInclude,version" || row.frontend.clang !== "bin/clang" ||
+      !hasExactBuildFields(row.frontend, ["clang", "clangxx", "resourceInclude", "version"]) || row.frontend.clang !== "bin/clang" ||
       row.frontend.clangxx !== "bin/clang++" || row.frontend.resourceInclude !== "lib/clang/21/include" || row.frontend.version !== "21.1.8")) {
     throw new Error("Linux LLVM ACPP frontend handoff has an unexpected fixed frontend role");
   }
@@ -290,10 +290,10 @@ function linuxLlvmHandoffInputs(bundleRoot, expectation, testPolicy, role) {
   const pins = /** @type {Record<string, any>} */ (Object.fromEntries(validated.files.map((/** @type {any} */ item) => {
     if (!item || typeof item !== "object" || typeof item.path !== "string" || !expectedFiles.has(item.path) ||
         !["file", "symlink"].includes(item.type) ||
-        item.type === "file" && (Object.keys(item).sort().join(",") !== "bytes,mode,path,sha256,type" ||
+        item.type === "file" && (!hasExactBuildFields(item, ["bytes", "mode", "path", "sha256", "type"]) ||
           !Number.isSafeInteger(item.bytes) || item.bytes < 1 || !Number.isSafeInteger(item.mode) || item.mode < 0 || item.mode > 0o777 ||
           !/^[a-f0-9]{64}$/.test(item.sha256 || "")) ||
-        item.type === "symlink" && (Object.keys(item).sort().join(",") !== "path,target,type" || typeof item.target !== "string")) {
+        item.type === "symlink" && (!hasExactBuildFields(item, ["path", "target", "type"]) || typeof item.target !== "string")) {
       throw new Error("Linux LLVM handoff lists an unexpected payload path");
     }
     return [item.path, item];

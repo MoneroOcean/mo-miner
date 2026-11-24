@@ -13,9 +13,9 @@ function safeRelative(name) {
     !name.includes("\\") && !/[\r\n\0]/.test(name) && name.split("/").every(part => part && part !== "." && part !== "..");
 }
 
-/** @param {string} command @param {string[]} args @param {number} timeout */
-function runTar(command, args, timeout = 30 * 60 * 1000) {
-  const result = spawnSync(tar, args, {encoding: "utf8", timeout, maxBuffer: 128 << 20});
+/** @param {string} command @param {string[]} args @param {number} timeout @param {number} [maxBuffer] */
+function runTar(command, args, timeout = 30 * 60 * 1000, maxBuffer = 128 << 20) {
+  const result = spawnSync(tar, args, {encoding: "utf8", timeout, maxBuffer});
   if (result.error || result.signal || result.status !== 0) {
     throw new Error("Native CI tar " + command + " failed" + (result.stderr ? ": " + result.stderr.slice(0, 2048) : ""), {cause: result.error});
   }
@@ -129,25 +129,35 @@ function extractState(archive, base, expectedRoots, restoreRoots = expectedRoots
   }
 }
 
-/** Bound worst-case expanded input size from GNU tar's metadata before extracting same-run inputs.
- * Numeric ownership and full timestamps give a stable size column; member names are checked separately.
- * @param {string} archive @param {number} expectedMembers @param {number} [timeoutMs] */
+/** Bound expanded input size before extraction. A member list also requires exact names and
+ * regular files or directories in the same verbose listing used to count bytes.
+ * @param {string} archive @param {number | string[]} expectedMembers @param {number} [timeoutMs] */
 function tarExpandedBytes(archive, expectedMembers, timeoutMs = 15 * 60 * 1000) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 15 * 60 * 1000) {
     throw new Error("Native CI tar size-listing timeout is outside the bounded range");
   }
-  if (!Number.isSafeInteger(expectedMembers) || expectedMembers < 1 || expectedMembers > 500000) {
+  const names = Array.isArray(expectedMembers) ? expectedMembers : null,
+    count = typeof expectedMembers === "number" ? expectedMembers : names?.length ?? 0;
+  if (!Number.isSafeInteger(count) || count < 1 || count > 500000) {
     throw new Error("Native CI tar size-listing member count is outside the bounded range");
   }
-  const listing = runTar("list", ["--list", "--verbose", "--numeric-owner", "--full-time", "--quoting-style=literal", "--file", archive], timeoutMs),
+  const listing = runTar("list", ["--list", "--verbose", "--numeric-owner", "--full-time", "--quoting-style=literal", "--file", archive],
+      timeoutMs, names ? 8 << 20 : 128 << 20),
     lines = listing.split("\n").filter(Boolean);
-  if (lines.length !== expectedMembers) {
+  if (lines.length !== count) {
     throw new Error("Native SDK tar size listing differs from its admitted member list");
   }
   let total = 0n;
-  for (const line of lines) {
-    const match = /^\S+\s+\S+\s+(\d+)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\s|$)/.exec(line);
+  for (const [index, line] of lines.entries()) {
+    const match = /^\S+\s+\S+\s+(\d+)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\s+(.*))?$/.exec(line);
     if (!match) {throw new Error("Native SDK tar size listing is malformed");}
+    if (names) {
+      const name = names[index] || "", directory = name.endsWith("/");
+      if (!name || line[0] !== (directory ? "d" : "-") ||
+          (match[2] !== name && (!directory || match[2] !== name.slice(0, -1)))) {
+        throw new Error("Native CI tar contains a link, special file or ambiguous member listing");
+      }
+    }
     total += BigInt(match[1] || "0");
   }
   if (total > BigInt(Number.MAX_SAFE_INTEGER)) {throw new Error("Native SDK tar expanded size exceeds the safe limit");}

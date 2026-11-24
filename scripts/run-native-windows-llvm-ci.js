@@ -237,16 +237,10 @@ function runWindowsLlvmCiJob(stage, environment = process.env) {
       fileHash(tools.sourceArchive) !== archiveSha256) {
     throw new Error("Windows LLVM handoff lacks its admitted Hermes runtime or exact locked LLVM source archive");
   }
-  const sdkRoot = path.join(plan.runnerTemp, `mom-native-windows-host-sdk-${suffix}`, `native-windows-host-sdk-${suffix}`);
-  const hostBase = path.join(plan.runnerTemp, `mom-native-windows-host-sdk-${suffix}`),
-    sdkDeadline = hostSdkDeadline(plan, stage === "audit" ? 12 * 60 * 1000 : 6 * 60 * 1000);
-  Object.assign(process.env, env, {
-    MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT: hostBase,
-    MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR: path.join(hostBase, "archives"),
-    MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR: sdkRoot,
-    MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR: path.join(plan.runnerTemp, `native-windows-host-sdk-${suffix}-metadata.tar`),
-    MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH: sdkDeadline,
-  });
+  const sdkDeadline = hostSdkDeadline(plan, stage === "audit" ? 12 * 60 * 1000 : 6 * 60 * 1000);
+  const sdkEnvironment = ciWindowsLlvm.windowsHostSdkEnvironment(plan.runnerTemp, suffix, sdkDeadline);
+  const sdkRoot = sdkEnvironment.MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR;
+  Object.assign(process.env, env, sdkEnvironment);
   ciWindowsLlvm.buildWindowsHostSdkSourcesCi();
   // State admission reads the descriptor's external SDK overlay and tools, so reconstruct them first.
   if (plan.previousStage) {

@@ -3,7 +3,7 @@
 // Build the original source-JIT archive graph; the small emitter/plan stay independently
 // usable before this expensive stage. Nothing here executes a JIT proof or queries a GPU.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
-const {jitSdkPlan, jitSourceInputs, literal} = require("./native-jit-sdk");
+const {jitSdkPlan, jitSourceInputs, literal, validJitSdkTools} = require("./native-jit-sdk");
 const {jitBuildStages, jitBuildStage, jitBuildOutputs, jitBuildHandoff} = require("./native-jit-stages");
 const {verifyPreparedSdkSources} = require("./prepare-native-sdk-sources");
 const {verifyJitResources} = require("./prepare-native-sycl-jit-resources");
@@ -30,11 +30,9 @@ const absolute = p => typeof p === "string" && p.length <= 4096 && path.isAbsolu
 function jitSdkConfig(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {throw new Error("Invalid compiler SDK configuration");}
   const c = /** @type {Config} */ (value), keys = Object.keys(c), required = ["version", "target", "sources", "sdk", "resources", "tools", "jobs"];
-  const toolKeys = c.tools && Object.keys(c.tools).sort().join(",");
   if (c.version !== 1 || !["linux", "windows"].includes(c.target) || required.some(k => !Object.hasOwn(c, k)) || keys.some(k => ![...required, "inputs"].includes(k)) ||
       ![c.sources, c.sdk, c.resources].every(absolute) ||
-      !["cmake,ninja", "cmake,ninja,toolchain", "cc,cmake,cxx,ninja", "cc,cmake,cxx,ninja,toolchain"].includes(toolKeys || "") ||
-      !Object.values(c.tools).every(literal) || c.target === "windows" && !c.tools.toolchain || !Number.isInteger(c.jobs) || c.jobs < 1 || c.jobs > 16 ||
+      !validJitSdkTools(c.tools, c.target) || !Number.isInteger(c.jobs) || c.jobs < 1 || c.jobs > 16 ||
       c.inputs !== undefined && (!Array.isArray(c.inputs) || c.inputs.length > 16384 || !c.inputs.every(absolute))) {throw new Error("Incomplete compiler SDK inputs, tools, target or bounded jobs");}
   return c;
 }

@@ -2,15 +2,19 @@
 
 // Produce only the pinned Linux static zstd library; the CLI and upstream build tests are out of scope.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {createHash} = require("node:crypto");
-const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
+const {isDeepStrictEqual} = require("node:util");
+const {hasExactBuildFields, hasBuildDirectoryEntries, fileHash, sourceInputs, verifySourceInputs,
+  readBuildJsonSnapshot} = require("./build-source-inputs");
+const {runLoggedSdkStage} = require("./native-sdk-stage");
 const {nativeSdkEnvironment} = require("./build-environment");
 const {isStaticArchive} = require("./native-audit");
 const {requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
 const repo = path.resolve(__dirname, "..");
 const zstdPin = Object.freeze({version: "1.5.7", sha256: "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"});
 const sourceBase = "zstd-" + zstdPin.version;
+const buildArchivePath = "build/static/libzstd.a", installArchivePath = "lib/libzstd.a";
 const sourceLeaves = ["scripts/build-native-zstd.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js",
-  "scripts/native-linux-sysroot.js"];
+  "scripts/native-linux-sysroot.js", "scripts/native-sdk-stage.js"];
 const maxArchiveBytes = 16 << 20, maxExpandedBytes = 64 << 20, maxArchiveMembers = 2048,
   maxSourceBytes = 16 << 20, maxSourceFiles = 512, maxLibraryBytes = 16 << 20;
 const isHash = (/** @type {unknown} */ value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
@@ -29,7 +33,7 @@ const toolNames = Object.freeze(["ar", "cc", "make", "mkdir", "tar"]);
 /** @param {unknown} value @returns {ZstdTools} */
 function validateTools(value) {
   const tools = /** @type {ZstdTools} */ (value);
-  if (!tools || typeof tools !== "object" || Array.isArray(tools) || Object.keys(tools).sort().join(",") !== toolNames.join(",") ||
+  if (!hasExactBuildFields(tools, toolNames) ||
       Object.values(tools).some(file => !absolute(file))) {throw new Error("Static zstd SDK needs explicit absolute Linux tools");}
   return tools;
 }
@@ -41,7 +45,7 @@ function zstdSdkPlan(output, archive, tools, jobs, platform = process.platform) 
     throw new Error("Static zstd SDK needs Linux, absolute paths and jobs in 1..16");
   }
   const selected = validateTools(tools), source = path.join(output, "source"), build = path.join(output, "build");
-  const buildArchive = path.join(build, "static", "libzstd.a"), installArchive = path.join(output, "lib", "libzstd.a");
+  const buildArchive = path.join(output, buildArchivePath), installArchive = path.join(output, installArchivePath);
   const extractCommand = [selected["tar"], "-xzf", archive, "-C", source, "--strip-components=1", "--no-same-owner", "--no-same-permissions", "--",
     sourceBase + "/lib", sourceBase + "/LICENSE", sourceBase + "/COPYING"];
   const buildCommand = [selected["make"], "-C", path.join(source, "lib"), "-j", String(jobs), "BUILD_DIR=" + build,
@@ -64,7 +68,7 @@ function regularInput(file, label, executable = false) {
 /** Re-open each exact tool/archive input instead of trusting hashes copied into a receipt. @param {unknown} recorded @returns {ZstdToolReceipt} */
 function verifyZstdTools(recorded) {
   const tools = /** @type {ZstdToolReceipt} */ (recorded);
-  if (!tools || typeof tools !== "object" || Array.isArray(tools) || Object.keys(tools).sort().join(",") !== toolNames.join(",") ||
+  if (!hasExactBuildFields(tools, toolNames) ||
       Object.values(tools).some(row => !row || !absolute(row.path) || !isHash(row.sha256))) {throw new Error("Static zstd SDK tool receipt is incomplete");}
   for (const [name, row] of Object.entries(tools)) {
     regularInput(row.path, "tool " + name, true);
@@ -176,41 +180,34 @@ function nativeZstdNoticeInputs(sourceRoot, recorded) {
   });
 }
 
-/** Stage exactly the single public static archive. @param {string} root */
-function stagedFiles(root) {
+/** @param {string} root @param {string} relative @param {string} label */
+function readZstdArchive(root, relative, label) {
+  const archive = path.join(root, relative), stat = regularInput(archive, label);
+  if (stat.size > maxLibraryBytes || !isStaticArchive(archive)) {throw new Error("Static zstd " + label + " is not a bounded static archive");}
+  return {path: relative, sha256: fileHash(archive), bytes: stat.size};
+}
+
+/** The SDK exposes exactly one public static archive. @param {string} root */
+function readStagedArchive(root) {
   const directory = path.join(root, "lib"), stat = fs.lstatSync(directory, {throwIfNoEntry: false});
-  if (!stat?.isDirectory() || stat.isSymbolicLink() || JSON.stringify(fs.readdirSync(directory).sort()) !== JSON.stringify(["libzstd.a"])) {
+  if (!stat?.isDirectory() || !hasBuildDirectoryEntries(directory, [path.basename(installArchivePath)])) {
     throw new Error("Static zstd SDK has unexpected staged members");
   }
-  const archive = path.join(directory, "libzstd.a"), archiveStat = regularInput(archive, "installed archive");
-  if (!isStaticArchive(archive) || archiveStat.size > maxLibraryBytes) {throw new Error("Static zstd output is not a bounded static archive");}
-  return {"lib/libzstd.a": fileHash(archive)};
+  return readZstdArchive(root, installArchivePath, "installed archive");
 }
 
 /** Bind the out-of-tree archive, staged archive, and receipt to one byte identity.
  * @param {string} root @param {ZstdOutput} buildOutput @param {ZstdOutput} install @param {Record<string, string>} expectedArtifacts */
 function verifyZstdOutputs(root, buildOutput, install, expectedArtifacts) {
-  if (buildOutput?.path !== "build/static/libzstd.a" || install?.path !== "lib/libzstd.a" ||
-      !isHash(buildOutput.sha256) || !Number.isInteger(buildOutput.bytes) || buildOutput.bytes < 8 || buildOutput.bytes > maxLibraryBytes ||
-      !isHash(install.sha256) || !Number.isInteger(install.bytes) || install.bytes < 8 || install.bytes > maxLibraryBytes ||
+  if (buildOutput?.path !== buildArchivePath || install?.path !== installArchivePath ||
       buildOutput.sha256 !== install.sha256 || buildOutput.bytes !== install.bytes) {throw new Error("Static zstd build/install identity differs");}
-  const built = path.join(root, buildOutput.path), builtStat = regularInput(built, "build archive");
-  if (!isStaticArchive(built) || builtStat.size !== buildOutput.bytes || fileHash(built) !== buildOutput.sha256) {throw new Error("Static zstd build archive changed");}
-  const artifacts = stagedFiles(root);
-  if (!expectedArtifacts || typeof expectedArtifacts !== "object" || Array.isArray(expectedArtifacts) || Object.keys(expectedArtifacts).length !== 1 ||
-      expectedArtifacts["lib/libzstd.a"] !== artifacts["lib/libzstd.a"] || install.sha256 !== artifacts["lib/libzstd.a"] ||
-      install.bytes !== fs.statSync(path.join(root, "lib", "libzstd.a")).size) {throw new Error("Static zstd staged membership or bytes changed");}
+  const built = readZstdArchive(root, buildArchivePath, "build archive");
+  if (built.bytes !== buildOutput.bytes || built.sha256 !== buildOutput.sha256) {throw new Error("Static zstd build archive changed");}
+  const staged = readStagedArchive(root), artifacts = {[staged.path]: staged.sha256};
+  if (staged.bytes !== install.bytes || staged.sha256 !== install.sha256 || !isDeepStrictEqual(expectedArtifacts, artifacts)) {
+    throw new Error("Static zstd staged membership or bytes changed");
+  }
   return artifacts;
-}
-
-/** @param {string[]} command @param {string} cwd @param {NodeJS.ProcessEnv} env @param {string} output @param {string} stage */
-function runStage(command, cwd, env, output, stage) {
-  const logPath = path.join(output, "logs", stage + ".log"), fd = fs.openSync(logPath, "wx");
-  fs.writeFileSync(path.join(output, "logs", stage + ".json"), JSON.stringify(command) + "\n", {flag: "wx"});
-  try {
-    const result = spawnSync(command[0] || "", command.slice(1), {cwd, env, stdio: ["ignore", fd, fd], timeout: 15 * 60 * 1000});
-    if (result.error || result.signal || result.status !== 0) {throw new Error("Static zstd stage failed: " + stage + "; inspect " + logPath, {cause: result.error});}
-  } finally {fs.closeSync(fd);}
 }
 
 /** Build the pinned source archive with explicit tools and no host zstd, tests, CLI, or release claim.
@@ -218,7 +215,7 @@ function runStage(command, cwd, env, output, stage) {
  * @param {NodeJS.ProcessEnv} [environment] @param {string} [configSha256] */
 function buildNativeZstd(archive, output, config, environment = process.env, configSha256) {
   if (environment["MOM_AOT_BUILD_ONLY"] !== "1") {throw new Error("Static zstd production requires MOM_AOT_BUILD_ONLY=1");}
-  if (!config || Object.keys(config).sort().join(",") !== "jobs,tools,version" || config.version !== 1 || !Number.isInteger(config.jobs) || config.jobs < 1 || config.jobs > 16) {
+  if (!config || !hasExactBuildFields(config, ["jobs", "tools", "version"]) || config.version !== 1 || !Number.isInteger(config.jobs) || config.jobs < 1 || config.jobs > 16) {
     throw new Error("Invalid static zstd version-1 tool descriptor");
   }
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Static zstd production supports Linux x64 only");}
@@ -259,14 +256,16 @@ function buildNativeZstd(archive, output, config, environment = process.env, con
 
   fs.mkdirSync(selectedOutput, {mode: 0o700}); fs.mkdirSync(path.join(selectedOutput, "logs")); fs.mkdirSync(plan.source); fs.mkdirSync(plan.build);
   fs.writeFileSync(path.join(selectedOutput, "logs", "compiler-version.log"), compilerText, {flag: "wx"});
-  runStage(plan.extractCommand, selectedOutput, env, selectedOutput, "extract");
+  const runStage = (/** @type {string[]} */ command, /** @type {string} */ stage) =>
+    runLoggedSdkStage(command, selectedOutput, env, selectedOutput, stage, "Static zstd", 15 * 60 * 1000);
+  runStage(plan.extractCommand, "extract");
   const sourceBefore = sourceInventory(plan.source), buildDirStat = fs.lstatSync(plan.build);
   if (!buildDirStat.isDirectory() || buildDirStat.isSymbolicLink()) {throw new Error("Static zstd build directory is not a real directory");}
-  runStage(plan.buildCommand, selectedOutput, env, selectedOutput, "build-static");
-  const builtStat = regularInput(plan.buildArchive, "build archive");
-  if (builtStat.size > maxLibraryBytes || !isStaticArchive(plan.buildArchive)) {throw new Error("Intel 2026.2 output is not a bounded static zstd archive");}
+  runStage(plan.buildCommand, "build-static");
+  const buildOutput = readZstdArchive(selectedOutput, buildArchivePath, "build archive");
   fs.mkdirSync(path.dirname(plan.installArchive)); fs.copyFileSync(plan.buildArchive, plan.installArchive, fs.constants.COPYFILE_EXCL);
-  if (!isStaticArchive(plan.installArchive) || fileHash(plan.installArchive) !== fileHash(plan.buildArchive)) {throw new Error("Staged static zstd archive changed during copy");}
+  const install = readStagedArchive(selectedOutput), artifacts = {[install.path]: install.sha256};
+  if (install.bytes !== buildOutput.bytes || install.sha256 !== buildOutput.sha256) {throw new Error("Staged static zstd archive changed during copy");}
   const sourceAfter = sourceInventory(plan.source);
   if (sourceBefore.sha256 !== sourceAfter.sha256 || sourceBefore.count !== sourceAfter.count || sourceBefore.bytes !== sourceAfter.bytes) {
     throw new Error("Pinned zstd source changed during the out-of-tree build");
@@ -275,8 +274,6 @@ function buildNativeZstd(archive, output, config, environment = process.env, con
   if (fileHash(archive) !== archiveSha256 || Object.values(toolHashes).some(row => fileHash(row.path) !== row.sha256)) {
     throw new Error("Static zstd archive or tools changed during compilation");
   }
-  const artifacts = stagedFiles(selectedOutput), archiveOutput = {path: "lib/libzstd.a", sha256: artifacts["lib/libzstd.a"], bytes: fs.statSync(plan.installArchive).size};
-  const buildOutput = {path: "build/static/libzstd.a", sha256: fileHash(plan.buildArchive), bytes: builtStat.size};
   const result = {version: 1, zstdVersion: zstdPin.version, platform: "linux", target: plan.target,
     archive: {path: archive, sha256: archiveSha256, bytes: archiveStat.size, members: sourceEntries},
     source: {files: sourceBefore.count, bytes: sourceBefore.bytes, sha256: sourceBefore.sha256,
@@ -284,7 +281,7 @@ function buildNativeZstd(archive, output, config, environment = process.env, con
         COPYING: {path: "source/COPYING", sha256: fileHash(path.join(plan.source, "COPYING"))}}},
     config: {sha256: configHash}, tools: toolHashes, compiler: {version: compilerVersion}, recipe, sysroot: linuxSysrootRecord(sysroot),
     plan: {jobs: plan.jobs, buildCommand: plan.buildCommand, target: plan.buildArchive, staticMode: plan.staticMode},
-    buildOutput, install: archiveOutput, artifacts, buildOnly: true, executed: false, publicationQualified: false,
+    buildOutput, install, artifacts, buildOnly: true, executed: false, publicationQualified: false,
     scope: "Build-only static multithreaded libzstd 1.5.7 archive; no CLI, tests, shared library or release qualification."};
   fs.writeFileSync(path.join(selectedOutput, "result.json"), JSON.stringify(result, null, 2) + "\n", {flag: "wx"});
   const inputs = nativeZstdInputs(selectedOutput);
@@ -295,9 +292,9 @@ function buildNativeZstd(archive, output, config, environment = process.env, con
 /** Admit only the exact source and archive closure produced by this build recipe. @param {string} root */
 function nativeZstdInputs(root) {
   if (!absolute(root) || fs.realpathSync(root) !== root) {throw new Error("Select a canonical static zstd SDK root");}
-  const receiptPath = path.join(root, "result.json"), receiptSha256 = fileHash(receiptPath), record = readBuildJson(receiptPath);
+  const receiptPath = path.join(root, "result.json"), {value: record, sha256: receiptSha256} = readBuildJsonSnapshot(receiptPath);
   const expectedKeys = ["archive", "artifacts", "buildOnly", "buildOutput", "compiler", "config", "executed", "install", "plan", "platform", "publicationQualified", "recipe", "scope", "source", "sysroot", "target", "tools", "version", "zstdVersion"];
-  if (!record || typeof record !== "object" || Array.isArray(record) || Object.keys(record).sort().join(",") !== expectedKeys.sort().join(",") ||
+  if (!hasExactBuildFields(record, expectedKeys) ||
       record.version !== 1 || record.zstdVersion !== zstdPin.version || record.platform !== "linux" || record.target !== "x86_64-linux-gnu" ||
       record.archive?.sha256 !== zstdPin.sha256 || !absolute(record.archive?.path) || !Number.isSafeInteger(record.archive?.bytes) ||
       record.archive.bytes < 1 || record.archive.bytes > maxArchiveBytes || !Number.isInteger(record.archive?.members) || record.archive.members < 1 ||
@@ -345,7 +342,7 @@ function nativeZstdInputs(root) {
   if (sourceInventory(sourceRoot).sha256 !== sourceAfter.sha256 || fileHash(receiptPath) !== receiptSha256) {
     throw new Error("Static zstd SDK inputs changed during admission");
   }
-  return {archive: path.join(root, "lib", "libzstd.a"), artifacts, files, receipt: receiptPath, receiptSha256, notices};
+  return {archive: path.join(root, installArchivePath), artifacts, files, receipt: receiptPath, receiptSha256, notices};
 }
 
 if (require.main === module) {
@@ -353,10 +350,10 @@ if (require.main === module) {
     const [archive, output, configFile, extra] = process.argv.slice(2);
     if (!archive || !output || !configFile || extra || !absolute(configFile)) {throw new Error("Usage: MOM_AOT_BUILD_ONLY=1 node scripts/build-native-zstd.js /pinned/zstd-1.5.7.tar.gz /new/sdk /absolute/tools.json");}
     regularInput(configFile, "tool descriptor");
-    const config = readBuildJson(configFile);
-    buildNativeZstd(archive, output, config, process.env, fileHash(configFile));
+    const {value: config, sha256} = readBuildJsonSnapshot(configFile);
+    buildNativeZstd(archive, output, config, process.env, sha256);
   } catch (error) {console.error(error instanceof Error ? error.message : "Static zstd build failed"); process.exitCode = 1;}
 }
 
-module.exports = {zstdPin, toolNames, zstdSdkPlan, validateArchive, sourceInventory, stagedFiles, zstdBuildRecipe: () => sourceInputs(repo, [], sourceLeaves),
+module.exports = {zstdPin, toolNames, zstdSdkPlan, validateArchive, sourceInventory, readStagedArchive, zstdBuildRecipe: () => sourceInputs(repo, [], sourceLeaves),
   verifyZstdArchiveInput, verifyZstdTools, verifyZstdRecipe, verifyZstdOutputs, nativeZstdNoticeInputs, nativeZstdInputs, buildNativeZstd};

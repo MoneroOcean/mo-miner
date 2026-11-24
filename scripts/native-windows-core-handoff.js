@@ -2,7 +2,7 @@
 
 // Admit the exact three-file Windows Core transport without rewriting its producer receipt.
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildText, nativeSourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readCanonicalBuildJson, nativeSourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {isStaticArchive} = require("./native-audit");
 const {ioPins} = require("./build-native-io");
 
@@ -11,33 +11,10 @@ const hashPattern = /^[a-f0-9]{64}$/;
 const coreFiles = ["cpu-core.lib", "handoff.json", "inputs.json"];
 const repo = path.resolve(__dirname, "..");
 
-/** @param {unknown} value @param {string[]} keys */
-function hasExactKeys(value, keys) {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value) &&
-    isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort()));
-}
-
 /** @param {unknown} value @returns {value is string} */
 function producerAbsolutePath(value) {
   return typeof value === "string" && value.length > 0 && value.length <= 4096 &&
     (path.win32.isAbsolute(value) || path.posix.isAbsolute(value)) && !/[\0\r\n]/.test(value);
-}
-
-/** @param {string} file @param {number} maximum @param {string} label */
-function readPinnedJson(file, maximum, label) {
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size < 1 || stat.size > maximum ||
-      fs.realpathSync(file) !== file || path.resolve(file) !== file) {
-    throw new Error("Windows Core handoff " + label + " is not a bounded canonical file");
-  }
-  const sha256 = fileHash(file), text = readBuildText(file, maximum), after = fs.lstatSync(file);
-  if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1 || after.dev !== stat.dev || after.ino !== stat.ino ||
-      after.size !== stat.size || fs.realpathSync(file) !== file || fileHash(file) !== sha256) {
-    throw new Error("Windows Core handoff " + label + " changed during admission");
-  }
-  let value;
-  try {value = JSON.parse(text);} catch (error) {throw new Error("Windows Core handoff " + label + " is invalid JSON", {cause: error});}
-  return {value, sha256, identity: {dev: stat.dev, ino: stat.ino, size: stat.size}};
 }
 
 /** @param {string} file @param {{dev:number,ino:number,size:number}} identity @param {string} sha256 @param {string} label */
@@ -67,18 +44,19 @@ function windowsNativeCoreHandoffInputs(root, expected) {
     throw new Error("Windows Core handoff root is redirected or has unexpected members");
   }
   const handoffFile = path.join(root, "handoff.json"), receiptFile = path.join(root, "inputs.json"), archive = path.join(root, "cpu-core.lib"),
-    handoffRecord = readPinnedJson(handoffFile, 1 << 20, "handoff receipt"), receiptRecord = readPinnedJson(receiptFile, maxReceiptBytes, "producer receipt"),
+    handoffRecord = readCanonicalBuildJson(handoffFile, 1 << 20, "Windows Core handoff receipt"),
+    receiptRecord = readCanonicalBuildJson(receiptFile, maxReceiptBytes, "Windows Core handoff producer receipt"),
     handoff = handoffRecord.value, receipt = receiptRecord.value;
   if (handoffRecord.sha256 !== expected.handoffSha256 ||
-      !hasExactKeys(handoff, ["format", "target", "architecture", "archive", "producer", "libuv", "buildOnly", "executed", "publicationQualified"]) ||
+      !hasExactBuildFields(handoff, ["format", "target", "architecture", "archive", "producer", "libuv", "buildOnly", "executed", "publicationQualified"]) ||
       handoff.format !== "mom-native-windows-core-handoff-v1" || handoff.target !== "win32" ||
       handoff.architecture !== "x64" || handoff.buildOnly !== true || handoff.executed !== false || handoff.publicationQualified !== false ||
-      !hasExactKeys(handoff.archive, ["file", "bytes", "sha256"]) || handoff.archive.file !== "cpu-core.lib" ||
+      !hasExactBuildFields(handoff.archive, ["file", "bytes", "sha256"]) || handoff.archive.file !== "cpu-core.lib" ||
       !Number.isSafeInteger(handoff.archive.bytes) || handoff.archive.bytes < 8 || handoff.archive.bytes > maxArchiveBytes ||
       typeof handoff.archive.sha256 !== "string" || !hashPattern.test(handoff.archive.sha256) ||
-      !hasExactKeys(handoff.producer, ["script", "receipt", "receiptSha256"]) || handoff.producer.script !== "scripts/build-native-windows-core.js" ||
+      !hasExactBuildFields(handoff.producer, ["script", "receipt", "receiptSha256"]) || handoff.producer.script !== "scripts/build-native-windows-core.js" ||
       handoff.producer.receipt !== "inputs.json" || handoff.producer.receiptSha256 !== receiptRecord.sha256 ||
-      !hasExactKeys(handoff.libuv, ["version", "archiveSha256", "fetchReceiptSha256"]) || handoff.libuv.version !== "1.51.0" ||
+      !hasExactBuildFields(handoff.libuv, ["version", "archiveSha256", "fetchReceiptSha256"]) || handoff.libuv.version !== "1.51.0" ||
       handoff.libuv.archiveSha256 !== ioPins.libuv.sha256 || typeof handoff.libuv.fetchReceiptSha256 !== "string" ||
       !hashPattern.test(handoff.libuv.fetchReceiptSha256)) {
     throw new Error("Windows Core handoff differs from its pinned build-only producer contract");

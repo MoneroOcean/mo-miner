@@ -1,7 +1,7 @@
 "use strict";
 
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto"), {spawnSync} = require("node:child_process");
-const {fileHash} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash} = require("./build-source-inputs");
 const {coffSectionPayloads, rewriteCoffDirectives, stageCoffDirectives} = require("./native-compiler-isolation");
 const archiveBytes = 256 << 20, memberBytes = 64 << 20, diagnosticBytes = 256 << 20;
 /** @param {string} text */
@@ -301,7 +301,7 @@ function isolateCoffCompilerArchives({archives, tools, output, prefix, entryPoin
       !absolute(output) || fs.existsSync(output) || !fs.statSync(path.dirname(output), {throwIfNoEntry: false})?.isDirectory() ||
       typeof prefix !== "string" || hasControls(prefix) || !/^[A-Za-z_][A-Za-z0-9_]{0,63}_$/.test(prefix) || !Array.isArray(entryPoints) || !entryPoints.length || entryPoints.length > 1024 ||
       entryPoints.some(name => typeof name !== "string" || hasControls(name) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || name.startsWith(prefix)) || new Set(entryPoints).size !== entryPoints.length ||
-      !tools || Object.keys(tools).sort().join(",") !== "llvmAr,llvmNm,llvmObjcopy" || !absolute(tools.llvmObjcopy) || !absolute(tools.llvmNm) || !absolute(tools.llvmAr)) {throw new Error("Invalid COFF compiler archive isolation options");}
+      !tools || !hasExactBuildFields(tools, ["llvmAr", "llvmNm", "llvmObjcopy"]) || !absolute(tools.llvmObjcopy) || !absolute(tools.llvmNm) || !absolute(tools.llvmAr)) {throw new Error("Invalid COFF compiler archive isolation options");}
   if (privateSymbols !== undefined && (!Array.isArray(privateSymbols) || !privateSymbols.length || privateSymbols.length > 1000000 ||
       privateSymbols.some(name => typeof name !== "string" || !name || name.length > 4096 || /\s/.test(name) || hasControls(name) || entryPoints.includes(name)) ||
       new Set(privateSymbols).size !== privateSymbols.length)) {throw new Error("Invalid explicit private compiler symbols");}

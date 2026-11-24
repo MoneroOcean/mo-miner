@@ -14,7 +14,7 @@ const {linuxStaticSdkRecipe, linuxSdkJitInput, linuxSdkHeaders, linuxStaticSdkPl
   require("./build-native-dpcpp-sdk");
 const {dpcppComponentInputs} = require("./native-dpcpp-component");
 const {pins} = require("./native-dpcpp-pins");
-const {fileHash, readBuildJson, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
+const {canonicalBuildDirectory, hasExactBuildFields, fileHash, readBuildJson, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
 const {isStaticArchive} = require("./native-audit");
 
 const repo = fs.realpathSync(path.resolve(__dirname, ".."));
@@ -50,7 +50,7 @@ function localJitSdkContextFromWorkspace(workspace) {
  * @param {unknown} value */
 function localJitSdkContext(value) {
   if (!value || typeof value !== "object" || Array.isArray(value) ||
-      Object.keys(value).sort().join(",") !== "inputs,resources,source") {
+      !hasExactBuildFields(value, ["inputs", "resources", "source"])) {
     throw new Error("Local JIT SDK needs only admitted source, DPC++/CUDA, and resource stage results");
   }
   const context = /** @type {{source?:{workspace?:unknown,compilerFetch?:unknown,compilerSources?:unknown,buildInputs?:unknown,llvmSdk?:unknown},
@@ -59,8 +59,8 @@ function localJitSdkContext(value) {
     source = context.source, inputs = context.inputs, resources = context.resources;
   if (!source || !inputs || !resources || typeof source.workspace !== "string" || source.workspace !== inputs.workspace ||
       source.workspace !== resources.workspace) {throw new Error("Local JIT SDK stage results must share one admitted workspace");}
-  realDirectory(source.workspace, "Admitted native SDK workspace");
-  realDirectory(path.join(source.workspace, "sources"), "Native SDK workspace source directory");
+  canonicalBuildDirectory(source.workspace, "Admitted native SDK workspace");
+  canonicalBuildDirectory(path.join(source.workspace, "sources"), "Native SDK workspace source directory");
   const root = local.admitWorkspace(source.workspace, repo), paths = local.supportPaths(root), expected = localJitSdkContextFromWorkspace(root);
   if (source.compilerFetch !== paths.compilerFetch || source.compilerSources !== paths.compilerSources ||
       source.buildInputs !== paths.buildInputs || source.llvmSdk !== paths.llvmSdk ||
@@ -87,14 +87,6 @@ function regularFile(file, label) {
   }
 }
 
-/** @param {string} directory @param {string} label */
-function realDirectory(directory, label) {
-  const stat = fs.lstatSync(directory, {throwIfNoEntry: false});
-  if (!stat?.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {
-    throw new Error(label + " is missing or not a canonical directory: " + directory);
-  }
-}
-
 /** Verify the producer's stable root map in addition to its content receipt.
  * @param {string} receiptFile @param {string} output @param {"compiler"|"linux"} target */
 function verifyPreparedRoots(receiptFile, output, target) {
@@ -102,7 +94,7 @@ function verifyPreparedRoots(receiptFile, output, target) {
   for (const name of Object.keys(rows)) {
     const root = path.join(output, name);
     if (rows[name]?.root !== root) {throw new Error("Prepared " + target + " source root changed: " + name);}
-    realDirectory(root, "Prepared " + target + " source root");
+    canonicalBuildDirectory(root, "Prepared " + target + " source root");
   }
   return receipt;
 }
@@ -122,7 +114,7 @@ function auditLocalJitSdkInputs(context, tools) {
  * Receipt contents are admitted separately by the public read-only phase auditor.
  * @param {string} output @returns {string} */
 function localJitSdkPhasePrefix(output) {
-  realDirectory(output, "Local JIT compiler output");
+  canonicalBuildDirectory(output, "Local JIT compiler output");
   let missing = false, latest = null;
   const allowed = new Set(["build", "before.json", "configured-tools.json", "commands.log", "commands.stderr.log"]);
   for (const phase of phases) {
@@ -147,7 +139,7 @@ function localJitSdkPhasePrefix(output) {
   regularFile(path.join(output, "configured-tools.json"), "Local JIT configured tools");
   regularFile(path.join(output, "commands.log"), "Original JIT command graph");
   regularFile(path.join(output, "commands.stderr.log"), "Original JIT command graph diagnostics");
-  realDirectory(path.join(output, "build"), "Local JIT build tree");
+  canonicalBuildDirectory(path.join(output, "build"), "Local JIT build tree");
   allowed.add("before.json");
   for (const name of fs.readdirSync(output)) {
     if (!allowed.has(name) && name !== "result.json") {throw new Error("Unrecognized local JIT output entry; preserve the output: " + name);}
@@ -164,7 +156,7 @@ function localJitSdkPhasePrefix(output) {
 function auditLocalCompilerIsolation(context, libraries) {
   const root = context.paths.isolation, raw = path.join(root, "compiler-raw.o"), receiptFile = path.join(root, "result.json"),
     isolatedReceiptFile = path.join(root, "isolated/result.json"), object = context.paths.isolatedObject;
-  realDirectory(root, "Local compiler isolation output"); regularFile(raw, "Original compiler partial link");
+  canonicalBuildDirectory(root, "Local compiler isolation output"); regularFile(raw, "Original compiler partial link");
   regularFile(receiptFile, "Compiler isolation receipt"); regularFile(isolatedReceiptFile, "Isolated compiler receipt"); regularFile(object, "Isolated compiler object");
   const result = readBuildJson(receiptFile), isolated = readBuildJson(isolatedReceiptFile), entryPoints = [...dpcppEntries];
   if (!isDeepStrictEqual(result, {archives: libraries, ...isolated, scope: isolationScope}) || !isDeepStrictEqual(isolated, {
@@ -208,7 +200,7 @@ function verifyLocalStaticDependencies(value) {
  * @param {{cmake:string,ninja:string,cc:string,cxx:string}} tools @param {string[]} libraries */
 function auditLocalStaticDpcpp(context, config, tools, libraries) {
   const output = context.paths.staticOutput, resultFile = path.join(output, "result.json"), componentRoot = context.paths.staticComponent;
-  realDirectory(output, "Local static DPC++ output"); regularFile(resultFile, "Local static DPC++ result");
+  canonicalBuildDirectory(output, "Local static DPC++ output"); regularFile(resultFile, "Local static DPC++ result");
   const result = /** @type {ReturnType<typeof _buildLinuxStaticSdk>} */ (readBuildJson(resultFile)),
     before = readBuildJson(path.join(output, "before.json")),
     linuxSources = verifyPreparedRoots(path.join(context.support.linuxSources, "sources.json"), context.support.linuxSources, "linux"),

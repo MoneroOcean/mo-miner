@@ -7,7 +7,7 @@ const ciJob = require("./native-ci-job"),
   ciSources = require("./native-ci-linux-sources"),
   ciTar = require("./native-ci-tar"),
   ciWindowsLlvm = require("./native-ci-windows-llvm"),
-  dpcppInputs = require("./native-dpcpp-cuda-inputs"), {fileHash, readBuildJson} = require("./build-source-inputs");
+  dpcppInputs = require("./native-dpcpp-cuda-inputs"), {hasExactBuildFields, containsBuildPath, fileHash, readBuildJson} = require("./build-source-inputs");
 const {ciSuffix} = require("./native-ci-job");
 const {jitSdkConfig} = require("./build-native-jit-sdk"), {jitBuildStages} = require("./native-jit-stages");
 const {verifyPreparedSdkSources} = require("./prepare-native-sdk-sources");
@@ -55,12 +55,6 @@ function canonicalDirectory(directory, label) {
   return directory;
 }
 
-/** @param {string} root @param {string} file */
-function within(root, file) {
-  const relative = path.relative(root, file);
-  return relative === "" || relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
-}
-
 /** The same-source TableGen tools are distinct from the thin LLVM21 link/RC utilities.
  * @param {any} nativeTools */
 function windowsJitNativeToolInputs(nativeTools) {
@@ -68,9 +62,9 @@ function windowsJitNativeToolInputs(nativeTools) {
     hashes = nativeTools?.hashes, source = nativeTools?.source;
   if (typeof toolRoot !== "string" || !path.isAbsolute(toolRoot) || path.resolve(toolRoot) !== toolRoot ||
       path.basename(toolRoot) !== "native-tools" ||
-      typeof manifestFile !== "string" || !path.isAbsolute(manifestFile) || path.resolve(manifestFile) !== manifestFile || !within(toolRoot, manifestFile) ||
-      !files || Object.keys(files).sort().join(",") !== "clangTableGen,llvmTableGen" ||
-      !hashes || Object.keys(hashes).sort().join(",") !== "clangTableGenSha256,llvmTableGenSha256" ||
+      typeof manifestFile !== "string" || !path.isAbsolute(manifestFile) || path.resolve(manifestFile) !== manifestFile || !containsBuildPath(toolRoot, manifestFile) ||
+      !files || !hasExactBuildFields(files, ["clangTableGen", "llvmTableGen"]) ||
+      !hashes || !hasExactBuildFields(hashes, ["clangTableGenSha256", "llvmTableGenSha256"]) ||
       files.clangTableGen !== path.join(toolRoot, "bin", "clang-tblgen") || files.llvmTableGen !== path.join(toolRoot, "bin", "llvm-tblgen") ||
       typeof source?.receiptFile !== "string" || !path.isAbsolute(source.receiptFile) || path.resolve(source.receiptFile) !== source.receiptFile ||
       typeof source?.commit !== "string" || !source.commit || source.commit.length > 128 || /[\r\n\0]/.test(source.commit)) {
@@ -101,7 +95,7 @@ function validateWindowsJitDescriptorInputs(descriptor, expected) {
       windowsSdk.overlay !== expected.sdk.overlay || !isDeepStrictEqual(windowsSdk.includeRoots, expected.sdk.includeRoots) ||
       !isDeepStrictEqual(windowsSdk.libraryRoots, libraryRoots) || tools.lldLink !== expected.tools.lldLink ||
       tools.llvmNm !== expected.tools.llvmNm || !runtimeLibraries.length || runtimeLibraries.some(file =>
-    !within(expected.intelRuntime.libRoot, file) || !windowsSdk.msvcLibraries.includes(file))) {
+    !containsBuildPath(expected.intelRuntime.libRoot, file) || !windowsSdk.msvcLibraries.includes(file))) {
     throw new Error("Windows JIT descriptor differs from the admitted SDK roots, LLVM tools, or Hermes Intel runtime");
   }
   return true;
@@ -142,7 +136,7 @@ function windowsJitCiJobPlan(stage, configPath, configSha256, environment = proc
     // Share the maintained Windows LLVM descriptor producer instead of inventing another one.
     descriptor = path.join(fs.realpathSync(runnerTemp), "mom-native-windows-llvm21-descriptor-" + suffix, "descriptor.json"),
     toolchain = path.join("/tmp", "mom-native-windows-jit-toolchain-" + suffix),
-    windowsSdk = path.join(fs.realpathSync(runnerTemp), "mom-native-windows-host-sdk-" + suffix, "native-windows-host-sdk-" + suffix),
+    windowsSdk = ciWindowsLlvm.windowsHostSdkPaths(fs.realpathSync(runnerTemp), suffix).sdkOutput,
     statePhase = stage === "configure" ? "configured" : stage, index = phases.indexOf(stage),
     previousPhase = index === 0 ? "" : index === 1 ? "configured" : phases[index - 1],
     archive = path.join(fs.realpathSync(runnerTemp), artifactName + "-" + statePhase + ".tar"),
@@ -206,7 +200,7 @@ function validateWindowsJitConfig(value, expected) {
     throw new Error("Windows JIT configuration differs from the exact admitted same-run compiler/toolchain plan");
   }
   for (const file of inputs) {
-    if (path.normalize(file) !== file || !expected.allowedRoots.some(root => within(root, file))) {
+    if (path.normalize(file) !== file || !expected.allowedRoots.some(root => containsBuildPath(root, file))) {
       throw new Error("Windows JIT configuration contains a private, stale or unsupported input path");
     }
   }
@@ -250,7 +244,7 @@ function ensureConfigParent(file, runnerTemp) {
       throw new Error("Windows JIT generated-config parent must be a canonical real directory");
     }
   }
-  if (directory !== path.join(incoming, "config") || !within(runnerTemp, directory)) {
+  if (directory !== path.join(incoming, "config") || !containsBuildPath(runnerTemp, directory)) {
     throw new Error("Windows JIT generated config escaped its same-run incoming directory");
   }
 }

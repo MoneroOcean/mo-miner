@@ -4,7 +4,7 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
 const {ciSuffix, runNode} = require("./native-ci-job");
-const {fileHash, readBuildJson, nativeSourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {fileHash, readBuildJsonSnapshot, nativeSourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {ioPins, validateIoArchive} = require("./build-native-io");
 const {verifyIoArchives} = require("./fetch-native-sdk-sources");
 const {windowsNativeCoreHandoffInputs} = require("./native-windows-core-handoff");
@@ -93,8 +93,8 @@ function auditWindowsNativeCoreOutput(state) {
   if (!receiptStat.isFile() || receiptStat.isSymbolicLink() || !archiveStat.isFile() || archiveStat.isSymbolicLink() || !isStaticArchive(archive)) {
     throw new Error("Windows Core output is not a regular static COFF archive with a regular receipt");
   }
-  const receipt = readBuildJson(receiptFile);
-  const archiveSha256 = fileHash(archive), receiptSha256 = fileHash(receiptFile), fact = receipt.archive;
+  const {value: receipt, sha256: receiptSha256} = readBuildJsonSnapshot(receiptFile);
+  const archiveSha256 = fileHash(archive), fact = receipt.archive;
   if (receipt.target !== "win32" || receipt.gpu !== true || receipt.portable !== true || receipt.buildOnly !== true ||
       receipt.executed !== false || receipt.publicationQualified !== false || !receipt.compiler ||
       !/^2026\.2(?:\.|$)/.test(receipt.compiler.version || "") || receipt.compiler.target !== "x86_64-pc-windows-msvc" ||

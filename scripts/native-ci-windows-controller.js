@@ -4,7 +4,7 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
 const {ciBuildJobs, ciSuffix, hasExactKeys, jsonHash} = require("./native-ci-job");
-const {fileHash, readBuildJson, sourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot, sourceInputs} = require("./build-source-inputs");
 const {ioPins, ioRecipeFiles, nativeIoInputs} = require("./build-native-io");
 const {nativeOpenSslInputs, opensslPin, opensslBuildRecipe} = require("./build-native-openssl");
 const {verifyIoArchives, fetchIoArchives, fetchWindowsOpenSslArchives, sourceRecipe, origins} = require("./fetch-native-sdk-sources");
@@ -75,11 +75,11 @@ function windowsControllerTools(environment, kind) {
   let parsed;
   try {parsed = JSON.parse(text);} catch {throw new Error("Windows controller-support tool table is invalid JSON");}
   const keys = kind === "io" ? ["cc", "cmake", "ninja", "openssl"] : ["cc", "cmake", "cxx", "git", "ninja"];
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.keys(parsed).sort().join(",") !== keys.sort().join(",")) {
+  if (!hasExactBuildFields(parsed, keys)) {
     throw new Error("Windows controller-support tool table has an unexpected role or key set");
   }
   if (kind === "io" && (!parsed.openssl || typeof parsed.openssl !== "object" || Array.isArray(parsed.openssl) ||
-      Object.keys(parsed.openssl).sort().join(",") !== "ar,cc,link,make,perl,rc,tar")) {
+      !hasExactBuildFields(parsed.openssl, ["ar", "cc", "link", "make", "perl", "rc", "tar"]))) {
     throw new Error("Windows controller I/O/OpenSSL tools must include the exact OpenSSL Windows tool set");
   }
   const files = kind === "io" ? [parsed.cc, parsed.cmake, parsed.ninja, ...Object.values(parsed.openssl)] : Object.values(parsed);
@@ -132,9 +132,9 @@ function windowsControllerIntelRuntimeEntries(compilerFile) {
   const normalized = typeof compilerFile === "string" ? compilerFile.replaceAll("\\", "/").toLowerCase() : "";
   const catalog = windowsIntelRuntimeCatalog;
   if (!catalog || typeof catalog !== "object" || Array.isArray(catalog) ||
-      Object.keys(catalog).sort().join(",") !== "compiler,libraries,licenses,version" || !catalog.compiler ||
+      !hasExactBuildFields(catalog, ["compiler", "libraries", "licenses", "version"]) || !catalog.compiler ||
       typeof catalog.compiler !== "object" || Array.isArray(catalog.compiler) ||
-      Object.keys(catalog.compiler).sort().join(",") !== "sha256,version" || catalog.version !== 1 ||
+      !hasExactBuildFields(catalog.compiler, ["sha256", "version"]) || catalog.version !== 1 ||
       !/^\d{4}\.\d+(?:\.\d+)?$/.test(catalog.compiler.version) || !/^[a-f0-9]{64}$/.test(catalog.compiler.sha256) ||
       !Array.isArray(catalog.libraries) || catalog.libraries.length !== 5 || !Array.isArray(catalog.licenses) || catalog.licenses.length !== 3) {
     throw new Error("Intel runtime pin catalog has an unsupported shape or version");
@@ -152,9 +152,9 @@ function windowsControllerIntelRuntimeEntries(compilerFile) {
   for (const entry of entries) {
     if (!safeRelative(entry.source) || !safeRelative(entry.path) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 1 ||
         !/^[a-f0-9]{64}$/.test(entry.sha256) || destinations.has(entry.path.toLowerCase()) ||
-        entry.kind === "library" && (Object.keys(entry).sort().join(",") !== "bytes,kind,name,path,sha256,source" ||
+        entry.kind === "library" && (!hasExactBuildFields(entry, ["bytes", "kind", "name", "path", "sha256", "source"]) ||
           !/^[a-z0-9_.-]+\.lib$/i.test(entry.name) || entry.source !== "lib/" + entry.name || entry.path !== "intel-runtime/lib/" + entry.name) ||
-        entry.kind === "license" && (Object.keys(entry).sort().join(",") !== "bytes,kind,path,sha256,source" ||
+        entry.kind === "license" && (!hasExactBuildFields(entry, ["bytes", "kind", "path", "sha256", "source"]) ||
           entry.path !== "intel-runtime/licenses/" + entry.source)) {
       throw new Error("Intel runtime pin catalog contains an invalid or duplicate file row");
     }
@@ -216,7 +216,7 @@ function canonicalHermesOriginalRoot(value) {
 /** The original WSL fetch receipts bind source paths but are never rewritten for transport.
  * @param {{hermesExtractRoot:string,hermesSourceName:string}} input @param {string} [originalRoot] */
 function readWindowsHermesSource(input, originalRoot) {
-  if (!input || Object.keys(input).sort().join(",") !== "hermesExtractRoot,hermesSourceName" || !windowsHermesSourceName(input.hermesSourceName) ||
+  if (!input || !hasExactBuildFields(input, ["hermesExtractRoot", "hermesSourceName"]) || !windowsHermesSourceName(input.hermesSourceName) ||
       typeof input.hermesExtractRoot !== "string" || !path.isAbsolute(input.hermesExtractRoot) || path.resolve(input.hermesExtractRoot) !== input.hermesExtractRoot ||
       windowsHermesHasControl(input.hermesExtractRoot)) {
     throw new Error("Windows Hermes source reader needs its exact canonical extracted root and safe archive root name");
@@ -453,22 +453,25 @@ async function buildWindowsControllerIoCi() {
   if (!ioCommand || !opensslCommand) {throw new Error("Windows controller I/O/OpenSSL producer command set is incomplete");}
   const ioBuildBudget = windowsControllerDeadlineBudget(state.deadlineEpoch, "build");
   runWindowsControllerProducer(ioCommand.script, ioCommand.args, environment, Math.min(ioBuildBudget.timeoutMs, 35 * 60 * 1000));
-  const ioAdmitted = nativeIoInputs(state.ioSdk, "win32"), ioReceiptFile = ioAdmitted.receipt, ioReceiptSha = fileHash(ioReceiptFile),
+  const ioAdmitted = nativeIoInputs(state.ioSdk, "win32"), {receiptSha256: ioReceiptSha} = ioAdmitted,
     opensslBuildBudget = windowsControllerDeadlineBudget(state.deadlineEpoch, "build");
   runWindowsControllerProducer(opensslCommand.script, opensslCommand.args, environment, Math.min(opensslBuildBudget.timeoutMs, 45 * 60 * 1000));
-  const opensslAdmitted = nativeOpenSslInputs(state.opensslSdk, "win32"), opensslReceiptFile = path.join(state.opensslSdk, "result.json"),
-    opensslReceiptSha = fileHash(opensslReceiptFile), inputs = {io: readBuildJson(ioReceiptFile), openssl: readBuildJson(opensslReceiptFile)};
+  const opensslAdmitted = nativeOpenSslInputs(state.opensslSdk, "win32"), {receiptSha256: opensslReceiptSha} = opensslAdmitted;
+  const {value: ioReceipt} = readBuildJsonSnapshot(ioAdmitted.receipt, undefined,
+    {sha256: ioReceiptSha, message: "Windows controller I/O receipt changed after admission"});
+  const {value: opensslReceipt} = readBuildJsonSnapshot(opensslAdmitted.receipt, undefined,
+    {sha256: opensslReceiptSha, message: "Windows controller OpenSSL receipt changed after admission"});
   const expectedIoInputs = {
       [path.join(state.ioSource, "libuv-v1.51.0.tar.gz")]: ioPins.libuv.sha256,
       [path.join(state.ioSource, "zlib-1.3.1.tar.gz")]: ioPins.zlib.sha256},
     expectedIoTools = Object.fromEntries([tools.cmake, tools.cc, tools.ninja].map(file => [file, fileHash(file)])),
     expectedOpenSslTools = Object.fromEntries(Object.entries(tools.openssl).map(([name, file]) => [name, {path: file, sha256: fileHash(file)}]));
-  if (!isDeepStrictEqual(inputs.io.recipe, ioRecipe) || !isDeepStrictEqual(inputs.io.inputs, expectedIoInputs) ||
-      !isDeepStrictEqual(inputs.io.fingerprints, expectedIoTools) || inputs.io.target !== "win32" || inputs.io.buildOnly !== true ||
-      !isDeepStrictEqual(inputs.openssl.recipe, opensslRecipe) || inputs.openssl.target !== "VC-WIN64A" ||
-      inputs.openssl.platform !== "win32" || inputs.openssl.config?.sha256 !== fileHash(state.opensslToolsFile) ||
-      inputs.openssl.archive?.path !== opensslArchive || inputs.openssl.archive?.sha256 !== opensslPin.sha256 ||
-      !isDeepStrictEqual(inputs.openssl.tools, expectedOpenSslTools) ||
+  if (!isDeepStrictEqual(ioReceipt.recipe, ioRecipe) || !isDeepStrictEqual(ioReceipt.inputs, expectedIoInputs) ||
+      !isDeepStrictEqual(ioReceipt.fingerprints, expectedIoTools) || ioReceipt.target !== "win32" || ioReceipt.buildOnly !== true ||
+      !isDeepStrictEqual(opensslReceipt.recipe, opensslRecipe) || opensslReceipt.target !== "VC-WIN64A" ||
+      opensslReceipt.platform !== "win32" || opensslReceipt.config?.sha256 !== fileHash(state.opensslToolsFile) ||
+      opensslReceipt.archive?.path !== opensslArchive || opensslReceipt.archive?.sha256 !== opensslPin.sha256 ||
+      !isDeepStrictEqual(opensslReceipt.tools, expectedOpenSslTools) ||
       Object.entries(sourceHashes).some(([file, sha]) => fileHash(file) !== sha) ||
       Object.entries(toolHashes).some(([file, sha]) => fileHash(file) !== sha)) {
     throw new Error("Windows controller I/O/OpenSSL source, recipe, tool or producer receipt changed");
@@ -494,15 +497,15 @@ async function buildWindowsControllerIoCi() {
   }
   copyWindowsControllerPath(path.join(state.opensslSdk, "source", "LICENSE.txt"), path.join(state.outputRoot, "openssl-sdk/source/LICENSE.txt"),
     "openssl-sdk/source/LICENSE.txt", ledger);
-  copyWindowsControllerPath(ioReceiptFile, path.join(state.outputRoot, "io-sdk/result.json"), "io-sdk/result.json", ledger);
-  copyWindowsControllerPath(opensslReceiptFile, path.join(state.outputRoot, "openssl-sdk/result.json"), "openssl-sdk/result.json", ledger);
+  copyWindowsControllerPath(ioAdmitted.receipt, path.join(state.outputRoot, "io-sdk/result.json"), "io-sdk/result.json", ledger);
+  copyWindowsControllerPath(opensslAdmitted.receipt, path.join(state.outputRoot, "openssl-sdk/result.json"), "openssl-sdk/result.json", ledger);
   copyWindowsControllerPath(ioFetchFile, path.join(state.outputRoot, "provenance/io-fetch.json"), "provenance/io-fetch.json", ledger);
   copyWindowsControllerPath(opensslFetchFile, path.join(state.outputRoot, "provenance/openssl-fetch.json"), "provenance/openssl-fetch.json", ledger);
   copyWindowsControllerPath(state.opensslToolsFile, path.join(state.outputRoot, "openssl-sdk/producer-tools.json"),
     "openssl-sdk/producer-tools.json", ledger);
   if (fileHash(path.join(state.outputRoot, "io-sdk/result.json")) !== ioReceiptSha ||
       fileHash(path.join(state.outputRoot, "openssl-sdk/result.json")) !== opensslReceiptSha ||
-      fileHash(path.join(state.outputRoot, "openssl-sdk/producer-tools.json")) !== inputs.openssl.config.sha256) {
+      fileHash(path.join(state.outputRoot, "openssl-sdk/producer-tools.json")) !== opensslReceipt.config.sha256) {
     throw new Error("Windows controller-support producer receipt or tool descriptor changed during handoff");
   }
   if (Object.entries(sourceHashes).some(([file, sha]) => fileHash(file) !== sha) ||

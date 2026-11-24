@@ -4,7 +4,7 @@
 // complete Windows SDK reader: OpenSSL's build CLI and Hermes' Windows AOT executable are
 // intentionally absent and must be admitted separately by their consumers.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readCanonicalBuildJson, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {ioPins, ioRecipeFiles, nativeIoInputs} = require("./build-native-io");
 const {opensslPin, opensslBuildRecipe} = require("./build-native-openssl");
 const {hermesPins, hermesRecipeFiles} = require("./build-native-hermes");
@@ -65,19 +65,12 @@ function inventory(root) {
   visit(root, "", 0);
   return {files, dirs, bytes};
 }
-/** @param {string} root @param {string} relative @param {number} [maximum] @returns {any} */
-function jsonAt(root, relative, maximum = 8 << 20) {
-  if (!safeRelative(relative)) {throw new Error("Unsafe Windows controller handoff receipt path");}
-  const file = path.join(root, ...relative.split("/")), stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximum) {throw new Error("Invalid Windows controller handoff receipt");}
-  return readBuildJson(file);
-}
 /** @param {unknown} rows @param {string} label @returns {{expected:Record<string,{bytes:number,sha256:string}>,parents:Set<string>}} */
 function exactInventory(rows, label) {
   if (!Array.isArray(rows) || !rows.length || rows.length > MAX_FILES) {throw new Error("Invalid " + label + " handoff inventory");}
   const expected = /** @type {Record<string,{bytes:number,sha256:string}>} */ (Object.create(null)), folded = new Set(), parents = new Set(); let bytes = 0, prior = "";
   for (const row of rows) {
-    if (!object(row) || Object.keys(row).sort().join(",") !== "bytes,path,sha256" || !safeRelative(row.path) ||
+    if (!object(row) || !hasExactBuildFields(row, ["bytes", "path", "sha256"]) || !safeRelative(row.path) ||
         (prior && row.path <= prior) || !Number.isSafeInteger(row.bytes) || row.bytes < 0 || !hash(row.sha256) || Object.hasOwn(expected, row.path)) {
       throw new Error("Invalid " + label + " handoff inventory row");
     }
@@ -100,19 +93,19 @@ function verifyTree(root, handoff) {
       actual.bytes > MAX_BYTES) {throw new Error("Windows controller handoff tree differs from its pinned inventory");}
   return Object.fromEntries(Object.entries(actual.files).map(([relative, row]) => [path.join(root, ...relative.split("/")), row.sha256]));
 }
-/** @param {string} root @param {string} relative @param {string} expected */
-function receiptHash(root, relative, expected) {
-  const file = path.join(root, ...relative.split("/"));
-  if (!hash(expected) || fileHash(file) !== expected) {throw new Error("Windows controller handoff receipt hash differs: " + relative);}
+/** @param {string} file @param {string | undefined} expected @param {string} label */
+function pinnedControllerJson(file, expected, label) {
+  const receipt = readCanonicalBuildJson(file, 8 << 20, label);
+  if (receipt.sha256 !== expected) {throw new Error(label + " hash differs");}
+  return receipt.value;
 }
+/** @typedef {(relative:string, producerPin:string)=>any} ReadControllerReceipt */
 /** @param {any} receipt @param {ReturnType<typeof sourceInputs>} recipe @param {string} label */
 function currentRecipe(receipt, recipe, label) {verifySourceInputs(receipt, recipe, label);}
-/** @param {any} value @param {string[]} keys */
-function hasKeys(value, keys) {return object(value) && isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort());}
 /** @returns {{compiler:{version:string,sha256:string},libraries:Array<{name:string,path:string,bytes:number,sha256:string}>,licenses:Array<{path:string,bytes:number,sha256:string}>}} */
 function readIntelRuntimePins() {
-  if (!hasKeys(intelRuntimeCatalog, ["version", "compiler", "libraries", "licenses"]) || intelRuntimeCatalog.version !== 1 ||
-      !hasKeys(intelRuntimeCatalog.compiler, ["version", "sha256"]) || typeof intelRuntimeCatalog.compiler.version !== "string" ||
+  if (!hasExactBuildFields(intelRuntimeCatalog, ["version", "compiler", "libraries", "licenses"]) || intelRuntimeCatalog.version !== 1 ||
+      !hasExactBuildFields(intelRuntimeCatalog.compiler, ["version", "sha256"]) || typeof intelRuntimeCatalog.compiler.version !== "string" ||
       !intelRuntimeCatalog.compiler.version || intelRuntimeCatalog.compiler.version.length > 32 || !hash(intelRuntimeCatalog.compiler.sha256) ||
       !Array.isArray(intelRuntimeCatalog.libraries) || !intelRuntimeCatalog.libraries.length || intelRuntimeCatalog.libraries.length > 64 ||
       !Array.isArray(intelRuntimeCatalog.licenses) || !intelRuntimeCatalog.licenses.length || intelRuntimeCatalog.licenses.length > 64) {
@@ -121,7 +114,7 @@ function readIntelRuntimePins() {
   let bytes = 0;
   const paths = new Set();
   const libraries = intelRuntimeCatalog.libraries.map((/** @type {any} */ row) => {
-    if (!hasKeys(row, ["name", "source", "path", "bytes", "sha256"]) || typeof row.name !== "string" ||
+    if (!hasExactBuildFields(row, ["name", "source", "path", "bytes", "sha256"]) || typeof row.name !== "string" ||
         !/^[A-Za-z0-9_.+-]+\.lib$/i.test(row.name) || row.source !== "lib/" + row.name ||
         row.path !== "intel-runtime/lib/" + row.name || !safeRelative(row.source) || !safeRelative(row.path) ||
         !Number.isSafeInteger(row.bytes) || row.bytes < 1 || row.bytes > MAX_BYTES || !hash(row.sha256) || paths.has(row.path.toLowerCase())) {
@@ -132,7 +125,7 @@ function readIntelRuntimePins() {
     return {name: row.name, path: row.path, bytes: row.bytes, sha256: row.sha256};
   });
   const licenses = intelRuntimeCatalog.licenses.map((/** @type {any} */ row) => {
-    if (!hasKeys(row, ["source", "path", "bytes", "sha256"]) || !safeRelative(row.source) ||
+    if (!hasExactBuildFields(row, ["source", "path", "bytes", "sha256"]) || !safeRelative(row.source) ||
         row.path !== "intel-runtime/licenses/" + row.source || !safeRelative(row.path) || !Number.isSafeInteger(row.bytes) ||
         row.bytes < 1 || row.bytes > MAX_BYTES || !hash(row.sha256) || paths.has(row.path.toLowerCase())) {
       throw new Error("Invalid pinned Windows Intel runtime license row");
@@ -156,8 +149,8 @@ function fetchReceipt(row, target, recipe, expectedArchives) {
   // The fetcher digest records acquisition history; current recipes and archive pins admit the receipt.
   if (!object(row) || row.version !== 1 || row.target !== target || row.status !== "PASS" || row.networked !== true || row.buildOnly !== true ||
       row.compiled !== false || row.publicationQualified !== false || !hash(row.fetcherSha256) ||
-      !hasKeys(row.recipe, ["sha256", "files"]) || row.recipe.sha256 !== createHash("sha256").update(JSON.stringify(recipe)).digest("hex") ||
-      !isDeepStrictEqual(row.recipe.files, recipe.graph) || !hasKeys(row.archives, Object.keys(expectedArchives))) {
+      !hasExactBuildFields(row.recipe, ["sha256", "files"]) || row.recipe.sha256 !== createHash("sha256").update(JSON.stringify(recipe)).digest("hex") ||
+      !isDeepStrictEqual(row.recipe.files, recipe.graph) || !hasExactBuildFields(row.archives, Object.keys(expectedArchives))) {
     throw new Error("Windows controller source receipt is stale or incomplete: " + target);
   }
   for (const [name, expected] of Object.entries(expectedArchives)) {
@@ -170,10 +163,13 @@ function fetchReceipt(row, target, recipe, expectedArchives) {
   return row.archives;
 }
 
-/** @param {string} root @param {any} handoff @returns {{libraries:{sourceInclude:string,ssl:string,crypto:string,libuv:string,zlib:string,libuvInclude:string,zlibInclude:string,zlibGeneratedInclude:string}}} */
-function ioInputs(root, handoff) {
-  const ioReceipt = jsonAt(root, "io-sdk/result.json"), ioFetch = jsonAt(root, "provenance/io-fetch.json"),
-    ssl = jsonAt(root, "openssl-sdk/result.json"), sslFetch = jsonAt(root, "provenance/openssl-fetch.json"), tools = jsonAt(root, "openssl-sdk/producer-tools.json"),
+/** @param {string} root @param {any} handoff @param {ReadControllerReceipt} readReceipt
+ * @returns {{libraries:{sourceInclude:string,ssl:string,crypto:string,libuv:string,zlib:string,libuvInclude:string,zlibInclude:string,zlibGeneratedInclude:string}}} */
+function ioInputs(root, handoff, readReceipt) {
+  const ioReceipt = readReceipt("io-sdk/result.json", handoff.producers[0].receiptSha256),
+    ioFetch = readReceipt("provenance/io-fetch.json", handoff.sourceReceipts[0].sha256),
+    ssl = readReceipt("openssl-sdk/result.json", handoff.producers[1].receiptSha256),
+    sslFetch = readReceipt("provenance/openssl-fetch.json", handoff.sourceReceipts[1].sha256),
     ioRecipe = ioSourceRecipe(), opensslRecipe = opensslBuildRecipe(), archives = fetchReceipt(ioFetch, "io", ioRecipe, {
       libuv: {fileName: ioPins.libuv.directory + ".tar.gz", url: ioArchiveUrls.libuv, sha256: ioPins.libuv.sha256, maxBytes: 128 << 20},
       zlib: {fileName: ioPins.zlib.directory + ".tar.gz", url: ioArchiveUrls.zlib, sha256: ioPins.zlib.sha256, maxBytes: 128 << 20},
@@ -182,12 +178,8 @@ function ioInputs(root, handoff) {
     });
   const libuvArchive = archives["libuv"], zlibArchive = archives["zlib"], opensslArchive = sslArchives["openssl"];
   if (!libuvArchive || !zlibArchive || !opensslArchive) {throw new Error("Windows controller source archive cohort is incomplete");}
-  receiptHash(root, "provenance/io-fetch.json", handoff.sourceReceipts[0].sha256);
-  receiptHash(root, "provenance/openssl-fetch.json", handoff.sourceReceipts[1].sha256);
-  receiptHash(root, "io-sdk/result.json", handoff.producers[0].receiptSha256);
-  receiptHash(root, "openssl-sdk/result.json", handoff.producers[1].receiptSha256);
   const ioRoot = path.join(root, "io-sdk"), io = nativeIoInputs(ioRoot, "win32"), ioRecord = ioReceipt;
-  if (ioRecord.publicationQualified !== false || !hasKeys(ioRecord.inputs, [libuvArchive.path, zlibArchive.path]) ||
+  if (ioRecord.publicationQualified !== false || !hasExactBuildFields(ioRecord.inputs, [libuvArchive.path, zlibArchive.path]) ||
       ioRecord.inputs[libuvArchive.path] !== ioPins.libuv.sha256 || ioRecord.inputs[zlibArchive.path] !== ioPins.zlib.sha256 ||
       !object(ioRecord.fingerprints) || Object.keys(ioRecord.fingerprints).length !== 3 || Object.entries(ioRecord.fingerprints).some(([file, sha]) => !windowsPath(file) || !hash(sha))) {
     throw new Error("Windows controller I/O receipt does not bind the current original inputs and tool fingerprints");
@@ -208,9 +200,10 @@ function ioInputs(root, handoff) {
     throw new Error("Invalid partial Windows OpenSSL producer receipt");
   }
   currentRecipe(ssl.recipe, opensslRecipeCurrent, "Windows OpenSSL producer");
-  const toolNames = ["ar", "cc", "link", "make", "perl", "rc", "tar"], configPath = path.join(root, "openssl-sdk/producer-tools.json");
-  if (!hasKeys(tools, ["version", "jobs", "tools"]) || tools.version !== 1 || ![2, 4].includes(tools.jobs) || !hasKeys(tools.tools, toolNames) ||
-      fileHash(configPath) !== ssl.config.sha256 || !hasKeys(ssl.tools, toolNames) || toolNames.some(name =>
+  const toolNames = ["ar", "cc", "link", "make", "perl", "rc", "tar"],
+    tools = readReceipt("openssl-sdk/producer-tools.json", ssl.config.sha256);
+  if (!hasExactBuildFields(tools, ["version", "jobs", "tools"]) || tools.version !== 1 || ![2, 4].includes(tools.jobs) || !hasExactBuildFields(tools.tools, toolNames) ||
+      !hasExactBuildFields(ssl.tools, toolNames) || toolNames.some(name =>
     !windowsPath(tools.tools[name]) || ssl.tools[name]?.path !== tools.tools[name] || !hash(ssl.tools[name]?.sha256))) {
     throw new Error("Windows OpenSSL tool receipt is not bound to its unchanged build descriptor");
   }
@@ -255,8 +248,8 @@ function validateIntelRuntimeMetadata(handoff, cc, fingerprints) {
   const runtime = handoff.intelRuntime, compilerKey = Object.keys(fingerprints).find(file =>
       path.win32.normalize(file).toLowerCase() === path.win32.normalize(cc).toLowerCase()),
     expectedFiles = [...intelRuntimePins.libraries, ...intelRuntimePins.licenses];
-  if (!hasKeys(runtime, ["compiler", "libraries", "licenses"]) ||
-      !hasKeys(runtime.compiler, ["path", "sha256"]) ||
+  if (!hasExactBuildFields(runtime, ["compiler", "libraries", "licenses"]) ||
+      !hasExactBuildFields(runtime.compiler, ["path", "sha256"]) ||
       !windowsPath(runtime.compiler.path) || path.win32.normalize(runtime.compiler.path).toLowerCase() !== path.win32.normalize(cc).toLowerCase() ||
       !compilerKey || !hash(fingerprints[compilerKey]) || runtime.compiler.sha256 !== fingerprints[compilerKey] ||
       runtime.compiler.sha256 !== intelRuntimePins.compiler.sha256 || !Array.isArray(runtime.libraries) ||
@@ -273,22 +266,21 @@ function validateIntelRuntimeMetadata(handoff, cc, fingerprints) {
   return {compiler: runtime.compiler, libraries: intelRuntimePins.libraries, licenses: intelRuntimePins.licenses};
 }
 
-/** @param {string} root @param {any} handoff @returns {{hermes:{source:string,build:string,license?:string},intelRuntime?:IntelRuntimeInputs}} */
-function hermesInputs(root, handoff) {
-  const result = jsonAt(root, "hermes/result.json"), before = jsonAt(root, "hermes/before.json"), fetch = jsonAt(root, "provenance/hermes-fetch.json"),
-    roots = jsonAt(root, "provenance/hermes-roots.json"),
+/** @param {string} root @param {any} handoff @param {ReadControllerReceipt} readReceipt
+ * @returns {{hermes:{source:string,build:string,license?:string},intelRuntime?:IntelRuntimeInputs}} */
+function hermesInputs(root, handoff, readReceipt) {
+  const result = readReceipt("hermes/result.json", handoff.producers[0].receiptSha256),
+    before = readReceipt("hermes/before.json", handoff.producers[0].planSha256),
+    fetch = readReceipt("provenance/hermes-fetch.json", handoff.sourceReceipts[0].sha256),
+    roots = readReceipt("provenance/hermes-roots.json", handoff.sourceReceipts[0].rootsSha256),
     recipe = sourceInputs(repo, [], hermesRecipeLeaves),
     fetchRecipe = sourceRecipe("hermes");
-  receiptHash(root, "hermes/result.json", handoff.producers[0].receiptSha256);
-  receiptHash(root, "hermes/before.json", handoff.producers[0].planSha256);
-  receiptHash(root, "provenance/hermes-fetch.json", handoff.sourceReceipts[0].sha256);
-  receiptHash(root, "provenance/hermes-roots.json", handoff.sourceReceipts[0].rootsSha256);
   if (result.version !== 1 || result.target !== "win32" || !isDeepStrictEqual(result.pins, hermesPins) || result.buildOnly !== true ||
       result.publicationQualified !== false || !windowsPath(result.source) || !windowsPath(result.build) || !object(result.artifacts) ||
       path.win32.basename(result.source).toLowerCase() !== "source" || path.win32.basename(result.build).toLowerCase() !== "build" ||
       path.win32.dirname(result.source).toLowerCase() !== path.win32.dirname(result.build).toLowerCase() ||
       !object(result.sources) || Object.keys(result.sources).length > 100000 || !object(result.fingerprints) ||
-      !hasKeys(before, ["pins", "recipe", "fingerprints", "sources", "configure", "compile"]) ||
+      !hasExactBuildFields(before, ["pins", "recipe", "fingerprints", "sources", "configure", "compile"]) ||
       !isDeepStrictEqual(before.pins, hermesPins) || !isDeepStrictEqual(before.recipe, result.recipe) ||
       !isDeepStrictEqual(before.fingerprints, result.fingerprints) || !isDeepStrictEqual(before.sources, result.sources) ||
       !Array.isArray(before.configure) || before.configure.length < 1 || before.configure.length > 128 ||
@@ -301,18 +293,18 @@ function hermesInputs(root, handoff) {
   // The fetcher hash records acquisition history; offline admission separately pins the current fetch and compiled Hermes recipes.
   if (fetch.version !== 1 || fetch.target !== "hermes" || fetch.status !== "PASS" || fetch.networked !== true || fetch.buildOnly !== true ||
       fetch.compiled !== false || fetch.publicationQualified !== false || !hash(fetch.fetcherSha256) ||
-      !hasKeys(fetch.recipe, ["sha256", "files"]) || fetch.recipe.sha256 !== createHash("sha256").update(JSON.stringify(fetchRecipe)).digest("hex") ||
-      !isDeepStrictEqual(fetch.recipe.files, fetchRecipe.graph) || !hasKeys(fetch.components, ["hermes"]) ||
+      !hasExactBuildFields(fetch.recipe, ["sha256", "files"]) || fetch.recipe.sha256 !== createHash("sha256").update(JSON.stringify(fetchRecipe)).digest("hex") ||
+      !isDeepStrictEqual(fetch.recipe.files, fetchRecipe.graph) || !hasExactBuildFields(fetch.components, ["hermes"]) ||
       fetch.components.hermes?.origin !== "https://github.com/facebook/hermes.git" || fetch.components.hermes?.revision !== hermesPins.revision ||
       fetch.components.hermes?.gitDirectory !== "bare" || fetch.components.hermes?.shallow !== true || fetch.components.hermes?.partialClone !== false ||
       !object(fetch.git) || typeof fetch.git.path !== "string" || !path.posix.isAbsolute(fetch.git.path) || !hash(fetch.git.sha256) ||
-      !hasKeys(roots, ["hermes"]) || roots.hermes !== fetch.components.hermes.root || typeof roots.hermes !== "string" ||
+      !hasExactBuildFields(roots, ["hermes"]) || roots.hermes !== fetch.components.hermes.root || typeof roots.hermes !== "string" ||
       !path.posix.isAbsolute(roots.hermes) || roots.hermes.split("/").some((/** @type {string} */ part) => part === "." || part === "..")) {
     throw new Error("Windows Hermes source receipt does not bind its pinned original source");
   }
   // One driver may serve C and C++; the role and alias checks below remain exact.
   const artifactKeys = ["compiler", "context", "jsi", "public", "runtime"];
-  if (!hasKeys(result.artifacts, artifactKeys) || Object.entries(result.sources).some(([name, sha]) => !safeRelative(name) || !hash(sha)) ||
+  if (!hasExactBuildFields(result.artifacts, artifactKeys) || Object.entries(result.sources).some(([name, sha]) => !safeRelative(name) || !hash(sha)) ||
       Object.keys(result.fingerprints).length < 6 || Object.keys(result.fingerprints).length > 7 ||
       Object.entries(result.fingerprints).some(([file, sha]) => !windowsPath(file) || !hash(sha))) {
     throw new Error("Invalid Windows Hermes source, artifact or tool-fingerprint inventory");
@@ -393,7 +385,7 @@ function hermesInputs(root, handoff) {
  * Admit a regular, exact, externally hash-pinned Windows controller-support handoff.
  * @param {string} root @param {HandoffExpectation} expected @returns {HandoffInputs} */
 function windowsControllerHandoffInputs(root, expected) {
-  if (!object(expected) || !hasKeys(expected, ["kind", "handoffSha256"]) || !["io", "hermes"].includes(expected.kind) ||
+  if (!object(expected) || !hasExactBuildFields(expected, ["kind", "handoffSha256"]) || !["io", "hermes"].includes(expected.kind) ||
       !hash(expected.handoffSha256) || typeof root !== "string" || !path.isAbsolute(root)) {
     throw new Error("Windows controller handoff needs its exact role and producer hash");
   }
@@ -405,7 +397,7 @@ function windowsControllerHandoffInputs(root, expected) {
  * @param {string} root @param {LocalHandoffExpectation} expected
  * @returns {SupportInputs & {localBuildId:string}} */
 function windowsLocalControllerHandoffInputs(root, expected) {
-  if (!object(expected) || !hasKeys(expected, ["kind", "localBuildId", "handoffSha256"]) || !["io", "hermes"].includes(expected.kind) ||
+  if (!object(expected) || !hasExactBuildFields(expected, ["kind", "localBuildId", "handoffSha256"]) || !["io", "hermes"].includes(expected.kind) ||
       !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(expected.localBuildId) ||
       !hash(expected.handoffSha256) || typeof root !== "string" || !path.isAbsolute(root)) {
     throw new Error("Local Windows controller handoff needs its exact role, local build identity and producer hash");
@@ -419,24 +411,24 @@ function windowsLocalControllerHandoffInputs(root, expected) {
  * @param {{localBuildId?:string}} identity @returns {SupportInputs} */
 function admitWindowsControllerHandoff(root, expected, identity) {
   root = path.resolve(root);
-  const handoffFile = path.join(root, "handoff.json"), stat = fs.lstatSync(handoffFile);
-  if (!stat.isFile() || stat.isSymbolicLink() || fileHash(handoffFile) !== expected.handoffSha256) {throw new Error("Windows controller handoff producer hash differs");}
-  const handoff = readBuildJson(handoffFile), commonKeys = ["version", "format", ...Object.keys(identity), "target", "architecture", "kind", "buildOnly",
+  const handoffFile = path.join(root, "handoff.json"),
+    handoff = pinnedControllerJson(handoffFile, expected.handoffSha256, "Windows controller handoff producer"),
+    commonKeys = ["version", "format", ...Object.keys(identity), "target", "architecture", "kind", "buildOnly",
       "executed", "publicationQualified", "scope", "producers", "sourceReceipts", "omitted", "files"],
     handoffKeys = expected.kind === "hermes" && object(handoff) && Object.hasOwn(handoff, "intelRuntime") ? [...commonKeys, "intelRuntime"] : commonKeys;
-  if (!hasKeys(handoff, handoffKeys) || handoff.version !== 1 || handoff.format !== "mom-windows-controller-support-handoff-v1" ||
+  if (!hasExactBuildFields(handoff, handoffKeys) || handoff.version !== 1 || handoff.format !== "mom-windows-controller-support-handoff-v1" ||
       Object.entries(identity).some(([key, value]) => handoff[key] !== value) || handoff.kind !== expected.kind || handoff.target !== "win32" || handoff.architecture !== "x64" ||
       handoff.buildOnly !== true || handoff.executed !== false || handoff.publicationQualified !== false || typeof handoff.scope !== "string" ||
       !handoff.scope || handoff.scope.length > 2048 || !Array.isArray(handoff.producers) || !Array.isArray(handoff.sourceReceipts) || !Array.isArray(handoff.omitted)) {
     throw new Error("Windows controller handoff role or build-only boundary differs");
   }
   if (expected.kind === "io") {
-    if (handoff.producers.length !== 2 || !hasKeys(handoff.producers[0], ["script", "receipt", "receiptSha256"]) ||
-        !hasKeys(handoff.producers[1], ["script", "receipt", "receiptSha256"]) || handoff.producers[0].script !== "scripts/build-native-io.js" ||
+    if (handoff.producers.length !== 2 || !hasExactBuildFields(handoff.producers[0], ["script", "receipt", "receiptSha256"]) ||
+        !hasExactBuildFields(handoff.producers[1], ["script", "receipt", "receiptSha256"]) || handoff.producers[0].script !== "scripts/build-native-io.js" ||
         handoff.producers[0].receipt !== "io-sdk/result.json" || !hash(handoff.producers[0].receiptSha256) ||
         handoff.producers[1].script !== "scripts/build-native-openssl.js" || handoff.producers[1].receipt !== "openssl-sdk/result.json" ||
         !hash(handoff.producers[1].receiptSha256) || handoff.sourceReceipts.length !== 2 ||
-        !hasKeys(handoff.sourceReceipts[0], ["file", "sha256", "archives"]) || !hasKeys(handoff.sourceReceipts[1], ["file", "sha256", "archives"]) ||
+        !hasExactBuildFields(handoff.sourceReceipts[0], ["file", "sha256", "archives"]) || !hasExactBuildFields(handoff.sourceReceipts[1], ["file", "sha256", "archives"]) ||
         handoff.sourceReceipts[0].file !== "provenance/io-fetch.json" || handoff.sourceReceipts[1].file !== "provenance/openssl-fetch.json" ||
         !hash(handoff.sourceReceipts[0].sha256) || !hash(handoff.sourceReceipts[1].sha256) ||
         !isDeepStrictEqual(handoff.sourceReceipts[0].archives, {libuv: ioPins.libuv.sha256, zlib: ioPins.zlib.sha256}) ||
@@ -444,17 +436,25 @@ function admitWindowsControllerHandoff(root, expected, identity) {
         !isDeepStrictEqual(handoff.omitted, ["OpenSSL source/build trees", "openssl.exe", "compiler/build tools", "DLLs"])) {
       throw new Error("Windows controller I/O/OpenSSL handoff producer or source receipts differ");
     }
-  } else if (handoff.producers.length !== 1 || !hasKeys(handoff.producers[0], ["script", "receipt", "receiptSha256", "plan", "planSha256"]) ||
+  } else if (handoff.producers.length !== 1 || !hasExactBuildFields(handoff.producers[0], ["script", "receipt", "receiptSha256", "plan", "planSha256"]) ||
       handoff.producers[0].script !== "scripts/build-native-hermes.js" || handoff.producers[0].receipt !== "hermes/result.json" ||
       !hash(handoff.producers[0].receiptSha256) || handoff.producers[0].plan !== "hermes/before.json" || !hash(handoff.producers[0].planSha256) ||
-      handoff.sourceReceipts.length !== 1 || !hasKeys(handoff.sourceReceipts[0], ["file", "sha256", "rootsFile", "rootsSha256", "revision"]) ||
+      handoff.sourceReceipts.length !== 1 || !hasExactBuildFields(handoff.sourceReceipts[0], ["file", "sha256", "rootsFile", "rootsSha256", "revision"]) ||
       handoff.sourceReceipts[0].file !== "provenance/hermes-fetch.json" || !hash(handoff.sourceReceipts[0].sha256) ||
       handoff.sourceReceipts[0].rootsFile !== "provenance/hermes-roots.json" || !hash(handoff.sourceReceipts[0].rootsSha256) ||
       handoff.sourceReceipts[0].revision !== hermesPins.revision ||
       !isDeepStrictEqual(handoff.omitted, ["Hermes Git/build trees", "shermes.exe", "hermesPublic.lib", "compiler/build tools", "DLLs"])) {
     throw new Error("Windows controller Hermes handoff producer or source receipts differ");
   }
-  const files = verifyTree(root, handoff), role = /** @type {any} */ (expected.kind === "io" ? ioInputs(root, handoff) : hermesInputs(root, handoff));
+  const files = verifyTree(root, handoff);
+  /** @type {ReadControllerReceipt} */
+  const readReceipt = (relative, producerPin) => {
+    if (!safeRelative(relative)) {throw new Error("Unsafe Windows controller handoff receipt path");}
+    const file = path.join(root, ...relative.split("/")), label = "Windows controller handoff receipt " + relative;
+    if (producerPin !== files[file]) {throw new Error(label + " has conflicting pins");}
+    return pinnedControllerJson(file, producerPin, label);
+  };
+  const role = /** @type {any} */ (expected.kind === "io" ? ioInputs(root, handoff, readReceipt) : hermesInputs(root, handoff, readReceipt));
   const after = inventory(root);
   if (fileHash(handoffFile) !== expected.handoffSha256 || !isDeepStrictEqual(Object.fromEntries(Object.entries(after.files)), Object.fromEntries(Object.entries(files).map(([file, sha256]) =>
     [path.relative(root, file).replaceAll("\\", "/"), {bytes: fs.statSync(file).size, sha256}]))) ||

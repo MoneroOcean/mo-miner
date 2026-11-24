@@ -70,6 +70,11 @@ test.describe("Native original ROCm host-runtime recipe",
       assert.ok(hostEnvironment({}, c, p, "/output", llvm)["PATH"]?.split(path.delimiter).includes("/usr/bin"));
       assert.throws(() => validateConfig({...c, tools: {...c.tools, xxd: "/usr/local/bin/xxd"}}), /exact pinned roots/);
     });
+    test("rejects a combined dependency key before planning the ROCm build", () => {
+      const c = config(), {drm, elf, numa} = c.dependencies;
+      const dependencies = {elf, numa, "drm,drmAmdgpu": drm};
+      assert.throws(() => validateConfig({...c, dependencies}), /exact pinned roots/);
+    });
     test("ROCr image kernels use the admitted source-built COMGR device libraries", () => {
       const p = rocmHostPlan(config(), "/output", 2, sdkRoots), dollar = "$",
         source = `add_custom_command(OUTPUT ${dollar}{OUTPUT_FILE} COMMAND clang ${dollar}{CLANG_ARG_LIST} DEPENDS ${dollar}{INPUT_FILE})`,

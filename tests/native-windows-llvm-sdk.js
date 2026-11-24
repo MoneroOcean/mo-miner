@@ -6,7 +6,7 @@ const {spawnSync} = require("node:child_process");
 const {validateWindowsLlvmSdkConfig} = require("../scripts/build-native-windows-controller");
 const {archiveSha256, buildPhases, windowsLlvmSdkPlan, llvmSourceSnapshot, verifyArchiveCatalog, llvmStaticArchiveTargets,
   verifyBuildPhases, verifyIntelCompilerIdentity, verifyCMakeCache, auditCompileCommands, verifyWindowsLlvmAdmission,
-  windowsLlvmConfiguredInputFiles, windowsLlvmConfiguredFiles, verifyAmdgpulibCallsCompileFlag,
+  windowsLlvmConfiguredInputFiles, windowsLlvmConfiguredFiles, verifyWindowsLlvmCompileCommands,
   buildWindowsLlvmSdk, auditWindowsLlvmAdmission} = require("../scripts/build-native-windows-llvm-sdk");
 const {fileHash, buildFileInputs} = require("../scripts/build-source-inputs");
 const {jitBuildOutputs} = require("../scripts/native-jit-stages");
@@ -118,17 +118,20 @@ test.describe("Original Windows LLVM 21 host SDK producer", {skip: process.platf
       {directory: build, file: other, arguments: ["icx", other]},
     ];
     writeJson(database, rows);
-    assert.throws(() => verifyAmdgpulibCallsCompileFlag(build, source), /unexpected host-only -fno-builtin state/,
+    const verify = () => verifyWindowsLlvmCompileCommands(build, source);
+    assert.throws(verify, /exactly one host-only -fno-builtin option/,
       "the prior unscoped compile database must fail before the source hook");
     rows[0]?.arguments?.push("-fno-builtin"); writeJson(database, rows);
-    assert.deepEqual(verifyAmdgpulibCallsCompileFlag(build, source),
-      {path: target, flag: "-fno-builtin", compileCommands: 2});
+    assert.deepEqual(verify(), {hostSourceFlag: {path: target, flag: "-fno-builtin", compileCommands: 2},
+      compileCommands: {path: database, sha256: fileHash(database), count: 2}});
+    fs.appendFileSync(database, " ".repeat(8 << 20));
+    assert.deepEqual(verify().compileCommands, {path: database, sha256: fileHash(database), count: 2});
     rows[1]?.arguments?.push("-fno-builtin"); writeJson(database, rows);
-    assert.throws(() => verifyAmdgpulibCallsCompileFlag(build, source), /escaped the AMDGPULibCalls.cpp source row/,
+    assert.throws(verify, /escaped the AMDGPULibCalls.cpp source row/,
       "the option must not leak to another AMDGPU source");
     const first = rows[0]; assert.ok(first);
     rows.pop(); rows.push({...first}); writeJson(database, rows);
-    assert.throws(() => verifyAmdgpulibCallsCompileFlag(build, source), /exactly one AMDGPULibCalls.cpp/,
+    assert.throws(verify, /exactly one AMDGPULibCalls.cpp/,
       "duplicate compile rows for the selected source must not pass");
   });
 
@@ -264,6 +267,14 @@ test.describe("Original Windows LLVM 21 host SDK producer", {skip: process.platf
     assert.equal(audit.objects.length, 1);
     assert.equal(audit.objects[0]?.compilerIdentity, "IntelLLVM");
     assert.match(audit.objects[0]?.abiSha256 || "", /^[0-9a-f]{64}$/);
+    assert.equal(audit.sha256, fileHash(database));
+    t.mock.method(fs, "realpathSync", (/** @type {string} */ file) => {
+      t.mock.restoreAll();
+      fs.appendFileSync(database, " ");
+      return fs.realpathSync(file);
+    });
+    assert.equal(auditCompileCommands(database, compiler, build, source).sha256, audit.sha256);
+    assert.notEqual(fileHash(database), audit.sha256);
   });
 
   test("keeps the configured receipt immutable and audits only a complete six-phase checkpoint", t => {

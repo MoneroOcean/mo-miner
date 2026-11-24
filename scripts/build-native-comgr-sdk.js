@@ -3,8 +3,8 @@
 // Build the native-only AMD compiler component from pinned Git objects, not a mutable
 // working tree. The same maintained patches supply its resource/lifetime policy.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
-const {fileHash, sourceInputs, verifySourceInputs, readBuildText, readBuildJson, buildFileInputs, completeBuildInputs} = require("./build-source-inputs");
-const {sdkStage, selectHostCompilers, compilerEnvironment, sdkHostEnvironment, verifyCompilerEnvironment, pathsOverlap, hostCompilerEvidence} = require("./build-native-sycl-sdk");
+const {buildPathsOverlap, fileHash, sourceInputs, verifySourceInputs, readBuildText, readBuildJson, buildFileInputs, completeBuildInputs, nativeBuildJobs} = require("./build-source-inputs");
+const {sdkStage, selectHostCompilers, compilerEnvironment, sdkHostEnvironment, verifyCompilerEnvironment, hostCompilerEvidence} = require("./build-native-sycl-sdk");
 const {absolutePath} = require("./build-native-release");
 const {lldInputs} = require("./native-jit-link");
 const {isStaticArchive} = require("./native-audit");
@@ -21,7 +21,7 @@ function comgrSdkPlan(source, llvm, lld, device, output, jobs, selectedHostCompi
   }
   const hostCompilers = selectHostCompilers(llvm, selectedHostCompilers), repo = path.resolve(__dirname, "..");
   for (const input of [source, llvm, lld, device, repo, ...Object.values(hostCompilers)]) {
-    if (pathsOverlap(input, output)) {throw new Error("COMGR output must not enter or enclose source, SDK or compiler inputs");}
+    if (buildPathsOverlap(input, output)) {throw new Error("COMGR output must not enter or enclose source, SDK or compiler inputs");}
   }
   const snapshot = path.join(output, "source"), build = path.join(output, "build"), archive = path.join(output, "source.tar");
   const header = path.join(llvm, "lib/clang/21/include/opencl-c.h");
@@ -85,9 +85,9 @@ function buildComgrSdk(source, llvm, lld, device, output, environment = process.
   const roots = [source, llvm, lld, device].map(root => {if (!absolutePath(root)) {throw new Error("SDK roots must be absolute");} return fs.realpathSync(root);});
   const destination = path.join(fs.realpathSync(path.dirname(output)), path.basename(output));
   const plan = comgrSdkPlan(roots[0] || "", roots[1] || "", roots[2] || "", roots[3] || "", destination,
-    Number(environment["MOM_BUILD_JOBS"] || "2"), selectedHostCompilers);
+    nativeBuildJobs(environment), selectedHostCompilers);
   const repo = path.resolve(__dirname, ".."), canonicalHostCompilers = Object.values(plan.hostCompilers).map(file => fs.realpathSync(file));
-  if ([...roots, repo, ...canonicalHostCompilers].some(input => pathsOverlap(input, destination))) {throw new Error("COMGR output overlaps a canonical source, SDK or compiler input");}
+  if ([...roots, repo, ...canonicalHostCompilers].some(input => buildPathsOverlap(input, destination))) {throw new Error("COMGR output overlaps a canonical source, SDK or compiler input");}
   const env = sdkHostEnvironment(environment, plan.hostCompilers), sysroot = requireLinuxSysroot(env);
   verifyCompilerEnvironment(plan.hostCompilers, env);
   // Git-object selection must not inherit an unrelated process's checkout/index override.

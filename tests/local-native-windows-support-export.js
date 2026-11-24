@@ -246,7 +246,7 @@ test.describe("local Windows support export", () => {
     const partial = fixture(t), partialDependencies = admissionDependencies(partial), partialOptions = {workspace: partial.cache, sourceReceipts: partial.options.sourceReceipts};
     exportOrAdmitLocalWindowsSupport(partial.support, partialOptions, partialDependencies);
     const partialKey = sha("incomplete generation"); fs.mkdirSync(path.join(partial.cache, partialKey));
-    assert.throws(() => exportOrAdmitLocalWindowsSupport(partial.support, partialOptions, partialDependencies), /partial or contains unknown state/);
+    assert.throws(() => exportOrAdmitLocalWindowsSupport(partial.support, partialOptions, partialDependencies), /incomplete or contains unknown entries/);
   });
 
   test("rejects cache workspaces that overlap original producers or receipts", t => {

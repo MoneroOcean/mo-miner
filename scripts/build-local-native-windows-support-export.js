@@ -2,7 +2,7 @@
 
 // Export only the selected Windows controller-support closure for WSL consumption.
 const fs = require("node:fs"), path = require("node:path"), {createHash, randomUUID} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson, sourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, verifyBuildDirectoryEntries, buildPathsOverlap, fileHash, readBuildJson, sourceInputs} = require("./build-source-inputs");
 const {ioPins} = require("./build-native-io"), {opensslPin} = require("./build-native-openssl"), {hermesPins} = require("./build-native-hermes");
 const {windowsLocalControllerHandoffInputs} = require("./native-windows-controller-handoff");
 const {copyWindowsControllerPath, copyWindowsControllerIntelRuntime, windowsControllerPackageInventory} = require("./native-ci-windows-controller");
@@ -17,12 +17,6 @@ const exportMarker = ".mom-native-windows-support-export.json", exportMarkerValu
 
 /** @param {string} left @param {string} right */
 function samePath(left, right) {return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;}
-/** @param {string} a @param {string} b */
-function overlaps(a, b) {
-  /** @param {string} parent @param {string} child */
-  const contains = (parent, child) => {const rel = path.relative(parent, child); return !rel || !path.isAbsolute(rel) && rel !== ".." && !rel.startsWith(".." + path.sep);};
-  return contains(a, b) || contains(b, a);
-}
 /** @param {string} file @param {string} label */
 function canonicalFile(file, label) {
   if (typeof file !== "string" || !path.isAbsolute(file)) {throw new Error(label + " must be an absolute canonical regular file");}
@@ -37,15 +31,15 @@ function freshRoot(root, protectedPaths) {
   if (typeof root !== "string" || !path.isAbsolute(root)) {throw new Error("Windows support export root must be absolute");}
   const parent = path.dirname(root), parentStat = fs.lstatSync(parent, {throwIfNoEntry: false});
   if (!path.isAbsolute(root) || path.resolve(root) !== root || /[\r\n\0]/.test(root) || !parentStat?.isDirectory() || parentStat.isSymbolicLink() ||
-      !samePath(fs.realpathSync(parent), parent) || overlaps(root, repo) || protectedPaths.some(file => overlaps(root, file)) ||
+      !samePath(fs.realpathSync(parent), parent) || buildPathsOverlap(root, repo) || protectedPaths.some(file => buildPathsOverlap(root, file)) ||
       fs.lstatSync(root, {throwIfNoEntry: false})) {throw new Error("Windows support export root must be new, canonical, and separate from its inputs");}
   return root;
 }
 /** @param {any} support @param {any} options */
 function exportLocalWindowsSupport(support, options) {
   if (!support?.plan || !options || !uuid.test(options.localBuildId || "") ||
-      !options.roots || Object.keys(options.roots).sort().join(",") !== "hermes,io" ||
-      !options.sourceReceipts || Object.keys(options.sourceReceipts).sort().join(",") !== "hermesFetch,hermesRoots,ioFetch,opensslFetch") {
+      !options.roots || !hasExactBuildFields(options.roots, ["hermes", "io"]) ||
+      !options.sourceReceipts || !hasExactBuildFields(options.sourceReceipts, ["hermesFetch", "hermesRoots", "ioFetch", "opensslFetch"])) {
     throw new Error("Windows support export needs the finished producer result, UUID, role roots and original source receipts");
   }
   const plan = support.plan, io = support.io, ssl = support.openssl, hermes = support.hermes;
@@ -65,7 +59,7 @@ function exportLocalWindowsSupport(support, options) {
     protectedPaths = [...supportFiles, ...sourceFiles, plan.sources.libuv, plan.sources.zlib, plan.sources.openssl, plan.sources.hermes,
       plan.io.output, plan.openssl.output, plan.hermes.output],
     roots = {io: freshRoot(options.roots.io, protectedPaths), hermes: freshRoot(options.roots.hermes, protectedPaths)};
-  if (overlaps(roots.io, roots.hermes)) {throw new Error("I/O and Hermes export roots must be distinct");}
+  if (buildPathsOverlap(roots.io, roots.hermes)) {throw new Error("I/O and Hermes export roots must be distinct");}
 
   const unchanged = new Map();
   /** @param {string} file @param {string} [expected] */
@@ -204,11 +198,6 @@ function canonicalDirectory(directory, label) {
   }
   return directory;
 }
-/** @param {string} directory @param {string[]} expected @param {string} label */
-function exactEntries(directory, expected, label) {
-  const entries = fs.readdirSync(directory).sort();
-  if (!isDeepStrictEqual(entries, [...expected].sort())) {throw new Error(label + " is partial or contains unknown state; preserve it for inspection");}
-}
 /** @param {string} file @param {string} label @param {number} [maximum] */
 function canonicalRecordFile(file, label, maximum = 1 << 20) {
   const stat = fs.lstatSync(file, {throwIfNoEntry: false});
@@ -222,7 +211,7 @@ function checkExportWorkspacePath(workspace, support, receipts) {
   const plan = support.plan, protectedPaths = [repo, support.workspace, plan.sources.libuv, plan.sources.zlib, plan.sources.openssl, plan.sources.hermes,
     plan.io.output, plan.openssl.output, plan.hermes.output, ...Object.values(receipts)];
   if (typeof workspace !== "string" || !path.isAbsolute(workspace) || path.resolve(workspace) !== workspace || /[\r\n\0]/.test(workspace) ||
-      protectedPaths.some(file => typeof file !== "string" || overlaps(workspace, file))) {
+      protectedPaths.some(file => typeof file !== "string" || buildPathsOverlap(workspace, file))) {
     throw new Error("Windows support export cache must be canonical and outside the checkout, producers and source receipts");
   }
   const parent = path.dirname(workspace);
@@ -337,7 +326,7 @@ function generationKey(identity) {return createHash("sha256").update(JSON.string
  * @param {string} root */
 function generationRecord(root) {
   canonicalDirectory(root, "Windows support export generation");
-  exactEntries(root, ["commit.json", "hermes", "io"], "Windows support export generation");
+  verifyBuildDirectoryEntries(root, ["commit.json", "hermes", "io"], "Windows support export generation");
   const recordFile = path.join(root, "commit.json"), recordStat = canonicalRecordFile(recordFile, "Windows support export commit"),
     record = readBuildJson(recordFile);
   exactRecord(record, ["version", "generationKey", "planKeys", "sourceReceiptHashes", "exportRecipeSha256", "localBuildId", "handoffSha256"], "Windows support export commit");
@@ -410,8 +399,8 @@ function admitExportWorkspace(workspace, support, receipts) {
  * readHandoff?:typeof windowsLocalControllerHandoffInputs,id?:()=>string}} [dependencies]
  * @returns {ReturnType<typeof exportLocalWindowsSupport> & {generationKey:string,reused:boolean,retirementCandidates:Array<any>}} */
 function exportOrAdmitLocalWindowsSupport(support, options, dependencies = {}) {
-  if (!options || Object.keys(options).sort().join(",") !== "sourceReceipts,workspace" || typeof options.workspace !== "string" || !options.sourceReceipts ||
-      Object.keys(options.sourceReceipts).sort().join(",") !== sourceReceiptKeys.slice().sort().join(",")) {
+  if (!options || !hasExactBuildFields(options, ["sourceReceipts", "workspace"]) || typeof options.workspace !== "string" || !options.sourceReceipts ||
+      !hasExactBuildFields(options.sourceReceipts, sourceReceiptKeys)) {
     throw new Error("Windows support export admission needs one stable cache workspace and four original source receipts");
   }
   const receipts = /** @type {Record<string,string>} */ (options.sourceReceipts), current = admitCurrentSupport(support, receipts, dependencies),

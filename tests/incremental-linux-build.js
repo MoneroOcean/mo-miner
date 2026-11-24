@@ -378,6 +378,35 @@ printf 'compile\\n' >> events
     assert.match(entry, /^if \[ "\$EUID" -eq 0 \]; then chown -R --reference="\$PWD" "\$cache_root"; fi\nrestore_platform_tree$/m);
   });
 
+  test("DPC++ and OpenCL reuse their own cached trees and publish profile-specific workers", t => {
+    const f = fixture(t), entry = fs.readFileSync(path.resolve(__dirname, "../scripts/multicompiler-entrypoint.sh"), "utf8");
+    const start = entry.indexOf("\npublish() {"), dispatch = entry.indexOf("\nfor compiler in ", start),
+      end = entry.indexOf("\ndone", dispatch);
+    assert.ok(start >= 0 && dispatch > start && end > dispatch);
+    f.put("scripts/combined-build.sh", [
+      "setting() { printenv \"$1\" || printf unset; }",
+      'printf "%s:%s:%s:%s\\n" "$(cat build/cache-key)" "$(setting MOM_DPCPP_IMPL)" "$(setting MOM_COMBINED_TARGETS)" "$(setting MOM_INTEL_AOT_DEVICE)" > build/Release/mom.node',
+    ].join("\n") + "\n");
+    const workers = new Map([["dpcpp", "dpcpp:unset:unset:unset\n"], ["dpcpp-opencl", "dpcpp-opencl:dpcpp-opencl:spir64:\n"]]);
+    for (const key of workers.keys()) {
+      f.put("cache/" + key + "/cache-key", key);
+      f.put("cache/" + key + "/Release/mom.node", "stale");
+    }
+    execFileSync("bash", ["-euc", [
+      "unset MOM_DPCPP_IMPL MOM_COMBINED_TARGETS MOM_INTEL_AOT_DEVICE",
+      "cache_root=cache; artifact_dir=artifacts; build_compilers=(dpcpp dpcpp-opencl)",
+      'source_fingerprint() { printf "fingerprint-%s\\n" "$1"; }',
+      entry.slice(start, end + "\ndone".length),
+    ].join("\n")], {cwd: f.root, env: f.env, timeout: 10000});
+    assert.equal(fs.existsSync(path.join(f.root, "build")), false);
+    for (const [key, expected] of workers) {
+      const artifact = path.join(f.root, "artifacts", key, "mom.node");
+      assert.equal(fs.readFileSync(artifact, "utf8"), expected);
+      assert.equal(fs.readFileSync(path.join(f.root, "cache", key, "Release", "mom.node"), "utf8"), expected);
+      assert.equal(fs.readFileSync(artifact + ".sources.sha256", "utf8"), "fingerprint-" + key + "\n");
+    }
+  });
+
   test("content edits with preserved/backdated mtimes invalidate only dependent objects and skip no-op relink", t => {
     const f = fixture(t);
     assert.equal(f.build(), "clean");
@@ -542,8 +571,9 @@ printf 'compile\\n' >> events
     const f = fixture(t);
     const entrypoint = fs.readFileSync(path.resolve(__dirname, "../scripts/multicompiler-entrypoint.sh"), "utf8");
     const fingerprint = entrypoint.match(/^source_fingerprint\(\) \{[^]*?^\}/m)?.[0];
+    const toolchain = entrypoint.match(/^use_worker_toolchain\(\) \{[^]*?^\}/m)?.[0];
     const reuse = entrypoint.match(/^case "\$\{MOM_REUSE_BUILT_WORKER:-0\}" in[^]*?^esac$/m)?.[0];
-    assert.ok(fingerprint && reuse);
+    assert.ok(fingerprint && toolchain && reuse);
     const shell = {cwd: f.root, env: {...f.env, MOM_REUSE_BUILT_WORKER: "1", backend: "intel", default: "oneapi"},
       encoding: /** @type {const} */ ("utf8"), timeout: 10000};
     assert.equal(f.build(), "clean");
@@ -551,7 +581,7 @@ printf 'compile\\n' >> events
     f.put("build/lin/Release/oneapi/mom.node", "fixture worker");
     const receipt = execFileSync("bash", ["-ec", fingerprint + "\nsource_fingerprint oneapi"], shell);
     f.put("build/lin/Release/oneapi/mom.node.sources.sha256", receipt);
-    const admission = fingerprint + "\n" + reuse;
+    const admission = [fingerprint, toolchain, reuse].join("\n");
     const unchanged = spawnSync("bash", ["-ec", admission, "fixture-reuse", "true"], shell);
     assert.equal(unchanged.error, undefined);
     assert.equal(unchanged.status, 0);

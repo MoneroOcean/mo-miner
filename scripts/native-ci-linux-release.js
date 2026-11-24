@@ -4,7 +4,7 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
 const {canonicalExecutable, ciBuildJobs, hasExactKeys, jsonHash, linuxNativeComponentChildTimeout, runNode, validCiSuffix} = require("./native-ci-job");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {verifyZstdArchive} = require("./fetch-native-sdk-sources");
 const {auditGnuHeaders} = require("./prepare-native-gnu-headers");
 const {cudaImageInputs} = require("./native-cuda-images");
@@ -256,7 +256,7 @@ function linuxNativeComponentStatePaths(paths, profile) {
 /** Canonical component map consumed by the public release frontdoor. @param {string} core @param {Record<string,string>} gpu */
 function linuxNativeAssemblyComponents(core, gpu) {
   if (typeof core !== "string" || !path.isAbsolute(core) || !gpu || typeof gpu !== "object" || Array.isArray(gpu) ||
-      Object.keys(gpu).sort().join(",") !== linuxNativeGpuProfiles.slice().sort().join(",") ||
+      !hasExactBuildFields(gpu, linuxNativeGpuProfiles) ||
       Object.values(gpu).some(file => typeof file !== "string" || !path.isAbsolute(file))) {
     throw new Error("Native assembly requires the exact Core and five same-run GPU factory receipts");
   }
@@ -512,23 +512,24 @@ function auditLinuxNativeComponentTree(state, descriptorAdmission, inputArchives
   if (!isDeepStrictEqual(actualMembers, [...expectedMembers].sort())) {throw new Error("Native component tar contains extra, missing or substituted members");}
   const receipt = path.join(state.root, manifest.producer.receipt), object = path.resolve(manifest.producer.object),
     objectRelative = path.relative(state.root, object);
+  const receiptPinMessage = "Native component producer receipt or compiled object changed after handoff";
   if (!safeRelative(manifest.producer.receipt) || path.relative(state.root, receipt).startsWith("..") ||
-      !objectRelative || path.isAbsolute(objectRelative) || objectRelative === ".." || objectRelative.startsWith(".." + path.sep) ||
-      fileHash(receipt) !== manifest.producer.sha256 || fileHash(object) !== manifest.producer.objectSha256) {
-    throw new Error("Native component producer receipt or compiled object changed after handoff");
+      !objectRelative || path.isAbsolute(objectRelative) || objectRelative === ".." || objectRelative.startsWith(".." + path.sep)) {
+    throw new Error(receiptPinMessage);
   }
+  if (fileHash(object) !== manifest.producer.objectSha256) {
+    throw new Error(receiptPinMessage);
+  }
+  const {value: producerReceipt} = readBuildJsonSnapshot(receipt, undefined,
+    {sha256: manifest.producer.sha256, message: receiptPinMessage});
   if (state.profile === "core") {
-    const input = readBuildJson(receipt);
     if (manifest.producer.receipt !== "core/inputs.json" || object !== path.join(state.root, "core/cpu-core.a") ||
-        input.gpu !== true || input.portable !== true || input.objectSha256 !== manifest.producer.objectSha256) {
+        producerReceipt.gpu !== true || producerReceipt.portable !== true || producerReceipt.objectSha256 !== manifest.producer.objectSha256) {
       throw new Error("Native Core handoff is not the maintained portable Core producer output");
     }
-  } else {
-    const record = readBuildJson(receipt);
-    if (manifest.producer.receipt !== "gpu/" + state.profile + "/result.json" ||
-        record.factory !== "mom_native_gpu_" + state.profile.replaceAll("-", "_") || record.object !== object) {
-      throw new Error("Native GPU handoff does not contain its exact maintained factory receipt");
-    }
+  } else if (manifest.producer.receipt !== "gpu/" + state.profile + "/result.json" ||
+      producerReceipt.factory !== "mom_native_gpu_" + state.profile.replaceAll("-", "_") || producerReceipt.object !== object) {
+    throw new Error("Native GPU handoff does not contain its exact maintained factory receipt");
   }
   return {state, manifest, manifestSha256: fileHash(manifestFile), producer: manifest.producer, files: current, members: actualMembers};
 }
@@ -615,13 +616,12 @@ function auditLinuxNativeApplicationEntrypoint(descriptor, output, expectedConfi
   const descriptorHash = fileHash(descriptor.sdkFile);
   if (descriptorHash !== expectedConfigHash) {throw new Error("Native application descriptor changed during the build");}
   // Source-only prerequisite stages must not import runtime tests or their hash vectors.
-  const admitted = require("./check-native-release").admitCandidate(entrypointFile, "linux", "x64"), producer = readBuildJson(producerFile),
-    entrypoint = admitted.entryRecord, producerHash = fileHash(producerFile), entrypointHash = admitted.entryHash,
+  const admitted = require("./check-native-release").admitCandidate(entrypointFile, "linux", "x64"),
+    {value: producer, hash: producerHash} = admitted.producer, entrypoint = admitted.entryRecord, entrypointHash = admitted.entryHash,
     binaryHash = admitted.artifactHash, recipe = entrypoint["recipe"],
     components = /** @type {Record<string, string>} */ (entrypoint["componentHashes"]);
   if (admitted.artifact !== binary || admitted.source !== binary ||
       entrypoint["configFile"] !== descriptor.sdkFile || entrypoint["configHash"] !== expectedConfigHash ||
-      producer.configHash !== expectedConfigHash || producer.buildOnly !== true || producer.publicationQualified !== false ||
       !producer.application || typeof producer.application !== "object" || producer.application.application !== true ||
       producer.application.entrypoint !== "mom.js" || producer.application.buildOnly !== true) {
     throw new Error("Native application receipt must bind the unpacked build-only executable and exact descriptor");
@@ -765,7 +765,7 @@ function auditLinuxNativeSdkDescriptorCudaImages(state, dpcppInputs) {
       !Number.isSafeInteger(result.plannedImages) || result.plannedImages !== images.length ||
       !Number.isSafeInteger(result.embeddedBytes) || result.embeddedBytes !== manifest["resourceBytes"] ||
       result.sourceSha256 !== manifest["sourceSha256"] ||
-      Object.keys(headerPacks).sort().join(",") !== "12.6,13.3") {
+      !hasExactBuildFields(headerPacks, ["12.6", "13.3"])) {
     throw new Error("CUDA image result does not bind the exact same-run 12.6/13.3 sidecar and image matrix");
   }
   const noticeSources = auditCudaNoticeSources(state.images, dpcppInputs, manifest);

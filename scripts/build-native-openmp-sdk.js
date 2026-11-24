@@ -3,7 +3,7 @@
 // Build only the pinned LLVM OpenMP host runtime needed by AdaptiveCpp.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {createHash} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, buildPathsOverlap, fileHash, sourceInputs, verifySourceInputs, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {nativeSdkEnvironment} = require("./build-environment");
 const {isStaticArchive, nativeDependencies} = require("./native-audit");
 const {archiveName, archiveSha256, tarTool, verifyArchiveCatalog} = require("./native-llvm-sdk");
@@ -51,19 +51,9 @@ function absolute(value) {
     !/[;"'$\\\r\n\0\x60]/.test(value) && !Array.from(value).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127);
 }
 
-/** @param {string} left @param {string} right */
-function overlaps(left, right) {
-  /** @param {string} parent @param {string} child */
-  const within = (parent, child) => {
-    const relative = path.relative(parent, child);
-    return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));
-  };
-  return within(left, right) || within(right, left);
-}
-
 /** @param {unknown} value @returns {ToolPaths} */
 function validateTools(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== toolNames.join(",")) {
+  if (!hasExactBuildFields(value, toolNames)) {
     throw new Error("Static OpenMP SDK needs the exact explicit Linux tool set");
   }
   const tools = /** @type {ToolPaths} */ (value);
@@ -224,7 +214,7 @@ function verifyOpenmpSourceInventory(root, expected) {
 /** Recheck the inventory-derived license as a bounded canonical file before returning it downstream.
  * @param {string} root @param {{path: string, sha256: string, bytes: number}} notice */
 function verifyOpenmpNoticeInput(root, notice) {
-  if (!absolute(root) || fs.realpathSync(root) !== root || !notice || Object.keys(notice).sort().join(",") !== "bytes,path,sha256" ||
+  if (!absolute(root) || fs.realpathSync(root) !== root || !notice || !hasExactBuildFields(notice, ["bytes", "path", "sha256"]) ||
       notice.path !== "source/openmp/LICENSE.TXT" || !isHash(notice.sha256) || !Number.isSafeInteger(notice.bytes) ||
       notice.bytes < 1 || notice.bytes > noticeBytesLimit) {
     throw new Error("Invalid static OpenMP source license binding");
@@ -369,7 +359,7 @@ function verifyOpenmpDynamicDependencies(readelfText) {
 
 /** @param {unknown} value @returns {value is ReturnType<typeof sourceInputs>} */
 function isSourceInputRecord(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "files,graph") {return false;}
+  if (!hasExactBuildFields(value, ["files", "graph"])) {return false;}
   const input = /** @type {JsonRecord} */ (value);
   return ["files", "graph"].every(name => {
     const rows = input[name];
@@ -384,7 +374,7 @@ function assertOpenmpReceiptShape(record) {
     "platform", "publicationQualified", "recipe", "role", "sdk", "smoke", "source", "sysroot", "toolVersions", "tools", "version"];
   if (!record || typeof record !== "object" || Array.isArray(record)) {throw new Error("Invalid or stale static OpenMP SDK receipt");}
   const receipt = /** @type {OpenmpReceipt} */ (record);
-  if (Object.keys(receipt).sort().join(",") !== keys.sort().join(",") ||
+  if (!hasExactBuildFields(receipt, keys) ||
       receipt.version !== 1 || receipt.role !== "linux-static-openmp-sdk" || receipt.platform !== "linux" || receipt.buildOnly !== true ||
       receipt.compiled !== true || receipt.executed !== true || receipt.publicationQualified !== false || !isSourceInputRecord(receipt.recipe) ||
       receipt.config?.path !== "tools.json" || !isHash(receipt.config.sha256) ||
@@ -403,7 +393,7 @@ function buildNativeOpenmpSdk(archive, output, config, environment, configFile, 
   if (environment["MOM_AOT_BUILD_ONLY"] !== "1" || process.platform !== "linux" || process.arch !== "x64") {
     throw new Error("Static OpenMP SDK production requires Linux x64 and MOM_AOT_BUILD_ONLY=1");
   }
-  if (!config || typeof config !== "object" || Array.isArray(config) || Object.keys(config).sort().join(",") !== "jobs,tools,version" ||
+  if (!hasExactBuildFields(config, ["jobs", "tools", "version"]) ||
       config.version !== 1 || !buildJobs.includes(config.jobs) || !absolute(configFile || "") || !isHash(configSha256 || "")) {
     throw new Error("Invalid static OpenMP tool descriptor");
   }
@@ -413,8 +403,8 @@ function buildNativeOpenmpSdk(archive, output, config, environment, configFile, 
   if (!absolute(archive) || !absolute(output) || output !== selectedOutput || path.normalize(output) !== output ||
       !parentStat?.isDirectory() || parentStat.isSymbolicLink() || fs.realpathSync(parent) !== parent || fs.existsSync(selectedOutput) ||
       !path.relative(repo, selectedOutput) || !path.relative(repo, selectedOutput).startsWith(".." + path.sep) ||
-      overlaps(selectedOutput, path.dirname(archive)) || overlaps(selectedOutput, configFile || "") ||
-      [archive, configFile || "", ...Object.values(tools)].some(file => overlaps(selectedOutput, file))) {
+      buildPathsOverlap(selectedOutput, path.dirname(archive)) || buildPathsOverlap(selectedOutput, configFile || "") ||
+      [archive, configFile || "", ...Object.values(tools)].some(file => buildPathsOverlap(selectedOutput, file))) {
     throw new Error("Static OpenMP output must be new, canonical and separate from all inputs/repository files");
   }
   regularInput(configFile || "", "tool descriptor");
@@ -491,9 +481,9 @@ function buildNativeOpenmpSdk(archive, output, config, environment, configFile, 
 /** Re-admit the original source receipt, current compiler tools, source tree, static archive and smoke evidence.
  * @param {string} root */
 function nativeOpenmpInputs(root) {
-  if (!absolute(root) || fs.realpathSync(root) !== root || overlaps(root, repo)) {throw new Error("Select a canonical external static OpenMP SDK root");}
+  if (!absolute(root) || fs.realpathSync(root) !== root || buildPathsOverlap(root, repo)) {throw new Error("Select a canonical external static OpenMP SDK root");}
   const receiptPath = path.join(root, "result.json"); regularInput(receiptPath, "producer receipt");
-  const receiptSha256 = fileHash(receiptPath), record = assertOpenmpReceiptShape(readBuildJson(receiptPath));
+  const {value, sha256: receiptSha256} = readBuildJsonSnapshot(receiptPath), record = assertOpenmpReceiptShape(value);
   if (record.output !== root) {throw new Error("Static OpenMP SDK receipt does not bind its selected output root");}
   const tools = validateTools(Object.fromEntries(Object.entries(record.tools || {}).map(([name, row]) => [name, row?.path]))),
     currentTools = toolIdentity(tools), env = nativeSdkEnvironment(process.env), versions = toolVersions(tools, env, Date.now() + 2 * 60 * 1000);
@@ -516,8 +506,8 @@ function nativeOpenmpInputs(root) {
     throw new Error("Static OpenMP SDK receipt lost its pinned source/fetch provenance");
   }
   const toolsPath = path.join(root, "tools.json"); regularInput(toolsPath, "tool descriptor");
-  const toolsConfig = readBuildJson(toolsPath);
-  if (!isDeepStrictEqual(toolsConfig, {version: 1, jobs: record.plan.jobs, tools}) || fileHash(path.join(root, "tools.json")) !== record.config.sha256) {
+  const {value: toolsConfig, sha256: toolsSha256} = readBuildJsonSnapshot(toolsPath);
+  if (!isDeepStrictEqual(toolsConfig, {version: 1, jobs: record.plan.jobs, tools}) || toolsSha256 !== record.config.sha256) {
     throw new Error("Static OpenMP SDK tool descriptor changed");
   }
   const recipe = openmpBuildRecipe(); verifySourceInputs(record.recipe, recipe, "Static OpenMP SDK producer");
@@ -549,7 +539,7 @@ function nativeOpenmpInputs(root) {
   const expectedCommands = /** @type {Record<string, string[]>} */ ({extract: plan.extract, configure: plan.configure, build: plan.buildCommand,
       "smoke-compile": plan.smokeCompile, "smoke-link": plan.smokeLink, "smoke-readelf": plan.smokeReadelf, "smoke-run": plan.smokeRun}),
     expectedLogs = Object.keys(expectedCommands).sort(), logs = record.logs;
-  if (!logs || Object.keys(logs).sort().join(",") !== expectedLogs.join(",")) {throw new Error("Static OpenMP SDK stage logs are incomplete");}
+  if (!logs || !hasExactBuildFields(logs, expectedLogs)) {throw new Error("Static OpenMP SDK stage logs are incomplete");}
   const inputs = /** @type {Record<string, string>} */ (Object.create(null));
   /** @param {string} file @param {string} hash */
   const bind = (file, hash) => {
@@ -568,11 +558,11 @@ function nativeOpenmpInputs(root) {
       throw new Error("Invalid static OpenMP stage log receipt");
     }
     const file = path.join(root, entry.path), argv = file + ".argv.json";
+    const message = "Static OpenMP stage log changed: " + entry.path;
     if (regularInput(file, "stage log").size !== entry.bytes || fileHash(file) !== entry.sha256 ||
-        regularInput(argv, "stage command receipt").size > (1 << 20) || fileHash(argv) !== entry.argvSha256 ||
-        !isDeepStrictEqual(readBuildJson(argv), expectedCommands[path.basename(entry.path, ".log")])) {
-      throw new Error("Static OpenMP stage log changed: " + entry.path);
-    }
+        regularInput(argv, "stage command receipt").size > (1 << 20)) {throw new Error(message);}
+    const {value: command} = readBuildJsonSnapshot(argv, 1 << 20, {sha256: entry.argvSha256, message});
+    if (!isDeepStrictEqual(command, expectedCommands[path.basename(entry.path, ".log")])) {throw new Error(message);}
     bind(file, entry.sha256); bind(argv, entry.argvSha256);
   }
   for (const [file, hash] of Object.entries(inputs)) {if (fileHash(file) !== hash) {throw new Error("Static OpenMP SDK input changed: " + file);}}
@@ -587,8 +577,9 @@ if (require.main === module) {
       throw new Error("Usage: MOM_AOT_BUILD_ONLY=1 node scripts/build-native-openmp-sdk.js /pinned/llvm-project-21.1.8.src.tar.xz /new/openmp-sdk /absolute/tools.json");
     }
     regularInput(configFile, "tool descriptor");
-    const config = /** @type {OpenmpConfig} */ (readBuildJson(configFile));
-    buildNativeOpenmpSdk(archive, output, config, process.env, configFile, fileHash(configFile));
+    /** @type {{value: OpenmpConfig, sha256: string}} */
+    const {value: config, sha256} = readBuildJsonSnapshot(configFile);
+    buildNativeOpenmpSdk(archive, output, config, process.env, configFile, sha256);
   } catch (error) {console.error(error instanceof Error ? error.message : "Static OpenMP SDK build failed"); process.exitCode = 1;}
 }
 

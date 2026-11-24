@@ -4,7 +4,7 @@
 // complete CUDA SDK nor a redistribution qualification.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {createHash} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson, sourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot, sourceInputs} = require("./build-source-inputs");
 
 const repo = path.resolve(__dirname, ".."), catalogFile = path.join(repo, "runtime/windows-cudart.json");
 const catalog = /** @type {CudartCatalog} */ (require("../runtime/windows-cudart.json"));
@@ -36,11 +36,6 @@ function absolute(value) {
 function provenancePath(value) {
   return typeof value === "string" && value.length > 0 && value.length <= 4096 &&
     !Array.from(value).some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
-}
-
-/** @param {unknown} value @param {string[]} expected @returns {value is Record<string, unknown>} */
-function exactKeys(value, expected) {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value) && isDeepStrictEqual(Object.keys(value).sort(), [...expected].sort()));
 }
 
 /** @param {string} file @param {string} label @param {number} maximum @param {bigint} [maximumLinks] */
@@ -87,19 +82,19 @@ function newDestination(output) {
 function windowsCudartCatalog() {
   const before = regularFileSnapshot(catalogFile, "catalog", 64 << 10), disk = readBuildJson(catalogFile), after = regularFileSnapshot(catalogFile, "catalog", 64 << 10),
     archiveRoot = "cuda_cudart-windows-x86_64-" + catalog.vendorVersion + "-archive";
-  if (!sameSnapshot(before, after) || !isDeepStrictEqual(disk, catalog) || !exactKeys(catalog,
+  if (!sameSnapshot(before, after) || !isDeepStrictEqual(disk, catalog) || !hasExactBuildFields(catalog,
     ["version", "target", "vendor", "releaseLabel", "vendorVersion", "manifestUrl", "license", "archive", "cudartStatic"]) ||
       catalog.version !== 1 || catalog.target !== "windows-cudart" || catalog.vendor !== "NVIDIA" || catalog.releaseLabel !== "12.6.0" ||
       catalog.vendorVersion !== "12.6.37" || catalog.manifestUrl !== "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.6.0.json" ||
-      !exactKeys(catalog.archive, ["fileName", "url", "origin", "bytes", "sha256"]) || catalog.archive.fileName !== archiveRoot + ".zip" ||
+      !hasExactBuildFields(catalog.archive, ["fileName", "url", "origin", "bytes", "sha256"]) || catalog.archive.fileName !== archiveRoot + ".zip" ||
       catalog.archive.url !== "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/" + catalog.archive.fileName ||
       catalog.archive.origin !== "https://developer.download.nvidia.com" || !Number.isSafeInteger(catalog.archive.bytes) ||
       catalog.archive.bytes < 1 || catalog.archive.bytes > archiveMaximumBytes || !/^[a-f0-9]{64}$/.test(catalog.archive.sha256) ||
-      !exactKeys(catalog.license, ["name", "manifestPath", "member", "output", "bytes", "sha256"]) || catalog.license.name !== "CUDA Toolkit" ||
+      !hasExactBuildFields(catalog.license, ["name", "manifestPath", "member", "output", "bytes", "sha256"]) || catalog.license.name !== "CUDA Toolkit" ||
       catalog.license.manifestPath !== "cuda_cudart/LICENSE.txt" || catalog.license.member !== archiveRoot + "/LICENSE" ||
       catalog.license.output !== "licenses/cuda-cudart/LICENSE" || !Number.isSafeInteger(catalog.license.bytes) ||
       catalog.license.bytes < 1 || catalog.license.bytes > memberMaximumBytes || !/^[a-f0-9]{64}$/.test(catalog.license.sha256) ||
-      !exactKeys(catalog.cudartStatic, ["member", "output", "bytes", "sha256"]) ||
+      !hasExactBuildFields(catalog.cudartStatic, ["member", "output", "bytes", "sha256"]) ||
       catalog.cudartStatic.member !== archiveRoot + "/lib/x64/cudart_static.lib" || catalog.cudartStatic.output !== "runtime/cudart_static.lib" ||
       !Number.isSafeInteger(catalog.cudartStatic.bytes) || catalog.cudartStatic.bytes < 1 || catalog.cudartStatic.bytes > memberMaximumBytes ||
       !/^[a-f0-9]{64}$/.test(catalog.cudartStatic.sha256)) {
@@ -230,27 +225,27 @@ function admitWindowsCudart(directory) {
     directories.push([file, stat]);
   }
   const receiptFile = path.join(directory, "sdk.json"), receiptStat = regularFileSnapshot(receiptFile, "receipt", 1 << 20),
-    receiptSha256 = fileHash(receiptFile), receipt = /** @type {CudartReceipt} */ (readBuildJson(receiptFile));
+    {sha256: receiptSha256, value: parsed} = readBuildJsonSnapshot(receiptFile, 1 << 20), receipt = /** @type {CudartReceipt} */ (parsed);
   const expectedFiles = Object.keys(outputFiles).sort();
-  if (writableMode(receiptStat) || !exactKeys(receipt, ["version", "target", "status", "networked", "buildOnly", "compiled", "vendorPrebuilt",
+  if (writableMode(receiptStat) || !hasExactBuildFields(receipt, ["version", "target", "status", "networked", "buildOnly", "compiled", "vendorPrebuilt",
     "publicationQualified", "redistributionQualified", "producerSha256", "recipe", "tool", "source", "output", "files"]) ||
       receipt.version !== 1 || receipt.target !== "windows-cudart" || receipt.status !== "PASS" || receipt.networked !== false || receipt.buildOnly !== true ||
       receipt.compiled !== false || receipt.vendorPrebuilt !== true || receipt.publicationQualified !== false || receipt.redistributionQualified !== false ||
       !/^[a-f0-9]{64}$/.test(receipt.producerSha256) || !provenancePath(receipt.output) ||
-      !exactKeys(receipt.recipe, ["sha256", "files"]) || !/^[a-f0-9]{64}$/.test(receipt.recipe.sha256) ||
-      !exactKeys(receipt.recipe.files, recipeNames) || Object.values(receipt.recipe.files).some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)) ||
-      !exactKeys(receipt.source, ["archivePath", "url", "sha256", "bytes", "manifestUrl"]) || !provenancePath(receipt.source.archivePath) ||
+      !hasExactBuildFields(receipt.recipe, ["sha256", "files"]) || !/^[a-f0-9]{64}$/.test(receipt.recipe.sha256) ||
+      !hasExactBuildFields(receipt.recipe.files, recipeNames) || Object.values(receipt.recipe.files).some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)) ||
+      !hasExactBuildFields(receipt.source, ["archivePath", "url", "sha256", "bytes", "manifestUrl"]) || !provenancePath(receipt.source.archivePath) ||
       receipt.source.url !== selected.archive.url || receipt.source.sha256 !== selected.archive.sha256 || receipt.source.bytes !== selected.archive.bytes ||
-      receipt.source.manifestUrl !== selected.manifestUrl || !exactKeys(receipt.tool, ["path", "sha256", "version"]) ||
+      receipt.source.manifestUrl !== selected.manifestUrl || !hasExactBuildFields(receipt.tool, ["path", "sha256", "version"]) ||
       !provenancePath(receipt.tool.path) || !/^[a-f0-9]{64}$/.test(receipt.tool.sha256) || !provenancePath(receipt.tool.version) ||
-      !exactKeys(receipt.files, expectedFiles)) {
+      !hasExactBuildFields(receipt.files, expectedFiles)) {
     throw new Error("Windows CUDA Runtime receipt is stale, malformed or incomplete");
   }
   /** @type {Array<[string,import("node:fs").BigIntStats,string,number]>} */ const outputs = [];
   for (const [relative, expected] of Object.entries(outputFiles)) {
     const file = path.join(directory, ...relative.split("/")), saved = receipt.files[relative], actual = verifyDigest(file, "member", memberMaximumBytes);
-    if (!exactKeys(saved, ["kind", "bytes", "sha256", "source"]) || saved.kind !== "file" || saved.bytes !== expected.bytes || saved.sha256 !== expected.sha256 ||
-        !exactKeys(saved.source, ["archiveSha256", "member"]) || saved.source.archiveSha256 !== selected.archive.sha256 || saved.source.member !== expected.member ||
+    if (!saved || !hasExactBuildFields(saved, ["kind", "bytes", "sha256", "source"]) || saved.kind !== "file" || saved.bytes !== expected.bytes || saved.sha256 !== expected.sha256 ||
+        !hasExactBuildFields(saved.source, ["archiveSha256", "member"]) || saved.source.archiveSha256 !== selected.archive.sha256 || saved.source.member !== expected.member ||
         actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256 || writableMode(fs.lstatSync(file, {bigint: true}))) {
       throw new Error("Windows CUDA Runtime output differs from its pinned member: " + relative);
     }

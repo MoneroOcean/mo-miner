@@ -5,7 +5,7 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {isDeepStrictEqual} = require("node:util");
 const {validateWindowsControllerConfig, windowsToolEnvironment, vfsFiles, parseImports} = require("./build-native-windows-controller");
 const {verifyPreparedSdkSources, sdkSourceFiles, sdkSourceEnvironment} = require("./prepare-native-sdk-sources");
-const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
+const {fileHash, sourceInputs, verifySourceInputs, readBuildJson, readBuildJsonSnapshot, nativeBuildJobs} = require("./build-source-inputs");
 const {pins} = require("./native-dpcpp-pins"), {isStaticArchive} = require("./native-audit");
 const {dpcppEntries} = require("./native-compiler-isolation");
 const {windowsIntelRuleOverride} = require("./prepare-native-jit-toolchain");
@@ -24,7 +24,7 @@ const cmake = value => {if (value.includes("]==]")) {throw new Error("Invalid CM
 function windowsSourceJitInputs(receiptFile) {
   if (receiptFile === undefined) {return null;}
   if (!literal(receiptFile)) {throw new Error("Select an absolute isolated Windows source-JIT receipt");}
-  const receiptHash = fileHash(receiptFile), selected = readBuildJson(receiptFile), files = /** @type {Record<string, string>} */ ({[receiptFile]: receiptHash});
+  const {value: selected, sha256: receiptHash} = readBuildJsonSnapshot(receiptFile), files = /** @type {Record<string, string>} */ ({[receiptFile]: receiptHash});
   if (fileHash(receiptFile) !== receiptHash) {throw new Error("Windows source-JIT receipt changed during admission");}
   if (selected?.version !== 1 || selected.prefix !== "mom_dpcpp23_" || selected.buildOnly !== true || selected.executed !== false || selected.publicationQualified !== false ||
       !isDeepStrictEqual(selected.entryPoints, dpcppEntries) || !Array.isArray(selected.transformed) || selected.transformed.length < 50 || selected.transformed.length > 512 ||
@@ -109,7 +109,7 @@ function buildWindowsStaticSdk(sourcesFile, descriptorFile, sdk, cuda, output, e
   // Intel's direct-LLD rules never invoke the manifest wrapper. Do not require an unused
   // llvm-mt binary in the thin utilities cohort; preserve Clang's original platform rules.
   const intelHost = /Intel\(R\) oneAPI DPC\+\+\/C\+\+ Compiler/.test(hostVersion.stdout + hostVersion.stderr);
-  const plan = windowsStaticSdkPlan(roots, descriptor, sdk, cuda, output, Number(environment["MOM_BUILD_JOBS"] || "2"), sourceJit?.archive, intelHost);
+  const plan = windowsStaticSdkPlan(roots, descriptor, sdk, cuda, output, nativeBuildJobs(environment), sourceJit?.archive, intelHost);
   const {config} = plan;
   if (fs.existsSync(output) || !fs.statSync(path.dirname(output), {throwIfNoEntry: false})?.isDirectory()) {throw new Error("Select a new Windows SDK build output");}
   const target = path.join(fs.realpathSync(path.dirname(output)), path.basename(output));

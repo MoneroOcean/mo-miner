@@ -1,7 +1,7 @@
 "use strict";
 
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto"), {spawnSync} = require("node:child_process");
-const {fileHash} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash} = require("./build-source-inputs");
 const {isStaticArchive} = require("./native-audit");
 const dpcppEntries = Object.freeze(["addToJITConfiguration", "resetJITConfiguration", "materializeSpecConstants", "calculateHash", "compileSYCL", "destroyBinary"]);
 const COFF_TOOL_KEYS = Object.freeze(["llvmObjcopy", "llvmReadobj", "llvmNm"]);
@@ -467,7 +467,7 @@ function validateCoffOptions(value) {
     throw new Error("COFF isolation needs unique public C factory names");
   }
   const valueTools = options.tools;
-  if (!valueTools || typeof valueTools !== "object" || Array.isArray(valueTools) || Object.keys(valueTools).sort().join(",") !== COFF_TOOL_KEYS.slice().sort().join(",") ||
+  if (!hasExactBuildFields(valueTools, COFF_TOOL_KEYS) ||
       COFF_TOOL_KEYS.some(name => !coffAbsolutePath(/** @type {Record<string, unknown>} */ (valueTools)[name]))) {
     throw new Error("COFF isolation needs three absolute LLVM tools");
   }

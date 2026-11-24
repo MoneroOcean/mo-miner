@@ -6,14 +6,14 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const {spawnSync} = require("node:child_process");
-const {fileHash, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
+const {fileHash, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildJsonSnapshot, compilerIncludePaths, isBuildIncludeDirectory} = require("./build-source-inputs");
 const {compileNativeObjects} = require("./native-object-cache");
 
 /** Reuse only a completed Engineering generation whose sources, recipes, objects, archives
  * and consumed SDK headers still match. Reading old Makefiles alone cannot prove cache freshness.
  * @param {string} repo @param {string} cache @param {boolean} [portable] */
 function admitCpuCache(repo, cache, portable = false) {
-  const receipt = path.join(cache, ".mom-content-state.json"), generation = fileHash(receipt), state = readBuildJson(receipt);
+  const receipt = path.join(cache, ".mom-content-state.json"), {value: state, sha256: generation} = readBuildJsonSnapshot(receipt);
   if (state.schema !== 1) {throw new Error("Missing completed Engineering cache receipt");}
   // An output/source hash says nothing about the build CPU. Release admission needs the
   // completed portable profile; do not bless legacy or host-tuned objects by adding metadata.
@@ -100,23 +100,13 @@ function cpuCompileCommands(repo, output, flags, gpu, compiler = "icpx") {
 
 /** Include the bounded repository view plus every existing selected include directory.
  * Relative include flags resolve from the same repository cwd used by the cache runner.
- * @param {ReturnType<typeof cpuCompileCommands>} commands @param {string} repo @param {string} output */
+ * @param {{args: string[]}[]} commands @param {string} repo @param {string} output */
 function cpuIncludeRoots(commands, repo, output) {
-  const roots = new Set([path.resolve(repo), path.resolve(output)]), separate = new Set(["-I", "-isystem", "-iquote", "-idirafter"]);
+  const roots = new Set([path.resolve(repo), path.resolve(output)]);
   for (const {args} of commands) {
-    for (let index = 0; index < args.length; ++index) {
-      const option = args[index] || "";
-      let selected;
-      if (separate.has(option)) {selected = args[++index] || "";}
-      if (!selected && option.startsWith("-I") && option.length > 2) {selected = option.slice(2);}
-      if (!selected && option.startsWith("-isystem") && option.length > 8) {selected = option.slice(8);}
-      if (!selected && option.startsWith("-iquote") && option.length > 7) {selected = option.slice(7);}
-      if (!selected && option.startsWith("-idirafter") && option.length > 10) {selected = option.slice(10);}
-      if (!selected) {continue;}
+    for (const selected of compilerIncludePaths(args)) {
       const root = path.resolve(repo, selected);
-      try {if (fs.statSync(root).isDirectory()) {roots.add(root);}} catch (error) {
-        if (!(error instanceof Error) || !("code" in error) || !["ENOENT", "ENOTDIR"].includes(String(error.code))) {throw error;}
-      }
+      if (isBuildIncludeDirectory(root)) {roots.add(root);}
     }
   }
   return [...roots];

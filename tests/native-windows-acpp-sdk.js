@@ -257,10 +257,13 @@ test.describe("Windows AdaptiveCpp static host archive recipe", {skip: process.p
     const commandFile = path.join(f.root, "compile_commands.json"), output = path.join(build, "runtime.obj");
     const command = `"${compiler}" --target=x86_64-pc-windows-msvc "/MT" "/EHsc" "/GR" -c "${cpp}" -o "runtime.obj"`;
     fs.writeFileSync(commandFile, JSON.stringify([{directory: build, file: path.relative(build, cpp), output: "runtime.obj", command}]));
-    assert.equal(auditAcppCompileCommands(commandFile, source, build, compiler).commands, 1);
+    assert.deepEqual(auditAcppCompileCommands(commandFile, source, build, compiler), {
+      receipt: {path: commandFile, sha256: fileHash(commandFile), commands: 1},
+      objects: ["runtime.obj"],
+    });
     fs.writeFileSync(commandFile, JSON.stringify([{directory: build, file: cpp, output,
-      command: command + " /EHsc /EHs /GR"}]));
-    assert.equal(auditAcppCompileCommands(commandFile, source, build, compiler).commands, 1);
+      command: command + " /EHsc /EHs /GR"}]) + " ".repeat(8 << 20));
+    assert.equal(auditAcppCompileCommands(commandFile, source, build, compiler).receipt.commands, 1);
     for (const bad of [command.replace("/MT", "/MD"), command.replace("/MT", "/MTd"), command.replace("/EHsc", ""),
       command.replace("/EHsc", "/EHsc /EH-"), command.replace("/GR", ""), command.replace("/GR", "/GR-"),
       command + " -fopenmp", command + " -fopenmp=libomp", command + " -imsvc " + f.root, command + " -isystem " + f.root,

@@ -4,7 +4,7 @@
 // archive or edits from an Engineering checkout. Source preparation needs no VM or GPU.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {pins} = require("./native-dpcpp-pins");
-const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, buildPathsOverlap, fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
 const {sdkSourceEnvironment} = require("./build-environment");
 const {createHash} = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
@@ -78,7 +78,7 @@ function sdkSourceRecipe(target) {
  * @param {unknown} input @param {string} output @param {Record<string, unknown>} [expected] */
 function validateSourceRoots(input, output, expected = components) {
   if (!input || typeof input !== "object" || Array.isArray(input) ||
-      Object.keys(input).sort().join(",") !== Object.keys(expected).sort().join(",") || !safe(output) || fs.existsSync(output)) {
+      !hasExactBuildFields(input, Object.keys(expected)) || !safe(output) || fs.existsSync(output)) {
     throw new Error("Select all " + Object.keys(expected).length + " pinned SDK repositories and a new absolute output directory");
   }
   const target = path.join(fs.realpathSync(path.dirname(output)), path.basename(output));
@@ -86,8 +86,7 @@ function validateSourceRoots(input, output, expected = components) {
   for (const [name, value] of Object.entries(input)) {
     if (!safe(value) || !fs.lstatSync(value).isDirectory()) {throw new Error("SDK source root must be a real directory: " + name);}
     const root = fs.realpathSync(value);
-    const related = (/** @type {string} */ a, /** @type {string} */ b) => {const relative = path.relative(a, b); return !relative || (!path.isAbsolute(relative) && !relative.startsWith(".." + path.sep) && relative !== "..");};
-    if (related(root, target) || related(target, root)) {throw new Error("SDK output overlaps a selected source root");}
+    if (buildPathsOverlap(root, target)) {throw new Error("SDK output overlaps a selected source root");}
     roots[name] = root;
   }
   return roots;
@@ -256,7 +255,7 @@ function verifyPreparedSdkSources(file, target) {
   const receipt = readBuildJson(file);
   if (receipt?.version !== 2 || receipt.target !== target || receipt.status !== "PASS" || receipt.compiled !== false ||
       receipt.buildOnly !== true || receipt.publicationQualified !== false ||
-      !receipt.prepared || Object.keys(receipt.prepared).sort().join(",") !== Object.keys(selectedComponents).sort().join(",")) {throw new Error("Incomplete or wrong-target SDK source cohort");}
+      !receipt.prepared || !hasExactBuildFields(receipt.prepared, Object.keys(selectedComponents))) {throw new Error("Incomplete or wrong-target SDK source cohort");}
   verifySourceInputs(receipt.recipe, sdkSourceRecipe(target), "SDK source recipe");
   for (const [name, component] of Object.entries(selectedComponents)) {
     const selected = receipt.prepared[name];

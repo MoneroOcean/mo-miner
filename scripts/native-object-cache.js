@@ -7,7 +7,7 @@
 const fs = require("node:fs"), path = require("node:path");
 const crypto = require("node:crypto");
 const {spawnSync} = require("node:child_process");
-const {fileHash, sortedBuildEntries, buildDependencies} = require("./build-source-inputs");
+const {containsBuildPath, fileHash, sortedBuildEntries, buildDependencies} = require("./build-source-inputs");
 
 const MAX_COMMANDS = 65536, MAX_ARGS = 65536, MAX_FILES = 200000, MAX_JSON = 8 << 20;
 const generatedSuffix = /\.(?:c|cc|cpp|cxx|cuh|h|hh|hpp|hxx|inc|inl|ipp)$/i;
@@ -101,12 +101,6 @@ function ensureDirectory(file, label) {
   return resolved;
 }
 
-/** @param {string} root @param {string} file */
-function contained(root, file) {
-  const relative = path.relative(root, file);
-  return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));
-}
-
 /** Mirror every source-like file in this fresh, isolated output so include probes such as
  * __has_include observe the same namespace for every object in the batch. Never follow links. */
 /** @param {string} output @returns {Array<{file: string, relative: string, sha256: string}>} */
@@ -149,9 +143,9 @@ function includeMembership(roots, output, generated, repo) {
   for (const selected of [...new Set(roots)].sort()) {
     if (typeof selected !== "string" || !path.isAbsolute(selected) || /[\0\r\n]/.test(selected)) {throw new Error("Invalid native include root");}
     const root = path.resolve(selected);
-    if (contained(output, root)) {
+    if (containsBuildPath(output, root)) {
       const rel = path.relative(output, root);
-      const names = generated.filter(file => contained(root, file)).map(file => path.relative(root, file).split(path.sep).join("/")).sort();
+      const names = generated.filter(file => containsBuildPath(root, file)).map(file => path.relative(root, file).split(path.sep).join("/")).sort();
       result.push({root: rel ? "output/" + rel.split(path.sep).join("/") : "output", entries: names.map(name => [name, "file"])});
       continue;
     }
@@ -380,8 +374,8 @@ function writeFreshFile(file, content) {
 /** @param {string} file @param {string} output @param {string} repo */
 function logicalPath(file, output, repo) {
   const resolved = path.resolve(file);
-  if (contained(output, resolved)) {return "output/" + path.relative(output, resolved).split(path.sep).join("/");}
-  if (contained(repo, resolved)) {return "repo/" + path.relative(repo, resolved).split(path.sep).join("/");}
+  if (containsBuildPath(output, resolved)) {return "output/" + path.relative(output, resolved).split(path.sep).join("/");}
+  if (containsBuildPath(repo, resolved)) {return "repo/" + path.relative(repo, resolved).split(path.sep).join("/");}
   return "external/" + fs.realpathSync(resolved);
 }
 
@@ -461,7 +455,7 @@ function compileNativeObjects(options) {
   if (options.keyFiles !== undefined && (!Array.isArray(options.keyFiles) || options.keyFiles.length > MAX_FILES)) {throw new Error("Invalid native key-file list");}
   if (options.jobs !== undefined && (!Number.isSafeInteger(options.jobs) || options.jobs < 1 || options.jobs > 256)) {throw new Error("Invalid native Ninja job count");}
   if ((options.finalize === true) !== Array.isArray(options.liveObjects) || (options.liveObjects && options.liveObjects.length > MAX_COMMANDS) ||
-      (options.liveObjects || []).some(file => typeof file !== "string" || !path.isAbsolute(file) || !contained(output, path.resolve(file)))) {
+      (options.liveObjects || []).some(file => typeof file !== "string" || !path.isAbsolute(file) || !containsBuildPath(output, path.resolve(file)))) {
     throw new Error("Finalizing native cache requires the complete live object list inside the fresh output");
   }
   // Candidate/container paths identify the producer invocation, not the compile. Strip them
@@ -483,7 +477,7 @@ function compileNativeObjects(options) {
   const nativeCacheParent = path.join(repo, "build", "cache", "native-objects", "v1");
   ensureDirectory(nativeCacheParent, "Native object cache path");
   const cacheRoot = ensureDirectory(path.join(nativeCacheParent, ...options.namespace.split("/")), "Native object cache namespace");
-  if (contained(cacheRoot, output) || contained(output, cacheRoot)) {throw new Error("Native object cache and fresh output must be separate");}
+  if (containsBuildPath(cacheRoot, output) || containsBuildPath(output, cacheRoot)) {throw new Error("Native object cache and fresh output must be separate");}
   const release = acquireLock(cacheRoot);
   /** @type {string | null} */
   let scratch = null;
@@ -498,10 +492,10 @@ function compileNativeObjects(options) {
     const declaredGenerated = new Set();
     for (const entry of commands) {
       if (!entry || typeof entry.source !== "string" || !path.isAbsolute(entry.source)) {throw new Error("Native command needs an absolute source");}
-      if (contained(output, path.resolve(entry.source))) {declaredGenerated.add(path.resolve(entry.source));}
+      if (containsBuildPath(output, path.resolve(entry.source))) {declaredGenerated.add(path.resolve(entry.source));}
       if (entry.generatedInputs !== undefined && (!Array.isArray(entry.generatedInputs) || entry.generatedInputs.length > MAX_FILES)) {throw new Error("Invalid generated native input list");}
       for (const input of entry.generatedInputs || []) {
-        if (typeof input !== "string" || !path.isAbsolute(input) || !contained(output, path.resolve(input)) || !generatedSuffix.test(input)) {
+        if (typeof input !== "string" || !path.isAbsolute(input) || !containsBuildPath(output, path.resolve(input)) || !generatedSuffix.test(input)) {
           throw new Error("Generated native inputs must be declared source-like files inside the fresh output");
         }
         declaredGenerated.add(path.resolve(input));
@@ -544,7 +538,7 @@ function compileNativeObjects(options) {
       if (typeof entry.command !== "string" || !Array.isArray(entry.args) || entry.args.length > MAX_ARGS ||
           entry.args.some(arg => typeof arg !== "string" || /[\0\r\n]/.test(arg) || Buffer.byteLength(arg) > (1 << 20)) ||
           !path.isAbsolute(entry.object) || !path.isAbsolute(entry.depfile) ||
-          !contained(output, path.resolve(entry.object)) || !contained(output, path.resolve(entry.depfile)) ||
+          !containsBuildPath(output, path.resolve(entry.object)) || !containsBuildPath(output, path.resolve(entry.depfile)) ||
           path.resolve(entry.object) === path.resolve(entry.depfile) ||
           (entry.timeout !== undefined && (!Number.isSafeInteger(entry.timeout) || entry.timeout < 1 || entry.timeout > 3600000))) {
         throw new Error("Malformed native compile command");
@@ -557,7 +551,7 @@ function compileNativeObjects(options) {
       const ext = path.extname(object) || ".o", cachedObject = path.join(slot, "object" + ext), cachedDepfile = path.join(slot, "dependencies.d"), stateFile = path.join(slot, "state.json");
       const commandGenerated = generatedEntries.filter(value => path.resolve(value.file) === source ||
         (entry.generatedInputs || []).map(file => path.resolve(file)).includes(path.resolve(value.file)));
-      const stableSource = !cacheDisabled && contained(output, source) ? path.join(generatedRoot, path.relative(output, source)) : source;
+      const stableSource = !cacheDisabled && containsBuildPath(output, source) ? path.join(generatedRoot, path.relative(output, source)) : source;
       const compileObject = cacheDisabled ? object : cachedObject, compileDepfile = cacheDisabled ? depfile : cachedDepfile;
       const args = cacheDisabled ? entry.args.slice() : entry.args.map(arg => {
         let value = replacePath(arg, entry.object, compileObject);
@@ -586,7 +580,7 @@ function compileNativeObjects(options) {
             const dependenciesCurrent = deps.every(item => {
               if (!item || typeof item.path !== "string" || typeof item.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(item.sha256)) {return false;}
               const dependency = item.path.startsWith("output/") ? path.resolve(output, item.path.slice("output/".length)) : item.path;
-              if (!path.isAbsolute(dependency) || (item.path.startsWith("output/") && !contained(output, dependency))) {return false;}
+              if (!path.isAbsolute(dependency) || (item.path.startsWith("output/") && !containsBuildPath(output, dependency))) {return false;}
               return fileHash(regularFile(dependency, "Native dependency")) === item.sha256;
             });
             if (!dependenciesCurrent) {deps = [];}
@@ -692,9 +686,9 @@ function compileNativeObjects(options) {
         for (const dep of [...new Set(rawDeps)]) {
           if (typeof dep !== "string" || !path.isAbsolute(dep)) {throw new Error("Resolved native dependencies must be absolute paths");}
           let real = regularFile(dep, "Native dependency");
-          if (contained(generatedRoot, real)) {real = path.join(output, path.relative(generatedRoot, real));}
+          if (containsBuildPath(generatedRoot, real)) {real = path.join(output, path.relative(generatedRoot, real));}
           if (real === item.source || real === item.stableSource || real === item.object || real === item.cachedObject || real === item.depfile || real === item.cachedDepfile) {continue;}
-          if (contained(output, real)) {
+          if (containsBuildPath(output, real)) {
             const rel = path.relative(output, real).split(path.sep).join("/");
             if (!generated.has(real)) {throw new Error("Undeclared generated native dependency: " + real);}
             const hash = fileHash(regularFile(real, "Generated native dependency"));
@@ -703,7 +697,7 @@ function compileNativeObjects(options) {
             dependencies.push({path: "output/" + rel, sha256: hash});
             continue;
           }
-          if (contained(cacheRoot, real)) {
+          if (containsBuildPath(cacheRoot, real)) {
             throw new Error("Undeclared cache-local native dependency: " + real);
           }
           if (keyFilePaths.has(real)) {continue;}

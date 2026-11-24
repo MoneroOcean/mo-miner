@@ -4,7 +4,8 @@
 // Engineering keeps its addon build; this producer must not discover or execute any device.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto"), {spawnSync} = require("node:child_process");
 const {fileHash, nativeSourceInputs, verifySourceInputs, buildFileInputs, completeBuildInputs} = require("./build-source-inputs");
-const {syclSources, dpcppGpuFlags, dpcppUniquePrefixFlags, dpcppSourceFlags, dpcppDeviceLinkFlags, portableOpenclTranslatorFlags, nativeIncludeRoots} = require("./native-gpu-build");
+const {syclSources, dpcppGpuFlags, dpcppUniquePrefixFlags, dpcppSourceFlags, dpcppDeviceLinkFlags,
+  portableOpenclTranslatorFlags, nativeIncludeRoots, pearlhashSource} = require("./native-gpu-build");
 const {validateDirectory} = require("./check-portable-opencl");
 const {sdkIdentity} = require("./native-dpcpp-pins");
 const {linuxSysrootFlags, requireLinuxSysroot} = require("./native-linux-sysroot");
@@ -14,7 +15,7 @@ const {compileNativeObjects} = require("./native-object-cache");
 
 const oneapiMixedFrontendSources = Object.freeze([
   "sycl/beamhash3/beamhash3.cpp", "sycl/c29/c29.cpp", "sycl/c30/c30.cpp", "sycl/etchash/etchash.cpp",
-  "sycl/kawpow/kawpow.cpp", "sycl/nexapow/nexapow.cpp", "sycl/nexapow/validation.cpp", "sycl/octopus/octopus.cpp", "sycl/pearlhash/pearlhash.cpp",
+  "sycl/kawpow/kawpow.cpp", "sycl/nexapow/nexapow.cpp", "sycl/nexapow/validation.cpp", "sycl/octopus/octopus.cpp", pearlhashSource,
   "sycl/xelishashv3/xelishashv3.cpp", "sycl/zelhash/zelhash.cpp",
 ]);
 const oneapiCompileHelpers = Object.freeze(["clang", "clang-offload-bundler", "sycl-post-link", "llvm-spirv", "clang-offload-wrapper",
@@ -133,7 +134,7 @@ function dpcppCompileCommands(plan) {
     const compiler = c ? path.join(plan.sdk, "bin/clang") : sourceCompiler(plan.compiler, file, plan.profile, plan.oneapiCompiler);
     const generatedInputs = [];
     if (file === "sycl/kawpow/kawpow.cpp") {generatedInputs.push(path.join(plan.output, "kawpow-jit-resources.inc"));}
-    if (plan.cuda && !plan.images && file === "sycl/pearlhash/pearlhash.cpp") {generatedInputs.push(path.join(plan.output, "nvrtc-headers.inc"));}
+    if (plan.cuda && !plan.images && file === pearlhashSource) {generatedInputs.push(path.join(plan.output, "nvrtc-headers.inc"));}
     return {command: compiler, args, source: path.join(plan.repo, file), object, depfile, generatedInputs,
       timeout: 300000, sourceFlags};
   });

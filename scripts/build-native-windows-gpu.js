@@ -4,8 +4,9 @@
 // supplies both its device image and its retained host half; never recompile that half with
 // a different compiler-generated specialization prefix. This builder does not execute GPUs.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
-const {fileHash, nativeSourceInputs, verifySourceInputs, buildFileInputs, readBuildJson, buildDependencies} = require("./build-source-inputs");
-const {syclSources, gpuProfile, dpcppGpuFlags, dpcppUniquePrefixFlags, dpcppSourceFlags, portableOpenclTranslatorFlags, nativeIncludeRoots, writeAdaptiveCppUmbrella} = require("./native-gpu-build");
+const {hasExactBuildFields, fileHash, nativeSourceInputs, verifySourceInputs, buildFileInputs, readBuildJsonSnapshot, buildDependencies} = require("./build-source-inputs");
+const {syclSources, gpuProfile, dpcppGpuFlags, dpcppUniquePrefixFlags, dpcppSourceFlags, portableOpenclTranslatorFlags,
+  nativeIncludeRoots, writeAdaptiveCppUmbrella, adaptiveCppSourceFlags, pearlhashSource} = require("./native-gpu-build");
 const {admitSyclSource} = require("./native-sycl-inputs");
 const {windowsDeviceLinkArgs, transformWindowsWrapper, extractSpecializationIds, verifyWindowsHostRetention} = require("./native-windows-wrapper");
 const {dependencyHashes, absolutePath, vfsFiles} = require("./build-native-windows-controller");
@@ -50,7 +51,7 @@ function validateWindowsGpuConfig(value) {
   if (!config || typeof config !== "object" || config.version !== 1 ||
       Object.keys(config).some(key => !["version", "profile", "tools", "includeRoots", "overlay", "compilerRoot", "cuda", "acpp"].includes(key)) ||
       !["oneapi", "dpcpp", "dpcpp-opencl", "acpp-cuda", "acpp-hip"].includes(config.profile)) {throw new Error("Invalid Windows GPU descriptor/profile");}
-  if (!config.tools || Object.keys(config.tools).sort().join(",") !== toolKeys.slice().sort().join(",") ||
+  if (!config.tools || !hasExactBuildFields(config.tools, toolKeys) ||
       Object.values(config.tools).some(file => !absolutePath(file))) {throw new Error("Windows GPU descriptor needs five absolute tool paths");}
   if (!absolutePath(config.overlay) || !Array.isArray(config.includeRoots) || !config.includeRoots.length || config.includeRoots.length > 32 ||
       config.includeRoots.some(file => !absolutePath(file)) || new Set(config.includeRoots).size !== config.includeRoots.length) {throw new Error("Invalid Windows GPU include roots/overlay");}
@@ -58,10 +59,11 @@ function validateWindowsGpuConfig(value) {
     throw new Error("Windows Intel compilerRoot is valid only as an absolute oneAPI compiler root");
   }
   if (config.profile === "dpcpp" || config.profile === "acpp-cuda") {
-    if (!config.cuda || !["headers,nvrtcInclude,sdk", "images,sdk"].includes(Object.keys(config.cuda).sort().join(",")) || Object.values(config.cuda).some(file => !absolutePath(file))) {throw new Error("Windows DPC++ needs explicit CUDA SDK and image bundle or NVRTC headers");}
+    if (!config.cuda || (!hasExactBuildFields(config.cuda, ["headers", "nvrtcInclude", "sdk"]) && !hasExactBuildFields(config.cuda, ["images", "sdk"])) || Object.values(config.cuda).some(file => !absolutePath(file))) {throw new Error("Windows DPC++ needs explicit CUDA SDK and image bundle or NVRTC headers");}
   } else if (config.cuda !== undefined) {throw new Error("CUDA inputs are not valid for this Windows GPU profile");}
   if (config.profile.startsWith("acpp-")) {
-    if (!config.acpp || !["generatedInclude,plugin,source", "generatedInclude,git,plugin,source"].includes(Object.keys(config.acpp).sort().join(",")) ||
+    const keys = ["generatedInclude", "plugin", "source"];
+    if (!config.acpp || (!hasExactBuildFields(config.acpp, keys) && !hasExactBuildFields(config.acpp, [...keys, "git"])) ||
         Object.values(config.acpp).some(file => !absolutePath(file))) {throw new Error("Windows AdaptiveCpp needs explicit source, generatedInclude and plugin paths");}
   } else if (config.acpp !== undefined) {throw new Error("AdaptiveCpp inputs are not valid for this Windows GPU profile");}
   return config;
@@ -236,11 +238,7 @@ function windowsGpuSourceFlags(config, file, wrapper) {
     return [...dpcppSourceFlags(wrapper, file, config.profile), ...prefix];
   }
   if (config.profile !== "acpp-cuda" && config.profile !== "acpp-hip") {return [];}
-  return [
-    ...(config.profile === "acpp-cuda" && ["sycl/cn-gpu/cn-gpu.cpp", "sycl/pearlhash/pearlhash.cpp"].includes(file) ? ["-DMOM_SYCL_HAS_CUDA"] : []),
-    ...(config.profile === "acpp-cuda" && !config.cuda?.images && file === "sycl/pearlhash/pearlhash.cpp" ? ["-DMOM_EMBEDDED_NVRTC_HEADERS"] : []),
-    ...(file.startsWith("sycl/") && file.endsWith(".cpp") ? ["-mllvm", "-acpp-sscp-hcf-object-id-namespace=" + config.profile] : []),
-  ];
+  return adaptiveCppSourceFlags(file, config.profile.slice(5), Boolean(config.cuda?.images));
 }
 
 /** Preserve the established host/device source split, flags and generated-header dependencies.
@@ -259,7 +257,7 @@ function windowsGpuCompileCommands(plan) {
     const generatedInputs = [];
     if (plan.config.acpp && file.startsWith("sycl/") && !c) {generatedInputs.push(path.join(plan.output, "sycl/sycl.hpp"));}
     if (!plan.config.acpp && file === "sycl/kawpow/kawpow.cpp") {generatedInputs.push(path.join(plan.output, "kawpow-jit-resources.inc"));}
-    if (plan.config.cuda && !plan.config.cuda.images && file === "sycl/pearlhash/pearlhash.cpp") {generatedInputs.push(path.join(plan.output, "nvrtc-headers.inc"));}
+    if (plan.config.cuda && !plan.config.cuda.images && file === pearlhashSource) {generatedInputs.push(path.join(plan.output, "nvrtc-headers.inc"));}
     return {command: c ? plan.config.tools.clangC : plan.config.tools.clang,
       args: [...flags, ...hostRuntime, ...strict, "-MD", "-MV", "-MF", depfile, "-c", path.join(plan.repo, file), "-o", object],
       source: path.join(plan.repo, file), object, depfile, generatedInputs,
@@ -287,7 +285,7 @@ function buildNativeWindowsGpu(configFile, output, environment = process.env) {
   if (!absolutePath(configFile) || !absolutePath(output) || fs.existsSync(output)) {throw new Error("Select absolute descriptor and new Windows GPU output paths");}
   const parent = fs.realpathSync(path.dirname(output)), relative = path.relative(fs.realpathSync(repo), path.join(parent, path.basename(output)));
   if (!relative || (!relative.startsWith(".." + path.sep) && !path.isAbsolute(relative))) {throw new Error("Windows GPU output must be outside the maintained repository");}
-  const configSha256 = fileHash(configFile), config = validateWindowsGpuConfig(readBuildJson(configFile));
+  const {value, sha256: configSha256} = readBuildJsonSnapshot(configFile), config = validateWindowsGpuConfig(value);
   const cuda = config.cuda, acpp = config.acpp;
   // A Windows compiler SDK need not contain Git. Never rely on the restricted compiler PATH
   // to select the executable that validates the pinned AdaptiveCpp checkout.

@@ -4,7 +4,7 @@
 // original opaque dispatch factory each. Driver thunks derive signatures from official headers.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
+const {fileHash, sourceInputs, verifySourceInputs, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {verifyPreparedSdkSources, sdkSourceFiles, sdkSourceEnvironment} = require("./prepare-native-sdk-sources");
 const {compileCommand, dependencyHashes, validateWindowsControllerConfig, windowsToolEnvironment, parseImports} = require("./build-native-windows-controller");
 const {windowsResponseFile} = require("./native-windows-application");
@@ -74,9 +74,13 @@ function windowsRuntimeLinks(artifacts, adapters, driverObjects, jitLibraries = 
  * @param {string} sdkFile @param {string} descriptorFile @param {string} cuda */
 function adapterSdkInputs(sdkFile, descriptorFile, cuda) {
   if (![sdkFile, descriptorFile, cuda].every(file => path.isAbsolute(file) && !/[\r\n\0]/.test(file))) {throw new Error("Windows adapters need absolute SDK/descriptor/CUDA inputs");}
-  const sdk = readBuildJson(sdkFile), config = validateWindowsControllerConfig(readBuildJson(descriptorFile));
+  const {value: sdk, sha256: sdkSha256} = readBuildJsonSnapshot(sdkFile),
+    descriptorSha256 = sdk?.fingerprints?.[descriptorFile], message = "Incomplete original Windows SDK build receipt";
   if (sdk?.version !== 1 || sdk.buildOnly !== true || sdk.executed !== false || sdk.publicationQualified !== false ||
-      !Array.isArray(sdk.artifacts) || sdk.artifacts.length !== 15 || sdk.fingerprints?.[descriptorFile] !== fileHash(descriptorFile)) {throw new Error("Incomplete original Windows SDK build receipt");}
+      !Array.isArray(sdk.artifacts) || sdk.artifacts.length !== 15 ||
+      typeof descriptorSha256 !== "string" || !/^[0-9a-f]{64}$/.test(descriptorSha256)) {throw new Error(message);}
+  const {value: descriptor} = readBuildJsonSnapshot(descriptorFile, undefined, {sha256: descriptorSha256, message});
+  const config = validateWindowsControllerConfig(descriptor);
   const source = verifyPreparedSdkSources(sdk.sourcesFile, "windows");
   verifySourceInputs(sdk.recipe, sourceInputs(repo, [], Object.keys(sdk.recipe.graph)), "Windows SDK producer");
   const paths = new Map();
@@ -92,7 +96,7 @@ function adapterSdkInputs(sdkFile, descriptorFile, cuda) {
     const jit = windowsSourceJitInputs(sdk.sourceJit.receiptFile);
     if (!jit || jit.archive !== sdk.sourceJit.archive || !isDeepStrictEqual(jit.libraries, sdk.sourceJit.libraries)) {throw new Error("Windows SDK source-JIT selection changed");}
   }
-  return {sdk, config, source, paths};
+  return {sdk, config, source, paths, sdkSha256, descriptorSha256};
 }
 
 /** Build-only adaptation of the original static SDK, never driver discovery or execution.
@@ -116,7 +120,8 @@ function prepareWindowsAdapters(sdkFile, descriptorFile, cuda, output, environme
     "scripts/native-coff-archive.js", "scripts/native-compiler-isolation.js", "scripts/native-cuda-adapter.js", "scripts/native-windows-driver.js", "scripts/native-windows-application.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
     "tests/native/dpcpp-static/cuda-factory.cpp", "tests/native/dpcpp-static/level-zero-v2-factory.cpp", "tests/reference/native-dpcpp-static.cpp",
     "tests/native/dpcpp-static/static-windows.h", "runtime/system-driver.h", "runtime/windows-cuda-driver.h"];
-  const recipe = sourceInputs(repo, [], leaves), inputs = Object.fromEntries([sdkFile, descriptorFile, config.tools.clangCl, config.tools.llvmReadobj, path.join(bin, "llvm-lib"), ...Object.values(tools)].map(file => [file, fileHash(file)]));
+  const recipe = sourceInputs(repo, [], leaves), inputs = {[sdkFile]: before.sdkSha256, [descriptorFile]: before.descriptorSha256,
+    ...Object.fromEntries([config.tools.clangCl, config.tools.llvmReadobj, path.join(bin, "llvm-lib"), ...Object.values(tools)].map(file => [file, fileHash(file)]))};
   fs.mkdirSync(output);
   /** @param {string} command @param {string[]} args @param {string} label */
   function run(command, args, label) {

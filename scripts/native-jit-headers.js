@@ -4,7 +4,7 @@
 const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");
 const {gzipSync} = require("node:zlib");
 const nativeResources = require("./native-resources");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {fileHash, readBuildJsonSnapshot} = require("./build-source-inputs");
 const maxBytes = 64 << 20, maxFiles = 16384;
 const cudaRequiredHeaders = ["cuda_runtime.h", "cute/tensor.hpp", "cuda/std/cstdint"];
 /** @param {unknown} name */
@@ -114,7 +114,9 @@ function cudaHeaderResources(inputs) {
 function cudaHeaderInputs(file) {
   if (!path.isAbsolute(file)) {throw new Error("CUDA JIT header pack must be absolute");}
   if (!fs.statSync(file).isFile()) {throw new Error("CUDA JIT header pack is not a regular file");}
-  const metadata = file + ".json", metadataSha256 = fileHash(metadata), manifest = readBuildJson(metadata), sha256 = fileHash(file);
+  const metadata = file + ".json";
+  if (!fs.statSync(metadata).isFile()) {throw new Error("CUDA JIT header metadata is not a regular file");}
+  const {value: manifest, sha256: metadataSha256} = readBuildJsonSnapshot(metadata, 8 << 20), sha256 = fileHash(file);
   if (!manifest || !Array.isArray(manifest.requiredHeaders) || manifest.requiredHeaders.length !== cudaRequiredHeaders.length ||
       !cudaRequiredHeaders.every(name => manifest.requiredHeaders.includes(name)) || manifest.sourceSha256 !== sha256 ||
       !Number.isSafeInteger(manifest.count) || manifest.count < 3 || manifest.count > maxFiles ||

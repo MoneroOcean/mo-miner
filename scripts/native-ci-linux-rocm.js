@@ -4,7 +4,7 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {createHash} = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
 const {canonicalExecutable, ciBuildJobs, hasExactKeys, runNode} = require("./native-ci-job");
-const {fileHash, readBuildJson, readBuildText, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {containsBuildPath, fileHash, readBuildJson, readBuildJsonSnapshot, readBuildText, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {gitSourceComponents} = require("./fetch-native-sdk-sources");
 const {capturePackageCopyright} = require("./prepare-native-gnu-headers");
 const {sdkSourceEnvironment} = require("./build-environment");
@@ -149,12 +149,7 @@ function buildAcppCudaHipSdk(paths) {
   runNode(command.script, command.args, buildEnv, 45 * 60 * 1000);
   const admitted = auditAcppCudaHipSdk(state, tools, externalDpcppPins.manifestSha256);
   const evidenceParent = fs.realpathSync(paths.runnerTemp), sdkRoot = fs.realpathSync(state.sdkRoot);
-  /** @param {string} root @param {string} child */
-  const contains = (root, child) => {
-    const relative = path.relative(root, child);
-    return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));
-  };
-  if (contains(sdkRoot, evidenceParent)) {
+  if (containsBuildPath(sdkRoot, evidenceParent)) {
     throw new Error("ACPP CUDA/HIP regression evidence must stay outside the packaged SDK");
   }
   const evidence = fs.mkdtempSync(path.join(evidenceParent, "native-acpp-cuda-hip-sycl-proof-")),
@@ -732,9 +727,9 @@ function auditRocmHostNoticeSources(state) {
       !manifestStat?.isFile() || manifestStat.isSymbolicLink() || fs.realpathSync(manifestFile) !== manifestFile || manifestStat.size > (1 << 20)) {
     throw new Error("ROCm notice-source receipt or manifest is not a bounded canonical file");
   }
-  const record = /** @type {RocmNoticeReceipt} */ (readBuildJson(recordFile)),
-    manifest = /** @type {RocmNoticeManifest} */ (readBuildJson(manifestFile)), expectedPackages = rocmHostNoticeRows(record),
-    receiptHash = fileHash(recordFile);
+  const {value: parsedRecord, sha256: receiptHash} = readBuildJsonSnapshot(recordFile),
+    record = /** @type {RocmNoticeReceipt} */ (parsedRecord),
+    manifest = /** @type {RocmNoticeManifest} */ (readBuildJson(manifestFile)), expectedPackages = rocmHostNoticeRows(record);
   if (!hasExactKeys(manifest, ["format", "completeNativeNotices", "runtimeReceipt", "packages", "sourceLicense"]) ||
       manifest.format !== "mom-linux-rocm-notice-sources-v1" || manifest.completeNativeNotices !== false ||
       !isDeepStrictEqual(manifest.runtimeReceipt, {file: "runtime/result.json", sha256: receiptHash}) ||

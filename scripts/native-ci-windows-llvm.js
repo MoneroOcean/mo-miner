@@ -4,7 +4,7 @@
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
 const {appendWorkflowOutputs, ciBuildJobs, ciSuffix, hasExactKeys, runNode, runNodeProcessGroup} = require("./native-ci-job");
-const {fileHash, readBuildJson, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, containsBuildPath, fileHash, readBuildBytes, readBuildJson, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {verifyWindowsHostSdkArchives, windowsHostSdkCatalog} = require("./fetch-native-sdk-sources");
 const {windowsControllerHandoffInputs, windowsLocalControllerHandoffInputs} = require("./native-windows-controller-handoff");
 const {safeRelative: safeWindowsSdkRelative, defaultWindowsNativeLibraryPolicy} = require("./prepare-native-windows-sdk");
@@ -19,6 +19,27 @@ const repo = path.resolve(__dirname, "..");
 const windowsHostSdkArchiveMaxMs = 20 * 60 * 1000, windowsHostSdkPackageReserveMs = 4 * 60 * 1000,
   windowsHostSdkComposeReserveMs = 12 * 60 * 1000, windowsHostSdkMaxJobMs = 60 * 60 * 1000;
 
+/** Derive the same-run paths for host-SDK producers and admission checks.
+ * @param {string} runnerTemp @param {string} suffix */
+function windowsHostSdkPaths(runnerTemp, suffix) {
+  const outputName = "native-windows-host-sdk-" + suffix, workName = "mom-" + outputName,
+    workRoot = path.join(runnerTemp, workName), archiveName = "archives";
+  return {workName, outputName, workRoot, archiveName, archiveRoot: path.join(workRoot, archiveName),
+    sdkOutput: path.join(workRoot, outputName), metadataTar: path.join(runnerTemp, outputName + "-metadata.tar")};
+}
+
+/** @param {string} runnerTemp @param {string} suffix @param {number | string} deadline */
+function windowsHostSdkEnvironment(runnerTemp, suffix, deadline) {
+  const paths = windowsHostSdkPaths(runnerTemp, suffix);
+  return {
+    MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH: String(deadline),
+    MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT: paths.workRoot,
+    MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR: paths.archiveRoot,
+    MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR: paths.sdkOutput,
+    MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR: paths.metadataTar,
+  };
+}
+
 /** Same-run source/composition handoff for the selected Windows host-SDK roots. The vendor SDK
  * remains on this disposable runner; only receipts and path/hash metadata cross Actions.
  * @param {NodeJS.ProcessEnv} [environment] @param {NodeJS.Platform} [platform] @param {string} [architecture]
@@ -31,16 +52,13 @@ function windowsHostSdkStatePaths(environment = process.env, platform = process.
   }
   const canonicalTemp = fs.realpathSync(runnerTemp);
   if (canonicalTemp !== path.resolve(runnerTemp) || !fs.lstatSync(canonicalTemp).isDirectory()) {throw new Error("Windows host-SDK RUNNER_TEMP is not canonical");}
-  const suffix = ciSuffix(environment), workName = "mom-native-windows-host-sdk-" + suffix,
-    outputName = "native-windows-host-sdk-" + suffix, workRoot = path.join(canonicalTemp, workName),
-    archiveRoot = path.join(workRoot, "archives"), sdkOutput = path.join(workRoot, outputName),
-    metadataTar = path.join(canonicalTemp, outputName + "-metadata.tar");
+  const suffix = ciSuffix(environment), paths = windowsHostSdkPaths(canonicalTemp, suffix);
   if (environment["MOM_AOT_BUILD_ONLY"] !== "1" || environment["MOM_BUILD_JOBS"] !== ciBuildJobs(environment) ||
-      environment["MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT"] !== workRoot || environment["MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR"] !== archiveRoot ||
-      environment["MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR"] !== sdkOutput || environment["MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR"] !== metadataTar) {
+      environment["MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT"] !== paths.workRoot || environment["MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR"] !== paths.archiveRoot ||
+      environment["MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR"] !== paths.sdkOutput || environment["MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR"] !== paths.metadataTar) {
     throw new Error("Windows host-SDK CI paths, job envelope, or build-only mode differ from this run");
   }
-  return {suffix, runnerTemp: canonicalTemp, workRoot, workName, archiveRoot, archiveName: "archives", sdkOutput, outputName, metadataTar,
+  return {suffix, runnerTemp: canonicalTemp, ...paths,
     deadlineEpoch: environment["MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH"] || ""};
 }
 
@@ -143,7 +161,7 @@ function buildWindowsHostSdkSourcesCi() {
       result.descriptor?.path !== descriptorFile || result.descriptor.sha256 !== fileHash(descriptorFile) ||
       result.overlay?.path !== overlayFile || result.overlay.sha256 !== fileHash(overlayFile) ||
       result.provenance?.path !== filesFile || result.provenance.sha256 !== fileHash(filesFile) ||
-      !descriptor || Object.keys(descriptor).sort().join("\0") !== descriptorKeys.sort().join("\0") || descriptor.sourceRoot !== sdkRoot ||
+      !hasExactBuildFields(descriptor, descriptorKeys) || descriptor.sourceRoot !== sdkRoot ||
       descriptor.overlay !== overlayFile || !Array.isArray(descriptor.includeRoots) || !descriptor.includeRoots.length ||
       !Array.isArray(descriptor.libraryRoots) || !descriptor.libraryRoots.length || !files || !Array.isArray(files.files) ||
       files.files.length !== result.selectedFileCount || !files.origins || !Array.isArray(files.origins)) {
@@ -268,19 +286,6 @@ function mapWindowsLlvmSdkLibraries(names, roots, files, sdkRoot, label) {
   });
 }
 
-/** Read one small externally pinned JSON receipt without permitting a redirected or changing file.
- * @param {string} file @param {string} expectedSha256 @param {string} label @returns {any} */
-function readWindowsLlvmPinnedJson(file, expectedSha256, label) {
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || fs.realpathSync(file) !== path.resolve(file) ||
-      stat.size < 1 || stat.size > (8 << 20) || fileHash(file) !== expectedSha256) {
-    throw new Error("Windows LLVM receipt differs from its external pin: " + label);
-  }
-  const value = readBuildJson(file);
-  if (fileHash(file) !== expectedSha256) {throw new Error("Windows LLVM receipt changed while reading: " + label);}
-  return value;
-}
-
 /** Compose only the descriptor used by the maintained Windows LLVM builder. The host composer
  * remains source-only; this function neither builds LLVM nor asserts publisher authentication.
  * @param {{windowsSdkRoot:string,windowsSdkPins:{resultSha256:string,descriptorSha256:string,filesSha256:string,overlaySha256:string},
@@ -398,7 +403,7 @@ function composeWindowsLlvmDescriptor(input, identityKeys) {
 function windowsNativeLlvmDescriptorCiStatePaths(environment = process.env, platform = process.platform, architecture = process.arch) {
   const ci = windowsNativeLlvmCiStatePaths(environment, platform, architecture),
     root = path.join(ci.runnerTemp, "mom-native-windows-llvm21-descriptor-" + ci.suffix),
-    windowsSdkRoot = path.join(ci.runnerTemp, "mom-native-windows-host-sdk-" + ci.suffix, "native-windows-host-sdk-" + ci.suffix),
+    windowsSdkRoot = windowsHostSdkPaths(ci.runnerTemp, ci.suffix).sdkOutput,
     hermesRoot = path.join(ci.runnerTemp, "native-windows-controller-hermes-" + ci.suffix);
   if (environment["MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR"] !== root || path.dirname(root) !== ci.runnerTemp ||
       /[\r\n\0]/.test(ci.runnerTemp)) {
@@ -416,16 +421,21 @@ function windowsNativeLlvmDescriptorCiPreflight(args, environment = process.env,
     reports = windowsNativeLlvmCiReports(environment), budget = windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "configure", nowMs, state.runDeadlineEpoch),
     inputFile = args[0] || "", inputSha256 = args[1] || "";
   if (!/^[a-f0-9]{64}$/.test(inputSha256) || !path.isAbsolute(inputFile) || /[\r\n\0]/.test(inputFile) ||
-      !windowsNativeLlvmCiContains(state.runnerTemp, inputFile) || path.resolve(fs.realpathSync(inputFile)) !== path.resolve(inputFile)) {
+      !containsBuildPath(state.runnerTemp, inputFile) || path.resolve(fs.realpathSync(inputFile)) !== path.resolve(inputFile)) {
     throw new Error("Windows LLVM descriptor input must be a canonical pinned same-run JSON file");
   }
   const inputStat = windowsControllerRegularFile(inputFile, "Windows LLVM descriptor composition input");
-  if (inputStat.nlink !== 1 || inputStat.size < 1 || inputStat.size > (8 << 20) || fileHash(inputFile) !== inputSha256) {
+  if (inputStat.nlink !== 1 || inputStat.size < 1 || inputStat.size > (8 << 20)) {
+    throw new Error("Windows LLVM descriptor composition input must be a bounded single-link file");
+  }
+  const bytes = readBuildBytes(inputFile);
+  // Parse the same bytes that passed the external pin.
+  if (createHash("sha256").update(bytes).digest("hex") !== inputSha256) {
     throw new Error("Windows LLVM descriptor composition input differs from its external SHA-256 pin");
   }
-  const input = readWindowsLlvmPinnedJson(inputFile, inputSha256, "descriptor composition input"),
-    required = ["windowsSdkRoot", "windowsSdkPins", "hermesRoot", "hermesExpectation", "tools"], keys = Object.keys(input || {}).sort().join("\0");
-  if (keys !== required.sort().join("\0") && keys !== [...required, "libraryPolicy"].sort().join("\0")) {
+  const input = JSON.parse(bytes.toString("utf8")),
+    required = ["windowsSdkRoot", "windowsSdkPins", "hermesRoot", "hermesExpectation", "tools"];
+  if (!hasExactBuildFields(input, required) && !hasExactBuildFields(input, [...required, "libraryPolicy"])) {
     throw new Error("Windows LLVM descriptor input has an unexpected composer schema");
   }
   if (input.windowsSdkRoot !== state.windowsSdkRoot || input.hermesRoot !== state.hermesRoot ||
@@ -452,8 +462,8 @@ function windowsNativeLlvmDescriptorCiPreflight(args, environment = process.env,
     input.tools.clangResourceInclude];
   windowsNativeLlvmCiRejectReportInputOverlap(reports, [...inputRoots, state.root, state.configureRoot, state.output, state.descriptor]);
   const overlapsOutput = inputRoots.some(item => path.isAbsolute(item) &&
-    windowsNativeLlvmCiContains(path.resolve(item), state.root) || windowsNativeLlvmCiContains(state.root, path.resolve(item))) ||
-    windowsNativeLlvmCiContains(state.root, state.configureRoot) || windowsNativeLlvmCiContains(state.configureRoot, state.root);
+    containsBuildPath(path.resolve(item), state.root) || containsBuildPath(state.root, path.resolve(item))) ||
+    containsBuildPath(state.root, state.configureRoot) || containsBuildPath(state.configureRoot, state.root);
   const outputStat = fs.lstatSync(state.root, {throwIfNoEntry: false});
   if (overlapsOutput || outputStat || [state.configureRoot, state.output, state.descriptor].some(file => fs.existsSync(file))) {
     throw new Error("Windows LLVM descriptor output must be fresh and separate from its inputs and configure state");
@@ -643,19 +653,13 @@ function verifyWindowsNativeLlvmCiReport(saved) {
   }
 }
 
-/** @param {string} root @param {string} child */
-function windowsNativeLlvmCiContains(root, child) {
-  const relative = path.relative(root, child);
-  return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));
-}
-
 /** Keep workflow report files outside the native inputs, including directory roots. @param {ReturnType<typeof windowsNativeLlvmCiReports>} reports @param {string[]} inputs */
 function windowsNativeLlvmCiRejectReportInputOverlap(reports, inputs) {
   for (const report of reports) {
     for (const input of inputs) {
       if (typeof input !== "string" || !path.isAbsolute(input) || /[\r\n\0]/.test(input)) {continue;}
       const resolved = path.resolve(input);
-      if (windowsNativeLlvmCiContains(resolved, report.file) || windowsNativeLlvmCiContains(report.file, resolved)) {
+      if (containsBuildPath(resolved, report.file) || containsBuildPath(report.file, resolved)) {
         throw new Error("Windows LLVM workflow reports must not overlap pinned inputs");
       }
       const stat = fs.lstatSync(resolved, {throwIfNoEntry: false});
@@ -687,7 +691,7 @@ function windowsNativeLlvmCiPreflight(args, environment = process.env, platform 
     {windowsLlvmSdkPlan, buildPhases} = require("./build-native-windows-llvm-sdk");
   const state = windowsNativeLlvmCiStatePaths(environment, platform, architecture), reports = windowsNativeLlvmCiReports(environment),
     budget = windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, phase, nowMs, state.runDeadlineEpoch);
-  if (reports.some(report => windowsNativeLlvmCiContains(state.root, report.file))) {
+  if (reports.some(report => containsBuildPath(state.root, report.file))) {
     throw new Error("Windows LLVM CI state and workflow reports must not overlap");
   }
   if (phase !== "configure") {windowsNativeLlvmCiDeadlineRecord(state);}
@@ -708,7 +712,7 @@ function windowsNativeLlvmCiPreflight(args, environment = process.env, platform 
     const regularInput = (/** @type {string} */ file, /** @type {string} */ label, /** @type {number} */ maximum,
       /** @type {boolean} */ underRunnerTemp = false) => {
       if (!path.isAbsolute(file) || /[\r\n\0]/.test(file) || path.resolve(fs.realpathSync(file)).toLowerCase() !== path.resolve(file).toLowerCase() ||
-          underRunnerTemp && !windowsNativeLlvmCiContains(state.runnerTemp, file)) {throw new Error(label + " must be a canonical same-run input");}
+          underRunnerTemp && !containsBuildPath(state.runnerTemp, file)) {throw new Error(label + " must be a canonical same-run input");}
       return pathStat(file, label, maximum);
     };
     pinnedSha(descriptorSha256 || "", "descriptor"); pinnedSha(archiveSha256 || "", "source archive");
@@ -857,6 +861,7 @@ function buildWindowsNativeLlvmCi(args, environment = process.env) {
 module.exports = {auditWindowsLlvmToolFile, buildWindowsHostSdkSourcesCi, buildWindowsNativeLlvmCi,
   buildWindowsNativeLlvmDescriptorCi, composeLocalWindowsLlvmSdkDescriptor, composeWindowsLlvmSdkDescriptor,
   mapWindowsLlvmSdkLibraries, validateWindowsLlvmLibraryPolicy, windowsHostSdkDeadlineBudget, windowsHostSdkPackageMembers,
-  windowsHostSdkStatePaths, windowsNativeLlvmCiDeadlineBudget, windowsNativeLlvmCiDeadlineRecord, windowsNativeLlvmCiPreflight,
+  windowsHostSdkEnvironment, windowsHostSdkPaths, windowsHostSdkStatePaths,
+  windowsNativeLlvmCiDeadlineBudget, windowsNativeLlvmCiDeadlineRecord, windowsNativeLlvmCiPreflight,
   windowsNativeLlvmCiRunDeadlineBudget, windowsNativeLlvmCiStatePaths, windowsNativeLlvmDescriptorCiPreflight,
   windowsNativeLlvmDescriptorCiStatePaths};

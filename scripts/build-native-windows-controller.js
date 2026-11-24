@@ -16,7 +16,7 @@ const {controllerBundleOptions, controllerAotCommand, verifyBundle, nativeApplic
 const {controllerEntry, nativeApplicationBuildInputs} = require("./build-native-application");
 const nativeResources = require("./native-resources");
 const {nativeJitCacheHeader} = require("./native-jit-cache-tag");
-const {buildDependencies, compilerIncludePaths, fileHash, readBuildJson, readBuildText} = require("./build-source-inputs");
+const {buildDependencies, compilerIncludePaths, containsBuildPath, isBuildIncludeDirectory, fileHash, readBuildJson, readBuildJsonSnapshot, readBuildText} = require("./build-source-inputs");
 const {validateWindowsApplication, windowsApplicationInputs, verifyWindowsApplicationFiles, rejectStaticNvrtcArchives, windowsResponseFile, auditWindowsLinkMap} = require("./native-windows-application");
 const {gpuTable, gpuForwards} = require("./native-gpu-table");
 const {isolateCoffCompilerArchives} = require("./native-coff-archive");
@@ -334,10 +334,8 @@ function windowsObjectIncludeRoots(commands, output) {
     for (const selected of compilerIncludePaths(args)) {
       if (!path.isAbsolute(selected)) {continue;}
       const root = path.resolve(selected);
-      if (root === outputRoot || root.startsWith(outputRoot + path.sep)) {continue;}
-      try {if (fs.statSync(root).isDirectory()) {roots.add(root);}} catch (error) {
-        if (!(error instanceof Error) || !("code" in error) || !["ENOENT", "ENOTDIR"].includes(String(error.code))) {throw error;}
-      }
+      if (containsBuildPath(outputRoot, root)) {continue;}
+      if (isBuildIncludeDirectory(root)) {roots.add(root);}
     }
   }
   return [...roots];
@@ -622,7 +620,7 @@ function buildNativeWindowsController(configFile, output, environment = process.
   if (environment["MOM_NATIVE_RUNTIME"] || environment["MOM_AOT_CPU_CORE"] || environment["MOM_AOT_GPU_INPUTS"]) {
     throw new Error("Windows controller host build refuses Core/GPU runtime environment inputs");
   }
-  const configHash = fileHash(configFile), config = validateWindowsControllerConfig(readBuildJson(configFile));
+  const {value, sha256: configHash} = readBuildJsonSnapshot(configFile), config = validateWindowsControllerConfig(value);
   if (fileHash(configFile) !== configHash) {throw new Error("Windows SDK descriptor changed during admission");}
   // Component manifests own link order: freeze each selected root before planning, not after.
   const componentState = /** @type {Record<string, string>} */ ({});

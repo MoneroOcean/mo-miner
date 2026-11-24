@@ -3,9 +3,10 @@
 // Qualification driver only: it builds nothing and never treats the build receipt as a pass.
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot} = require("./build-source-inputs");
+const {matchesProducerReceipt} = require("./build-release");
 const {validCiSuffix} = require("./native-ci-job");
-const {nativeNoticeFile} = require("./package-native-release");
+const {nativeNoticeName, maximumNoticeBytes, nativeNoticeFile, validateNoticeAssemblyMetadata} = require("./package-native-release");
 const {nativeDependencies, auditNativeGlibc, auditNativeVersionNeeds, auditNativeTrace} = require("./native-audit");
 const {linuxGlibcBaseline} = require("./native-linux-sysroot");
 const {elfReport} = require("./native-elf");
@@ -26,7 +27,6 @@ const portableCpuVectors = hashTests.filter(definition => definition.syclCpu);
 const portableCpuAlgos = new Set(portableCpuVectors.map(definition => definition.job.algo));
 const gpuAlgos = new Set(hashTests.filter(definition => definition.gpu && !definition.portableOnly).map(definition => definition.job.algo));
 const portableCpuTestCount = portableCpuVectors.length + portableCpuAlgos.size * 2 + 1;
-const nativeNoticeName = "THIRD-PARTY-NOTICES.txt";
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
 function record(value) {return typeof value === "object" && value !== null && !Array.isArray(value);}
@@ -68,6 +68,12 @@ function fileIdentity(info) {
   if (info.size > BigInt(Number.MAX_SAFE_INTEGER)) {throw new Error("Native qualification file exceeds the safe byte-count limit");}
   return {size: Number(info.size), mode: Number(info.mode), dev: info.dev.toString(), ino: info.ino.toString(),
     nlink: Number(info.nlink), mtimeNs: info.mtimeNs.toString(), ctimeNs: info.ctimeNs.toString()};
+}
+
+/** @param {ReturnType<typeof fileIdentity>} left @param {ReturnType<typeof fileIdentity>} right */
+function sameFileIdentity(left, right) {
+  return left.size === right.size && left.mode === right.mode && left.dev === right.dev && left.ino === right.ino &&
+    left.nlink === right.nlink && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
 }
 
 /** @param {string} file @param {string} platform */
@@ -119,7 +125,7 @@ function admitTransportedSource(value, entrypoint, source, sourceInfo, platform)
   const canonicalAbsolute = file => typeof file === "string" && file.length <= 4096 && path.isAbsolute(file) &&
     path.resolve(file) === file && !/[\0\r\n]/.test(file);
   const name = platform === "win32" ? "mom.exe" : "mom", link = value["sourceEntrypoint"];
-  if (!record(link) || Object.keys(link).sort().join(",") !== "path,sha256" || !canonicalAbsolute(link["path"]) ||
+  if (!record(link) || !hasExactBuildFields(link, ["path", "sha256"]) || !canonicalAbsolute(link["path"]) ||
       path.basename(link["path"]) !== "entrypoint.json" || typeof link["sha256"] !== "string" || !hashPattern.test(link["sha256"])) {
     throw new Error("Relocated native source requires a canonical original entrypoint binding");
   }
@@ -130,10 +136,9 @@ function admitTransportedSource(value, entrypoint, source, sourceInfo, platform)
       !samePath(fs.realpathSync(originalEntrypoint), originalEntrypoint, process.platform)) {
     throw new Error("Native original entrypoint must be a bounded canonical file outside the packed entrypoint");
   }
-  const originalHash = fileHash(originalEntrypoint), original = readBuildJson(originalEntrypoint);
-  if (originalHash !== link["sha256"] || fileHash(originalEntrypoint) !== originalHash) {
-    throw new Error("Native original entrypoint differs from its packed source binding");
-  }
+  const {value: original, sha256: originalHash} = readBuildJsonSnapshot(originalEntrypoint, undefined, {
+    sha256: link["sha256"], message: "Native original entrypoint differs from its packed source binding",
+  });
   assertSnapshotUnchanged(originalEntrypoint, platform, "original entrypoint", {...originalInfo, hash: originalHash});
   const originSource = record(original) ? original["source"] : undefined,
     originArtifact = record(original) ? original["artifact"] : undefined,
@@ -189,41 +194,40 @@ function admitTransportedSource(value, entrypoint, source, sourceInfo, platform)
  * @param {string} platform @param {string} [producerSource] */
 function admitProvenance(value, source, artifact, platform, producerSource = source) {
   const metadata = /** @type {{path: string, hash: string, info: ReturnType<typeof fileIdentity>}[]} */ ([]);
-  /** @param {unknown} reference @param {string | undefined} expected @param {string} label */
-  const bind = (reference, expected, label) => {
+  /** @param {unknown} reference @param {string | undefined} expected @param {string} label @param {boolean} [json] */
+  const bind = (reference, expected, label, json = false) => {
     if (!record(reference) || typeof reference["path"] !== "string" || typeof reference["sha256"] !== "string" ||
         !hashPattern.test(reference["sha256"])) {throw new Error("Native provenance requires a valid " + label);}
     const file = absoluteFile(reference["path"], label);
     if (expected && !samePath(file, expected, platform)) {throw new Error("Native provenance has an unexpected " + label);}
     const info = regularPath(file, file, platform, label), hash = reference["sha256"];
-    if (fileHash(file) !== hash) {throw new Error("Native provenance hash differs: " + label);}
+    const message = "Native provenance hash differs: " + label,
+      receipt = json ? readBuildJsonSnapshot(file, undefined, {sha256: hash, message}) : undefined;
+    if (!receipt && fileHash(file) !== hash) {throw new Error(message);}
     metadata.push({path: file, hash, info});
-    return file;
+    return {file, hash, value: receipt?.value};
   };
-  const config = bind({path: value["configFile"], sha256: value["configHash"]}, undefined, "descriptor");
+  const {value: config} = bind({path: value["configFile"], sha256: value["configHash"]}, undefined, "descriptor", true);
   let configHash = value["configHash"];
   if (value["generatedDescriptor"] !== undefined) {
     if (platform !== "win32") {throw new Error("Generated native descriptors are Windows-only");}
     bind(value["generatedDescriptor"], undefined, "generated descriptor");
     configHash = /** @type {Record<string, unknown>} */ (value["generatedDescriptor"])["sha256"];
   }
-  const producerFile = bind(value["producerReceipt"], path.join(path.dirname(source), "result.json"), "producer receipt");
-  const producer = readBuildJson(producerFile), image = platform === "win32" ? producer?.artifact :
-    producer && {path: producer.binary, bytes: producer.bytes, sha256: producer.sha256};
-  if (!record(producer) || producer["buildOnly"] !== true || producer["publicationQualified"] !== false ||
-      producer["configHash"] !== configHash || !record(image) || image["path"] !== producerSource ||
-      image["sha256"] !== fileHash(source) || image["bytes"] !== fs.statSync(source).size ||
-      (platform === "win32" ? producer["target"] !== "x86_64-pc-windows-msvc" :
-        producer["target"] !== undefined && !["linux", "x86_64-unknown-linux-gnu"].includes(String(producer["target"])))) {
+  const producer = bind(value["producerReceipt"], path.join(path.dirname(source), "result.json"), "producer receipt", true);
+  const rawArtifact = {path: producerSource, sha256: fileHash(source), bytes: fs.statSync(source).size};
+  if (typeof configHash !== "string" || !matchesProducerReceipt(producer.value, rawArtifact, configHash,
+    platform === "win32" ? "x86_64-pc-windows-msvc" : undefined)) {
     throw new Error("Native producer receipt does not bind its raw executable, target and descriptor");
   }
   const components = value["componentHashes"];
-  if (!record(components) || components[producerFile] !== fileHash(producerFile)) {throw new Error("Native component hashes must include the producer receipt");}
-  for (const [file, hash] of Object.entries(components)) {bind({path: file, sha256: hash}, undefined, "component metadata");}
+  if (!record(components) || components[producer.file] !== producer.hash) {throw new Error("Native component hashes must include the producer receipt");}
+  for (const [file, hash] of Object.entries(components)) {
+    if (file !== producer.file) {bind({path: file, sha256: hash}, undefined, "component metadata");}
+  }
   const packed = !samePath(source, artifact, platform);
   if (packed) {
-    const packingFile = bind(value["packingReceipt"], path.join(path.dirname(artifact), "result.json"), "packing receipt");
-    const packing = readBuildJson(packingFile);
+    const {value: packing} = bind(value["packingReceipt"], path.join(path.dirname(artifact), "result.json"), "packing receipt", true);
     const matches = (/** @type {unknown} */ item, /** @type {string} */ file) => record(item) &&
       item["path"] === file && item["sha256"] === fileHash(file) && item["bytes"] === fs.statSync(file).size;
     if (!record(packing) || packing["buildOnly"] !== true || packing["publicationQualified"] !== false ||
@@ -231,7 +235,7 @@ function admitProvenance(value, source, artifact, platform, producerSource = sou
         typeof packing["restoredSha256"] !== "string" || !hashPattern.test(packing["restoredSha256"]) ||
         !record(packing["payloadAudit"]) || platform === "linux" &&
           (packing["restoredSha256"] !== fileHash(source) || packing["payloadAudit"]["exactOriginalBytes"] !== true) ||
-        !record(packing["logs"]) || Object.keys(packing["logs"]).sort().join(",") !== "integrity,pack,restore") {
+        !record(packing["logs"]) || !hasExactBuildFields(packing["logs"], ["integrity", "pack", "restore"])) {
       throw new Error("Native packing receipt does not bind its executable round trip and saved logs");
     }
     for (const stage of ["pack", "integrity", "restore"]) {
@@ -239,15 +243,15 @@ function admitProvenance(value, source, artifact, platform, producerSource = sou
     }
   } else if (value["packingReceipt"] !== undefined) {throw new Error("Unpacked native candidates cannot claim a packing receipt");}
   if (value["notices"] !== undefined) {
-    const file = bind(value["notices"], path.join(path.dirname(artifact), "THIRD-PARTY-NOTICES.txt"), "distribution notices");
+    const {file} = bind(value["notices"], path.join(path.dirname(artifact), nativeNoticeName), "distribution notices");
     const bytes = /** @type {Record<string, unknown>} */ (value["notices"])["bytes"];
     if (typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > (8 << 20) || fs.statSync(file).size !== bytes) {
       throw new Error("Native distribution notice byte count differs from its bounded metadata");
     }
   }
   // Read the descriptor only as metadata: its SDK paths need not exist on the clean test host.
-  if (!record(readBuildJson(config))) {throw new Error("Native provenance descriptor must be an object");}
-  return metadata;
+  if (!record(config)) {throw new Error("Native provenance descriptor must be an object");}
+  return {metadata, producer};
 }
 
 /** @param {string} entrypoint @param {string} platform @param {string} arch */
@@ -257,7 +261,7 @@ function admitCandidate(entrypoint, platform, arch) {
     throw new Error("Native CPU qualification currently supports Linux/Windows x86-64 entrypoint.json candidates only");
   }
   const receiptInfo = regularPath(entry, entry, platform, "entrypoint.json");
-  const entryHash = fileHash(entry), value = readBuildJson(entry);
+  const {value, sha256: entryHash} = readBuildJsonSnapshot(entry);
   if (!record(value) || value["version"] !== 1 || value["target"] !== platform || value["buildOnly"] !== true || value["publicationQualified"] !== false ||
       !record(value["artifact"]) || !record(value["source"])) {
     throw new Error("Native entrypoint receipt is malformed, wrong-target, or not an unpublished build-only candidate");
@@ -289,18 +293,17 @@ function admitCandidate(entrypoint, platform, arch) {
     throw new Error("Native entrypoint receipt hash/size differs from its executable or raw source");
   }
   const artifactHeader = checkExecutableFormat(artifactFile, platform), sourceHeader = checkExecutableFormat(sourceFile, platform);
-  const sameFileInfo = (/** @type {ReturnType<typeof fileIdentity>} */ first, /** @type {ReturnType<typeof fileIdentity>} */ second) =>
-    first.size === second.size && first.mode === second.mode && first.dev === second.dev && first.ino === second.ino &&
-    first.nlink === second.nlink && first.mtimeNs === second.mtimeNs && first.ctimeNs === second.ctimeNs;
-  if (!sameFileInfo(artifactInfo, artifactHeader) || !sameFileInfo(sourceInfo, sourceHeader)) {throw new Error("Native candidate changed during format inspection");}
+  if (!sameFileIdentity(artifactInfo, artifactHeader) || !sameFileIdentity(sourceInfo, sourceHeader)) {
+    throw new Error("Native candidate changed during format inspection");
+  }
   if (platform === "linux" && !(artifactInfo.mode & 0o111)) {throw new Error("Linux native candidate is not executable");}
   const transported = localSource ? undefined : admitTransportedSource(value, entry, sourceFile, sourceInfo, platform),
-    metadata = [...(transported ? [transported.metadata] : []),
-      ...admitProvenance(value, sourceFile, artifactFile, platform, transported?.sourcePath)];
+    provenance = admitProvenance(value, sourceFile, artifactFile, platform, transported?.sourcePath),
+    metadata = transported ? [transported.metadata, ...provenance.metadata] : provenance.metadata;
   validateNoticeAssemblyMetadata(value["noticeAssembly"], value["notices"]);
   if (fileHash(entry) !== entryHash || receiptInfo.size !== fs.statSync(entry).size) {throw new Error("Native entrypoint receipt changed during admission");}
   return {entrypoint: entry, entryHash, entrypointInfo: receiptInfo, entryRecord: value, artifact: artifactFile, artifactHash, artifactBytes,
-    artifactInfo: artifactHeader, source: sourceFile, sourceHash, sourceInfo: sourceHeader, metadata, platform};
+    artifactInfo: artifactHeader, source: sourceFile, sourceHash, sourceInfo: sourceHeader, metadata, producer: provenance.producer, platform};
 }
 
 /** Build a test environment that cannot inherit an old candidate, GPU selector, pool guard
@@ -515,50 +518,8 @@ function assertVectorSuiteSummary(output, suite, algo = "") {
 
 /** @param {unknown} value @param {string[]} keys @param {string} label */
 function exactRecord(value, keys, label) {
-  if (!record(value) || Object.keys(value).sort().join(",") !== [...keys].sort().join(",")) {throw new Error("Native archive " + label + " is malformed");}
+  if (!record(value) || !hasExactBuildFields(value, keys)) {throw new Error("Native archive " + label + " is malformed");}
   return value;
-}
-
-/** @typedef {{receiptPath: string, receiptSha256: string, fingerprint: string,
- * notice: {path: string, sha256: string, bytes: number}}} NoticeAssemblyMetadata */
-/** Validate only the portable metadata carried forward from an admitted assembly receipt.
- * The originating receipt and license inputs may be absent on a clean qualification host.
- * @param {unknown} value @param {unknown} notices @returns {NoticeAssemblyMetadata | undefined} */
-function validateNoticeAssemblyMetadata(value, notices) {
-  if (value === undefined) {return undefined;}
-  const assembly = /** @type {{receiptPath: unknown, receiptSha256: unknown, fingerprint: unknown, notice: unknown}} */
-    (exactRecord(value, ["fingerprint", "notice", "receiptPath", "receiptSha256"], "notice assembly binding"));
-  const sourcePath = assembly.receiptPath, fingerprint = assembly.fingerprint, receiptSha256 = assembly.receiptSha256;
-  const absolute = (/** @type {string} */ file) => file.length <= 4096 &&
-    (path.posix.isAbsolute(file) || path.win32.isAbsolute(file)) && !/[\0\r\n]/.test(file);
-  if (typeof sourcePath !== "string" || !absolute(sourcePath) || !/(?:^|[\\/])native-notices\.json$/i.test(sourcePath) ||
-      typeof fingerprint !== "string" || !hashPattern.test(fingerprint) || typeof receiptSha256 !== "string" || !hashPattern.test(receiptSha256)) {
-    throw new Error("Native notice assembly metadata is malformed");
-  }
-  const notice = /** @type {{path: unknown, sha256: unknown, bytes: unknown}} */
-    (exactRecord(assembly.notice, ["bytes", "path", "sha256"], "notice assembly body"));
-  if (typeof notice.path !== "string" || !absolute(notice.path) || !/(?:^|[\\/])THIRD-PARTY-NOTICES\.txt$/i.test(notice.path) ||
-      typeof notice.sha256 !== "string" || !hashPattern.test(notice.sha256) || typeof notice.bytes !== "number" ||
-      !Number.isSafeInteger(notice.bytes) || notice.bytes < 1 || notice.bytes > (8 << 20)) {
-    throw new Error("Native notice assembly body metadata is malformed");
-  }
-  const windowsPath = path.win32.isAbsolute(sourcePath) &&
-    (sourcePath.includes("\\") || /^[A-Za-z]:/.test(sourcePath) || sourcePath.startsWith("//")), pathApi = windowsPath ? path.win32 : path.posix,
-    expectedBodyPath = pathApi.join(pathApi.dirname(sourcePath), "THIRD-PARTY-NOTICES.txt");
-  if (notice.path !== expectedBodyPath) {throw new Error("Native notice assembly body path differs from its receipt sibling");}
-  const candidate = /** @type {{path: unknown, sha256: unknown, bytes: unknown} | undefined} */ (notices);
-  if (!candidate || typeof candidate !== "object" || candidate.sha256 !== notice.sha256 || candidate.bytes !== notice.bytes) {
-    throw new Error("Native notice assembly metadata does not bind the candidate notice bytes");
-  }
-  return {receiptPath: sourcePath, receiptSha256, fingerprint,
-    notice: {path: notice.path, sha256: notice.sha256, bytes: notice.bytes}};
-}
-
-/** @param {ReturnType<typeof validateNoticeAssemblyMetadata>} left @param {ReturnType<typeof validateNoticeAssemblyMetadata>} right */
-function sameNoticeAssembly(left, right) {
-  return left === undefined ? right === undefined : right !== undefined && left.receiptPath === right.receiptPath &&
-    left.receiptSha256 === right.receiptSha256 && left.fingerprint === right.fingerprint &&
-    left.notice.path === right.notice.path && left.notice.sha256 === right.notice.sha256 && left.notice.bytes === right.notice.bytes;
 }
 
 /** Take a stable snapshot of a regular, non-symlink file.
@@ -567,8 +528,7 @@ function snapshotFile(file, platform, label, singleLink = false) {
   const info = regularPath(file, file, platform, label);
   if (singleLink && info.nlink !== 1) {throw new Error("Native archive " + label + " must not be hard-linked");}
   const hash = fileHash(file), after = regularPath(file, file, platform, label);
-  if (after.dev !== info.dev || after.ino !== info.ino || after.size !== info.size || after.mode !== info.mode || after.nlink !== info.nlink ||
-      after.mtimeNs !== info.mtimeNs || after.ctimeNs !== info.ctimeNs) {
+  if (!sameFileIdentity(after, info)) {
     throw new Error("Native archive " + label + " changed while being inspected");
   }
   return {...info, hash};
@@ -577,9 +537,7 @@ function snapshotFile(file, platform, label, singleLink = false) {
 /** @param {string} file @param {string} platform @param {string} label @param {ReturnType<typeof snapshotFile>} original */
 function assertSnapshotUnchanged(file, platform, label, original) {
   const current = snapshotFile(file, platform, label);
-  if (current.hash !== original.hash || current.size !== original.size || current.mode !== original.mode ||
-      current.dev !== original.dev || current.ino !== original.ino || current.nlink !== original.nlink ||
-      current.mtimeNs !== original.mtimeNs || current.ctimeNs !== original.ctimeNs) {
+  if (current.hash !== original.hash || !sameFileIdentity(current, original)) {
     throw new Error("Native " + label + " changed during qualification");
   }
 }
@@ -628,10 +586,11 @@ function admitNativeArchive(candidate, request, runner) {
   const archivePattern = candidate.platform === "win32" ? /^mom-v[0-9][0-9A-Za-z.-]*-win\.zip$/ : /^mom-v[0-9][0-9A-Za-z.-]*-lin\.tgz$/;
   const receiptPath = path.join(path.dirname(archivePath), "native-package.json");
   const archive = snapshotFile(archivePath, candidate.platform, "file"), receiptFile = snapshotFile(receiptPath, candidate.platform, "receipt"), tool = snapshotFile(toolPath, candidate.platform, "tool");
-  const receiptValue = readBuildJson(receiptPath), version = record(receiptValue) ? receiptValue["version"] : undefined,
+  const {value: receiptValue} = readBuildJsonSnapshot(receiptPath, undefined, {
+      sha256: receiptFile.hash, message: "Native archive receipt changed while being read",
+    }), version = record(receiptValue) ? receiptValue["version"] : undefined,
     keys = ["archive", "buildOnly", "entryHash", "entrypoint", "executable", "exactOriginalBytes", "members", "notices", "publicationQualified", "tool", "version"],
     lateKeys = [...keys, "originNotices"];
-  if (fileHash(receiptPath) !== receiptFile.hash) {throw new Error("Native archive receipt changed while being read");}
   const requiredKeys = version === 2 ? lateKeys : keys, receiptKeys = Object.keys(record(receiptValue) ? receiptValue : {});
   if (requiredKeys.some(key => !receiptKeys.includes(key)) || receiptKeys.some(key => !requiredKeys.includes(key) && key !== "noticeAssembly")) {
     throw new Error("Native archive receipt is malformed");
@@ -657,10 +616,8 @@ function admitNativeArchive(candidate, request, runner) {
   if (candidateNoticeValue !== undefined) {
     candidateNotices = /** @type {{bytes: number, path: string, sha256: string}} */ (exactRecord(candidateNoticeValue, ["bytes", "path", "sha256"], "candidate notice binding"));
   }
-  const originNotices = lateNotice ? receipt.originNotices : candidateNotices;
   const candidateAssembly = validateNoticeAssemblyMetadata(candidate.entryRecord["noticeAssembly"], candidateNoticeValue),
-    packageAssembly = Object.hasOwn(receipt, "noticeAssembly") ?
-      validateNoticeAssemblyMetadata(receipt["noticeAssembly"], notices) : undefined;
+    packageAssembly = validateNoticeAssemblyMetadata(receipt["noticeAssembly"], notices);
   // The producer's tool is historical provenance, not an executable selection. A clean host
   // may use a different CMake; only the caller-selected tool above is executed and hash-checked.
   if (typeof packageTool.path !== "string" || packageTool.path.length > 4096 ||
@@ -669,12 +626,10 @@ function admitNativeArchive(candidate, request, runner) {
       typeof packageTool.sha256 !== "string" || !hashPattern.test(packageTool.sha256)) {
     throw new Error("Native archive packaging-tool provenance is malformed");
   }
-  const originMatches = lateNotice ? candidateNotices === undefined ? originNotices === null :
-    record(originNotices) && Object.keys(originNotices).sort().join(",") === "bytes,path,sha256" &&
-      originNotices["path"] === candidateNotices.path && originNotices["sha256"] === candidateNotices.sha256 && originNotices["bytes"] === candidateNotices.bytes :
-    candidateNotices !== undefined && record(originNotices) && originNotices["path"] === candidateNotices.path &&
-      originNotices["sha256"] === candidateNotices.sha256 && originNotices["bytes"] === candidateNotices.bytes;
-  const expectedNoticePath = lateNotice ? path.join(path.dirname(archivePath), nativeNoticeName) : candidateNotices?.path;
+  const noticesMatch = lateNotice ?
+    notices.path === path.join(path.dirname(archivePath), nativeNoticeName) &&
+      isDeepStrictEqual(receipt.originNotices, candidateNotices ?? null) :
+    isDeepStrictEqual(notices, candidateNotices);
   const expectedAssembly = candidateAssembly && candidateAssembly.notice.sha256 === notices.sha256 &&
     candidateAssembly.notice.bytes === notices.bytes ? candidateAssembly : undefined;
   if ((receipt.version !== 1 && receipt.version !== 2) ||
@@ -683,12 +638,10 @@ function admitNativeArchive(candidate, request, runner) {
       packageArchive.path !== archivePath || !Number.isSafeInteger(packageArchive.bytes) || packageArchive.bytes < 1 ||
       packageArchive.bytes !== archive.size || packageArchive.sha256 !== archive.hash ||
       executable.path !== candidate.artifact || executable.bytes !== candidate.artifactBytes || executable.sha256 !== candidate.artifactHash ||
-      !originMatches || notices.path !== expectedNoticePath ||
-      !hashPattern.test(notices.sha256) || !Number.isSafeInteger(notices.bytes) || notices.bytes < 1 || notices.bytes > (8 << 20) ||
-      !lateNotice && !sameNoticeAssembly(packageAssembly, expectedAssembly) ||
+      !noticesMatch ||
+      !hashPattern.test(notices.sha256) || !Number.isSafeInteger(notices.bytes) || notices.bytes < 1 || notices.bytes > maximumNoticeBytes ||
+      !lateNotice && !isDeepStrictEqual(packageAssembly, expectedAssembly) ||
       lateNotice && expectedAssembly !== undefined && packageAssembly === undefined ||
-      packageAssembly !== undefined && (packageAssembly.notice.sha256 !== notices.sha256 || packageAssembly.notice.bytes !== notices.bytes) ||
-      !lateNotice && (notices.path !== candidateNotices?.path || notices.sha256 !== candidateNotices?.sha256 || notices.bytes !== candidateNotices?.bytes) ||
       !Array.isArray(receipt.members) || receipt.members.length !== 2 || receipt.members[0] !== expectedName || receipt.members[1] !== nativeNoticeName) {
     throw new Error("Native archive receipt does not bind the selected candidate, archive and two flat members");
   }
@@ -910,7 +863,7 @@ function checkNativeRelease(entrypoint, suite, options = {}) {
  * @param {string} suite @param {CheckOptions['gpu']} gpu */
 function validateSuite(suite, gpu) {
   if (!["cpu", "cli", "gpu", "gpu-portable-cpu", "trace"].includes(suite)) {throw new Error("Unsupported native qualification suite: " + suite + "; choose cpu, cli, gpu, gpu-portable-cpu or trace");}
-  if (suite === "gpu" ? !gpu || Object.keys(gpu).sort().join(",") !== "algo,vendor" ||
+  if (suite === "gpu" ? !gpu || !hasExactBuildFields(gpu, ["algo", "vendor"]) ||
       !["intel", "nvidia", "amd"].includes(gpu.vendor) ||
       !hashTests.some(test => test.gpu && !test.portableOnly && test.job.algo === gpu.algo) : gpu !== undefined) {
     throw new Error("Native GPU qualification requires one explicit supported vendor and algorithm; GPU settings apply only to the gpu suite");

@@ -13,32 +13,14 @@ const local = require("./build-local-native-sdk"), localRocm = require("./build-
   windowsResources = require("./build-native-windows-comgr-sdk"), windowsHiprtc = require("./build-native-windows-hiprtc-sdk"),
   windowsAcpp = require("./build-native-windows-acpp-sdk"), windowsCudart = require("./prepare-native-cudart-windows"),
   windowsAmdhip = require("./prepare-native-amdhip-windows"), hostComponent = require("./native-windows-host-component");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, requireBuildFields, verifyBuildDirectoryEntries, canonicalBuildDirectory, verifyStableBuildJson, fileHash, readBuildJson} = require("./build-source-inputs");
 const repo = fs.realpathSync(path.resolve(__dirname, "..")),
   localId = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i,
   digest = /^[a-f0-9]{64}$/;
 
-/** @param {unknown} value @param {string[]} keys @param {string} label */
-function exactObject(value, keys, label) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || !isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort())) {
-    throw new Error(label + " has unknown or missing fields");
-  }
-  return /** @type {Record<string, any>} */ (value);
-}
-
 /** @param {unknown} value @returns {value is string} */
 function absolute(value) {
   return typeof value === "string" && path.isAbsolute(value) && path.resolve(value) === value && !/[\r\n\0]/.test(value);
-}
-
-/** @param {string} directory @param {string} label @param {boolean} [allowMissing] */
-function realDirectory(directory, label, allowMissing = false) {
-  const stat = fs.lstatSync(directory, {throwIfNoEntry: false});
-  if (!stat && allowMissing) {return false;}
-  if (!stat?.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {
-    throw new Error(label + " is missing or not a canonical directory: " + directory);
-  }
-  return true;
 }
 
 /** @param {string} file @param {string} label */
@@ -48,15 +30,6 @@ function regularFile(file, label) {
     throw new Error(label + " is missing or not a canonical regular file: " + file);
   }
   return stat;
-}
-
-/** Reject unknown, interrupted or redirected local output without repairing it. @param {string} directory
- * @param {string[]} expected @param {string} label */
-function exactEntries(directory, expected, label) {
-  const actual = fs.readdirSync(directory).sort();
-  if (!isDeepStrictEqual(actual, [...expected].sort())) {
-    throw new Error(label + " is incomplete or contains unknown state; preserve it for inspection");
-  }
 }
 
 /** Stable paths under the marked workspace; original producer receipts are the only build registry.
@@ -74,12 +47,12 @@ function localWindowsHostComponentPaths(workspace, archiveName) {
 
 /** @param {ReturnType<typeof localWindowsHostComponentPaths>} paths @param {boolean} allowMissing @param {string} archiveName */
 function checkManagedRoot(paths, allowMissing, archiveName) {
-  if (!realDirectory(paths.root, "Local Windows host-component managed root", allowMissing)) {return false;}
-  exactEntries(paths.root, ["acpp", "amdhip", "archives", "comgr", "component", "cudart", "hiprtc", "hiprtc-config.json",
+  if (!canonicalBuildDirectory(paths.root, "Local Windows host-component managed root", allowMissing)) {return false;}
+  verifyBuildDirectoryEntries(paths.root, ["acpp", "amdhip", "archives", "comgr", "component", "cudart", "hiprtc", "hiprtc-config.json",
     "hiprtc-source", "resources", "resources-config.json"], "Local Windows host-component managed root");
   for (const directory of [paths.archives, paths.resources, paths.comgr, paths.hiprtcSource, paths.hiprtc, paths.cudart,
-    paths.amdhip, paths.acpp, paths.component]) {realDirectory(directory, "Local Windows host-component " + path.basename(directory));}
-  exactEntries(paths.archives, [archiveName], "Local Windows host-component archive cache");
+    paths.amdhip, paths.acpp, paths.component]) {canonicalBuildDirectory(directory, "Local Windows host-component " + path.basename(directory));}
+  verifyBuildDirectoryEntries(paths.archives, [archiveName], "Local Windows host-component archive cache");
   regularFile(paths.archive, "Pinned Windows CUDA archive");
   regularFile(paths.resourcesConfig, "Windows ROCm resource config");
   regularFile(paths.hiprtcConfig, "Windows HIPRTC config");
@@ -91,15 +64,6 @@ function writeJsonOnce(file, value) {
   const bytes = Buffer.from(JSON.stringify(value, null, 2) + "\n");
   if (bytes.length < 2 || bytes.length > 8 << 20) {throw new Error("Local Windows host-component descriptor exceeds its bound");}
   fs.writeFileSync(file, bytes, {flag: "wx", mode: 0o600});
-  return fileHash(file);
-}
-
-/** Require byte-identical stable config; a changed config never repairs a completed output.
- * @param {string} file @param {unknown} expected @param {string} label */
-function verifyStableJson(file, expected, label) {
-  regularFile(file, label);
-  const bytes = Buffer.from(JSON.stringify(expected, null, 2) + "\n");
-  if (!fs.readFileSync(file).equals(bytes)) {throw new Error(label + " is stale; preserve it for inspection");}
   return fileHash(file);
 }
 
@@ -133,7 +97,7 @@ function prepareLocalHiprtcSource(source, output, git, env, execute = spawnSync)
 function verifyLocalHiprtcSource(source, git, env, execute = spawnSync) {
   const revision = windowsHiprtc.clrRevision;
   if (!absolute(source) || !absolute(git)) {throw new Error("Local HIPRTC source paths must be canonical and absolute");}
-  realDirectory(source, "Local HIPRTC source checkout");
+  canonicalBuildDirectory(source, "Local HIPRTC source checkout");
   /** @param {string[]} args */
   const run = args => {
     const result = execute(git, args, {cwd: repo, env, encoding: "utf8", timeout: 120000, maxBuffer: 4 << 20});
@@ -208,7 +172,7 @@ function admitWorkspaceInputs(workspace, tools, env, dependencies) {
   prepareAcppSources(acppContext, acppTools, env, dependencies.run || local.runCommand);
   const acppPaths = localAcpp.localAcppSdkPaths(workspace), acppSource = (dependencies.verifyAcppSource || ciSources.verifyAcppSource)({env}, {
     source: acppPaths.fetch, preparedReceipt: acppPaths.preparedReceipt, preparedCheckout: acppPaths.preparedCheckout}, tools.git);
-  realDirectory(acppPaths.preparedCheckout, "Pinned local AdaptiveCpp checkout");
+  canonicalBuildDirectory(acppPaths.preparedCheckout, "Pinned local AdaptiveCpp checkout");
   return {support, linux, rocmContext, rocmState, hipHeaders, rocmAdmission, dpcppState, dpcppManifest, dpcpp, rocmResult, acppPaths, acppSource};
 }
 
@@ -221,7 +185,7 @@ function validateWindowsLlvmResult(result, paths, workspace, jobs) {
     throw new Error("Local Windows LLVM result is incomplete or belongs to another workspace");
   }
   regularFile(paths.descriptor, "Local Windows LLVM descriptor");
-  realDirectory(paths.output, "Local Windows LLVM producer output");
+  canonicalBuildDirectory(paths.output, "Local Windows LLVM producer output");
   return result;
 }
 
@@ -265,12 +229,12 @@ async function buildLocalNativeWindowsHostComponent(input, dependencies = {}) {
   if (process.platform !== "linux" || process.arch !== "x64") {
     throw new Error("Local Windows host-component production requires Linux x64 (WSL2)");
   }
-  exactObject(input, ["hermes", "tools", "windowsHostSdk", "workspace"], "Local Windows host-component input");
+  requireBuildFields(input, ["hermes", "tools", "windowsHostSdk", "workspace"], "Local Windows host-component input");
   if (!absolute(input.workspace)) {throw new Error("Local Windows host-component workspace must be canonical and absolute");}
-  const hostSdk = /** @type {typeof input.windowsHostSdk} */ (exactObject(input.windowsHostSdk, ["root", "pins"], "Local Windows host-SDK input")),
-    hermes = /** @type {typeof input.hermes} */ (exactObject(input.hermes, ["root", "localBuildId", "handoffSha256"], "Local Windows Hermes input")),
-    tools = /** @type {typeof input.tools} */ (exactObject(input.tools, ["cc", "cmake", "cxx", "git", "ninja", "systemdRun"], "Local Windows host-component tools"));
-  if (!absolute(hostSdk.root) || !hostSdk.pins || Object.keys(hostSdk.pins).sort().join(",") !== "descriptorSha256,filesSha256,overlaySha256,resultSha256" ||
+  const hostSdk = /** @type {typeof input.windowsHostSdk} */ (requireBuildFields(input.windowsHostSdk, ["root", "pins"], "Local Windows host-SDK input")),
+    hermes = /** @type {typeof input.hermes} */ (requireBuildFields(input.hermes, ["root", "localBuildId", "handoffSha256"], "Local Windows Hermes input")),
+    tools = /** @type {typeof input.tools} */ (requireBuildFields(input.tools, ["cc", "cmake", "cxx", "git", "ninja", "systemdRun"], "Local Windows host-component tools"));
+  if (!absolute(hostSdk.root) || !hostSdk.pins || !hasExactBuildFields(hostSdk.pins, ["descriptorSha256", "filesSha256", "overlaySha256", "resultSha256"]) ||
       Object.values(hostSdk.pins).some(value => !digest.test(value || "")) || !absolute(hermes.root) || !localId.test(hermes.localBuildId || "") ||
       !digest.test(hermes.handoffSha256 || "") || Object.values(tools).some(file => !absolute(file))) {
     throw new Error("Local Windows host-component SDK, Hermes or tool identity is invalid");
@@ -366,8 +330,8 @@ async function buildLocalNativeWindowsHostComponent(input, dependencies = {}) {
       output: paths.acpp, jobs}, environment);
     (dependencies.exportComponent || hostComponent.exportWindowsHostComponent)({...common, output: paths.component}, environment);
   } else {
-    verifyStableJson(paths.resourcesConfig, resourcesConfig, "Windows ROCm resource config");
-    verifyStableJson(paths.hiprtcConfig, {source: paths.hiprtcSource, descriptorFile: llvmResult.descriptor,
+    verifyStableBuildJson(paths.resourcesConfig, resourcesConfig, "Windows ROCm resource config");
+    verifyStableBuildJson(paths.hiprtcConfig, {source: paths.hiprtcSource, descriptorFile: llvmResult.descriptor,
       hipInclude: before.rocmState.hipIncludeRoot, comgrResult: path.join(paths.comgr, "result.json"),
       deviceReceipt: path.join(paths.resources, "result.json"), deviceInstall: path.join(paths.resources, "install"),
       llvmAr: path.join(before.linux.sdk.path, "bin/llvm-ar"), output: paths.hiprtc}, "Windows HIPRTC config");

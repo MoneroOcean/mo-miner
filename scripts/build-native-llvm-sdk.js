@@ -4,10 +4,11 @@
 // Distribution membership and phase targets come from CMake's generated graph.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {createHash, randomUUID} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
-const {fileHash, buildFileInputs, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, buildPathsOverlap, containsBuildPath, fileHash, buildFileInputs,
+  readBuildBytes, readBuildJson, verifyStableBuildBytes} = require("./build-source-inputs");
 const {isStaticArchive} = require("./native-audit");
-const {archiveName, archiveSha256, tarTool, sourceDirectories, llvmSourceSnapshot, verifyArchiveCatalog,
-  llvmAmdgpulibCallsCompileOptionsShim, verifyCmakeVersion} = require("./native-llvm-sdk");
+const {archiveName, archiveSha256, tarTool, sourceDirectories, amdgpulibCallsSource, llvmSourceSnapshot, verifyArchiveCatalog,
+  llvmAmdgpulibCallsCompileOptionsShim, verifyCmakeVersion, verifyLlvmHostCompileFlag} = require("./native-llvm-sdk");
 const {applyLinuxSysrootEnvironment, requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord, compilerIdentityText} = require("./native-linux-sysroot");
 
 const repo = path.resolve(__dirname, "..");
@@ -39,20 +40,13 @@ const configureTimeout = 1200000, extractTimeout = 600000, installTimeout = 1200
 /** CMake paths and arguments are passed directly, never through a shell. @param {unknown} value @returns {value is string} */
 const literal = value => typeof value === "string" && value.length > 0 && value.length <= 4096 && path.isAbsolute(value) &&
   !/[;"'$`\\\r\n\0]/.test(value) && !Array.from(value).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127);
-/** @param {string} root @param {string} child */
-function contained(root, child) {
-  const relative = path.relative(root, child);
-  return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));
-}
-/** @param {string} left @param {string} right */
-function overlaps(left, right) {return contained(left, right) || contained(right, left);}
 
 /** Check each lexical component without following symlinks outside the selected Ninja tree.
  * Only executable leaves may be a direct relative sibling alias, as with clang -> clang-21.
  * @param {string} build @param {string} file @param {"file" | "directory" | "executable"} finalKind @param {boolean} [optional] */
 function verifyBuildPath(build, file, finalKind, optional = false) {
   const root = fs.realpathSync(build);
-  if (root !== build || path.resolve(file) !== file || !contained(build, file)) {
+  if (root !== build || path.resolve(file) !== file || !containsBuildPath(build, file)) {
     throw new Error("LLVM build path escaped or aliased its selected tree: " + file);
   }
   const parts = path.relative(build, file).split(path.sep);
@@ -73,7 +67,7 @@ function verifyBuildPath(build, file, finalKind, optional = false) {
     }
     const real = fs.realpathSync(current);
     const wrongKind = final ? (finalKind === "directory" ? !stat.isDirectory() : !stat.isFile()) : !stat.isDirectory();
-    if (stat.isSymbolicLink() || real !== current || !contained(root, real) || wrongKind) {
+    if (stat.isSymbolicLink() || real !== current || !containsBuildPath(root, real) || wrongKind) {
       throw new Error("LLVM build path is a symlink, special file or escapes its selected tree: " + current);
     }
   }
@@ -85,7 +79,7 @@ function verifyBuildPath(build, file, finalKind, optional = false) {
  * @param {string} toolchain @returns {LlvmBasePlan} */
 function linuxLlvmSdkPlan(archive, output, tools, jobs, toolchain) {
   if (![archive, output, toolchain, ...Object.values(tools || {})].every(literal) || !tools ||
-      Object.keys(tools).sort().join(",") !== "cc,cmake,cxx,ninja" || path.basename(archive) !== archiveName ||
+      !hasExactBuildFields(tools, ["cc", "cmake", "cxx", "ninja"]) || path.basename(archive) !== archiveName ||
       path.normalize(output) !== output || path.basename(tools.cc) !== "icx" || path.basename(tools.cxx) !== "icpx" ||
       path.basename(tools.cmake) !== "cmake" || path.basename(tools.ninja) !== "ninja" ||
       !Number.isInteger(jobs) || jobs < 1 || jobs > 32) {
@@ -93,7 +87,7 @@ function linuxLlvmSdkPlan(archive, output, tools, jobs, toolchain) {
   }
   const source = path.join(output, "source"), build = path.join(output, "build");
   for (const input of [repo, archive, ...Object.values(tools)]) {
-    if (overlaps(input, output)) {throw new Error("Linux LLVM 21 output must not overlap a source, tool or repository input");}
+    if (buildPathsOverlap(input, output)) {throw new Error("Linux LLVM 21 output must not overlap a source, tool or repository input");}
   }
   const prefix = path.join(output, "sdk"), sourceOptionsFile = path.join(output, "llvm-host-source-options.cmake");
   const definitions = ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_INSTALL_PREFIX=" + prefix,
@@ -135,12 +129,8 @@ function verifySourceVersion(source) {
 
 /** @param {string} file @param {number} maximum */
 function readBounded(file, maximum) {
-  const stat = fs.statSync(file);
-  if (!stat.isFile() || stat.size < 1 || stat.size > maximum) {throw new Error("Invalid or excessive LLVM build metadata: " + file);}
-  const text = fs.readFileSync(file, "utf8"), after = fs.statSync(file);
-  if (Buffer.byteLength(text) !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) {
-    throw new Error("LLVM build metadata changed while being read: " + file);
-  }
+  const bytes = readBuildBytes(file, maximum), text = bytes.toString("utf8");
+  if (Buffer.byteLength(text) !== bytes.length) {throw new Error("Invalid UTF-8 in LLVM build metadata: " + file);}
   return text;
 }
 
@@ -178,7 +168,7 @@ function llvmStaticTargets(build, source) {
       model.configurations?.length !== 1 || !Array.isArray(refs)) {throw new Error("LLVM 21 CMake File API has an unexpected model");}
   const sourceRoot = fs.realpathSync(source), buildRoot = fs.realpathSync(build), modelSource = path.resolve(modelSourcePath),
     modelBuild = path.resolve(modelBuildPath);
-  if (!contained(sourceRoot, modelSource) || !contained(buildRoot, modelBuild)) {throw new Error("LLVM 21 CMake model escaped its source/build roots");}
+  if (!containsBuildPath(sourceRoot, modelSource) || !containsBuildPath(buildRoot, modelBuild)) {throw new Error("LLVM 21 CMake model escaped its source/build roots");}
   /** @type {LlvmTarget[]} */ const targets = [];
   for (const reference of refs) {
     if (typeof reference?.id !== "string" || typeof reference.jsonFile !== "string" || path.basename(reference.jsonFile) !== reference.jsonFile) {
@@ -189,16 +179,16 @@ function llvmStaticTargets(build, source) {
       (readBuildJson(targetFile));
     const targetSource = typeof target.paths?.source === "string" ? path.resolve(modelSource, target.paths.source) : "";
     const project = /** @type {"llvm" | "clang" | "lld" | undefined} */ (sourceDirectories.slice(0, 3).find(name =>
-      contained(path.join(sourceRoot, name), targetSource)));
+      containsBuildPath(path.join(sourceRoot, name), targetSource)));
     if (!project || !["STATIC_LIBRARY", "EXECUTABLE"].includes(target.type || "")) {continue;}
     const targetBuild = typeof target.paths?.build === "string" ? path.resolve(modelBuild, target.paths.build) : "";
     const targetArtifact = target.artifacts?.[0]?.path;
-    if (!contained(buildRoot, targetBuild) || typeof target.name !== "string" || !/^[A-Za-z0-9_.+-]{1,160}$/.test(target.name || "") ||
+    if (!containsBuildPath(buildRoot, targetBuild) || typeof target.name !== "string" || !/^[A-Za-z0-9_.+-]{1,160}$/.test(target.name || "") ||
         !Array.isArray(target.artifacts) || target.artifacts.length !== 1 || typeof targetArtifact !== "string") {
       throw new Error("Invalid LLVM 21 target metadata: " + (target.name || "unnamed"));
     }
     const artifact = path.isAbsolute(targetArtifact) ? targetArtifact : path.resolve(modelBuild, targetArtifact);
-    if (!contained(buildRoot, artifact) || target.type === "STATIC_LIBRARY" && !artifact.endsWith(".a") ||
+    if (!containsBuildPath(buildRoot, artifact) || target.type === "STATIC_LIBRARY" && !artifact.endsWith(".a") ||
         target.type === "EXECUTABLE" && !artifact.startsWith(path.join(buildRoot, "bin") + path.sep)) {
       throw new Error("LLVM 21 target artifact escaped its selected build kind: " + artifact);
     }
@@ -230,7 +220,7 @@ function linuxDistributionSelection(targets, ninjaTargets, build) {
   const components = [...new Set([...archives, ...selectedTools].map(row => row.name))].sort();
   /** @param {LlvmTarget} row */ const relativeArtifact = row => {
     const relative = path.relative(buildRoot, row.artifact);
-    if (!contained(buildRoot, row.artifact) || path.isAbsolute(relative) || relative.startsWith("..")) {throw new Error("LLVM distribution artifact escaped its build tree");}
+    if (!containsBuildPath(buildRoot, row.artifact) || path.isAbsolute(relative) || relative.startsWith("..")) {throw new Error("LLVM distribution artifact escaped its build tree");}
     return relative.split(path.sep).join("/");
   };
   const phases = /** @type {BuildPhase[]} */ ([]);
@@ -240,7 +230,7 @@ function linuxDistributionSelection(targets, ninjaTargets, build) {
     if (selected.length) {phases.push({name, targets: selected.map(row => row.name), artifacts: selected.map(row => row.artifact)});}
   };
   const llvm = archives.filter(row => row.project === "llvm"), llvmRoot = llvm[0]?.projectRoot;
-  if (!llvmRoot || llvm.some(row => row.projectRoot !== llvmRoot || !contained(llvmRoot, row.sourceDirectory))) {
+  if (!llvmRoot || llvm.some(row => row.projectRoot !== llvmRoot || !containsBuildPath(llvmRoot, row.sourceDirectory))) {
     throw new Error("LLVM 21 target source roots are inconsistent");
   }
   /** @param {LlvmTarget} row */ const llvmSource = row => path.relative(llvmRoot, row.sourceDirectory).split(path.sep).join("/");
@@ -278,7 +268,7 @@ function linuxDistributionSelection(targets, ninjaTargets, build) {
   if (llvmPhases.some(([, rows]) => !rows.length)) {throw new Error("LLVM 21 target phase group is empty");}
   for (const [name, rows] of llvmPhases) {add(name, rows);}
   const clang = archives.filter(row => row.project === "clang"), clangRoot = clang[0]?.projectRoot;
-  if (!clangRoot || clang.some(row => row.projectRoot !== clangRoot || !contained(clangRoot, row.sourceDirectory))) {
+  if (!clangRoot || clang.some(row => row.projectRoot !== clangRoot || !containsBuildPath(clangRoot, row.sourceDirectory))) {
     throw new Error("LLVM 21 clang source roots are inconsistent");
   }
   /** @param {LlvmTarget} row */ const relativeClang = row => path.relative(clangRoot, row.sourceDirectory).split(path.sep).join("/");
@@ -404,8 +394,6 @@ function phaseBuildArgs(build, jobs, phase) {
 
 /** @param {string} file @param {unknown} value */
 function writeJsonExclusive(file, value) {fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", {flag: "wx", mode: 0o600});}
-/** @param {string} file */
-function readJson(file) {return readBuildJson(file);}
 /** Every saved build input still has its recorded bytes. @param {Record<string, string>} expected */
 function buildInputsCurrent(expected) {return isDeepStrictEqual(expected, buildFileInputs(Object.keys(expected || {})));}
 
@@ -437,31 +425,8 @@ function verifyToolIdentity(tools) {
  * @param {string} build @param {string} source */
 function verifyAmdgpulibCallsCompileFlag(build, source) {
   const file = path.join(build, "compile_commands.json"); verifyBuildPath(build, file, "file");
-  const rows = JSON.parse(readBounded(file, 64 << 20));
-  if (!Array.isArray(rows) || rows.length < 1 || rows.length > 200000) {throw new Error("LLVM compile command inventory is invalid");}
-  const target = path.resolve(source, "llvm", "lib", "Target", "AMDGPU", "AMDGPULibCalls.cpp");
-  let targetRows = 0, flaggedRows = 0;
-  for (const row of rows) {
-    if (!row || typeof row.file !== "string" || typeof row.directory !== "string" || !path.isAbsolute(row.directory)) {
-      throw new Error("LLVM compile command row is malformed");
-    }
-    const rowFile = path.resolve(row.directory, row.file), /** @type {number[]} */ counts = [];
-    if (row.arguments !== undefined) {
-      const args = /** @type {unknown[]} */ (row.arguments);
-      if (!Array.isArray(args) || !args.every(value => typeof value === "string")) {throw new Error("LLVM compile command arguments are malformed");}
-      counts.push(args.filter(value => value === "-fno-builtin").length);
-    }
-    if (row.command !== undefined) {
-      if (typeof row.command !== "string") {throw new Error("LLVM compile command text is malformed");}
-      counts.push((row.command.match(/(?:^|\s)-fno-builtin(?:\s|$)/g) || []).length);
-    }
-    if (!counts.length || counts.some(value => value !== counts[0])) {throw new Error("LLVM compile command option representations disagree");}
-    const count = counts[0] || 0;
-    if (rowFile === target) {targetRows++; if (count !== 1) {throw new Error("AMDGPULibCalls.cpp is missing its unique host-only -fno-builtin option");}}
-    if (count) {flaggedRows++; if (rowFile !== target || count !== 1) {throw new Error("-fno-builtin escaped the AMDGPULibCalls.cpp source row");}}
-  }
-  if (targetRows !== 1 || flaggedRows !== 1) {throw new Error("LLVM compile database must contain exactly one AMDGPULibCalls.cpp host-option row");}
-  return {path: target, flag: "-fno-builtin", compileCommands: rows.length};
+  const rows = JSON.parse(readBounded(file, 64 << 20)), target = path.resolve(source, amdgpulibCallsSource);
+  return verifyLlvmHostCompileFlag(rows, target, path.resolve);
 }
 
 /** The selected sysroot supplies ICXCFG/ICPXCFG and pkg-config paths; other compiler hooks are dropped.
@@ -486,17 +451,16 @@ function configureLinuxLlvmSdk(output, archive, tools, jobs, environment = proce
     outputParent = fs.realpathSync(path.dirname(output));
   if (path.join(outputParent, path.basename(output)) !== output || fs.existsSync(output)) {throw new Error("Select a new canonical LLVM 21 output directory");}
   for (const input of [repo, archive, ...Object.values(tools)]) {
-    if (overlaps(fs.realpathSync(input), path.join(outputParent, path.basename(output)))) {throw new Error("LLVM 21 output overlaps a frozen input");}
+    if (buildPathsOverlap(fs.realpathSync(input), path.join(outputParent, path.basename(output)))) {throw new Error("LLVM 21 output overlaps a frozen input");}
   }
   if (fileHash(archive) !== archiveSha256) {throw new Error("LLVM 21.1.8 source archive SHA256 mismatch");}
   const toolIdentity = verifyToolIdentity(tools), env = cleanBuildEnvironment(tools, environment);
   const inputFiles = buildFileInputs([archive, tarTool, ...Object.values(tools).map(file => fs.realpathSync(file)),
     ...recipeFiles.map(name => path.join(repo, name)), sysroot.toolchain, sysroot.compilerConfig, sysroot.receipt]);
   fs.mkdirSync(output, {mode: 0o700});
-  const sourceOptionsShim = llvmAmdgpulibCallsCompileOptionsShim(plan.source);
+  const sourceOptionsShim = Buffer.from(llvmAmdgpulibCallsCompileOptionsShim(plan.source));
   fs.writeFileSync(plan.sourceOptionsFile, sourceOptionsShim, {flag: "wx", mode: 0o600});
-  if (fs.readFileSync(plan.sourceOptionsFile, "utf8") !== sourceOptionsShim) {throw new Error("Generated LLVM source-options shim changed while writing");}
-  inputFiles[plan.sourceOptionsFile] = fileHash(plan.sourceOptionsFile);
+  inputFiles[plan.sourceOptionsFile] = verifyStableBuildBytes(plan.sourceOptionsFile, sourceOptionsShim, "LLVM source-options shim");
   fs.mkdirSync(plan.source, {mode: 0o700});
   fs.copyFileSync(archive, path.join(output, archiveName), fs.constants.COPYFILE_EXCL);
   const archiveCopy = path.join(output, archiveName);
@@ -546,15 +510,14 @@ function configureLinuxLlvmSdk(output, archive, tools, jobs, environment = proce
 
 /** @param {string} output */
 function verifyConfigured(output) {
-  const file = path.join(output, "configured.json"), receipt = readJson(file), plan = receipt.plan;
+  const file = path.join(output, "configured.json"), receipt = readBuildJson(file), plan = receipt.plan;
   const producerFile = path.join(repo, "scripts/build-native-llvm-sdk.js"), producerSnapshot = path.join(output, "producer-snapshot.js");
   if (!plan || !receipt.inputFiles || !receipt.configure?.files) {throw new Error("LLVM 21 configure receipt is incomplete");}
   verifyLinuxSysrootRecord(receipt.sysroot, "LLVM 21 SDK");
   if (plan.sourceOptionsFile !== path.join(output, "llvm-host-source-options.cmake")) {throw new Error("LLVM source-options shim is outside its output");}
-  const shimStat = fs.lstatSync(plan.sourceOptionsFile, {throwIfNoEntry: false});
-  if (!shimStat?.isFile() || shimStat.isSymbolicLink() || fs.realpathSync(plan.sourceOptionsFile) !== plan.sourceOptionsFile ||
-      readBounded(plan.sourceOptionsFile, 64 << 10) !== llvmAmdgpulibCallsCompileOptionsShim(plan.source) ||
-      receipt.inputFiles[plan.sourceOptionsFile] !== fileHash(plan.sourceOptionsFile)) {
+  const sourceOptionsSha256 = verifyStableBuildBytes(plan.sourceOptionsFile,
+    Buffer.from(llvmAmdgpulibCallsCompileOptionsShim(plan.source)), "LLVM source-options shim");
+  if (receipt.inputFiles[plan.sourceOptionsFile] !== sourceOptionsSha256) {
     throw new Error("LLVM source-options shim is not the expected generated build input");
   }
   verifySourceVersion(plan.source);
@@ -631,9 +594,9 @@ function buildLinuxLlvmSdkPhase(output, phaseName, environment = process.env) {
   return phaseReceipt;
 }
 
-/** @param {string} output @param {LlvmPlan} plan @param {ReturnType<typeof readJson>} receipt @param {BuildPhase} phase */
+/** @param {string} output @param {LlvmPlan} plan @param {ReturnType<typeof readBuildJson>} receipt @param {BuildPhase} phase */
 function verifyPhaseReceipt(output, plan, receipt, phase) {
-  const file = path.join(output, "phase-" + phase.name + ".json"), saved = readJson(file),
+  const file = path.join(output, "phase-" + phase.name + ".json"), saved = readBuildJson(file),
     log = path.join(output, "build-" + phase.name + ".log"), graphFiles = Object.keys(receipt.configure.files);
   const expectedArgs = phaseBuildArgs(plan.build, plan.jobs, phase);
   if (saved.version !== 1 || saved.role !== receipt.role || saved.runId !== receipt.runId ||
@@ -673,7 +636,7 @@ function findClangLinkCommand(output, phases, compiler) {
 /** @param {string} output */
 function verifyBuildComplete(output) {
   const configured = verifyConfigured(output), {receipt, plan, selection} = configured,
-    file = path.join(output, "build-complete.json"), result = readJson(file);
+    file = path.join(output, "build-complete.json"), result = readBuildJson(file);
   if (result.version !== 1 || result.role !== receipt.role || result.runId !== receipt.runId || result.buildOnly !== true ||
       result.compiled !== true || result.executed !== false || result.phases?.length !== selection.phases.length) {
     throw new Error("LLVM 21 build phase receipts are incomplete or stale");
@@ -708,7 +671,7 @@ function treeSnapshot(root) {
       if (entry.isDirectory()) {visit(file, depth + 1); continue;}
       if (entry.isSymbolicLink()) {
         const link = fs.readlinkSync(file), resolved = path.resolve(path.dirname(file), link);
-        if (path.isAbsolute(link) || /[\r\n\0]/.test(link) || !contained(base, resolved)) {throw new Error("LLVM SDK contains an escaping symlink: " + relative);}
+        if (path.isAbsolute(link) || /[\r\n\0]/.test(link) || !containsBuildPath(base, resolved)) {throw new Error("LLVM SDK contains an escaping symlink: " + relative);}
         files[relative] = {type: "symlink", target: link}; bytes += Buffer.byteLength(link);
       } else if (entry.isFile()) {
         const size = fs.statSync(file).size; files[relative] = {type: "file", bytes: size, sha256: fileHash(file)}; bytes += size;
@@ -780,7 +743,7 @@ function installLinuxLlvmSdk(output, environment = process.env) {
 
 /** @param {string} output @param {ReturnType<typeof verifyConfigured>} configured */
 function verifyInstallReceipt(output, configured) {
-  const {receipt, plan} = configured, file = path.join(output, "install.json"), saved = readJson(file);
+  const {receipt, plan} = configured, file = path.join(output, "install.json"), saved = readBuildJson(file);
   if (saved.version !== 1 || saved.role !== receipt.role || saved.runId !== receipt.runId ||
       !isDeepStrictEqual(saved.installTargets, installTargets) || !Array.isArray(saved.runs) || saved.runs.length !== installTargets.length ||
       saved.buildOnly !== true || saved.compiled !== true || saved.executed !== false ||
@@ -825,7 +788,7 @@ function auditLinuxLlvmSdk(output) {
 
 /** Public SDK qualification: every receipt, input and the installed prefix are current. @param {string} output */
 function verifyLinuxLlvmAdmission(output) {
-  const final = readJson(path.join(output, "result.json")), configured = verifyConfigured(output),
+  const final = readBuildJson(path.join(output, "result.json")), configured = verifyConfigured(output),
     audit = auditLinuxLlvmPrefix(configured.plan.prefix, configured.selection);
   const {receipt, plan} = configured;
   if (final.version !== 1 || final.role !== "linux-llvm21-source-sdk" || final.stage !== "audited" || final.plan.output !== output ||

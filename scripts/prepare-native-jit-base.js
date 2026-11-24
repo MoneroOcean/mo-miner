@@ -4,7 +4,7 @@
 // source headers, the stamped SDK only for its pinned device-library files, and keep
 // admission in prepare-native-sycl-jit-resources.js.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
-const {fileHash, readBuildText, buildFileInputs, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {hasExactBuildFields, containsBuildPath, fileHash, readBuildText, buildFileInputs, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {verifyPreparedSdkSources} = require("./prepare-native-sdk-sources");
 const {sdkIdentity, pins} = require("./native-dpcpp-pins");
 const {jitSdkPlan} = require("./native-jit-sdk");
@@ -28,12 +28,6 @@ const RECIPE_FILES = ["scripts/prepare-native-jit-base.js", "scripts/prepare-nat
   "scripts/prepare-native-sycl-jit-resources.js"];
 const FORBIDDEN = /(?:^|[/\\])(?:msvc(?:[._-]|$)|msvcp(?:[._-]|$)|ucrt(?:[._-]|$)|vcruntime(?:[._-]|$)|api-ms-win(?:[._-]|$))|\.(?:dll|exe|obj|pdb|ilk)$/i;
 
-/** @param {string} root @param {string} file */
-function within(root, file) {
-  const relative = path.relative(root, file);
-  return relative === "" || (relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative));
-}
-
 /** @param {unknown} value @param {string} label */
 function absolute(value, label) {
   if (!absolutePath(value)) {throw new Error("Expected an absolute " + label);}
@@ -50,7 +44,7 @@ function inputDirectory(directory, label) {
 /** @param {string} file @param {string} root @param {string} label */
 function inputFile(file, root, label) {
   const selected = fs.realpathSync(absolute(file, label));
-  if (!within(root, selected) || !fs.statSync(selected).isFile()) {throw new Error(label + " is not a regular file inside its admitted root");}
+  if (!containsBuildPath(root, selected) || !fs.statSync(selected).isFile()) {throw new Error(label + " is not a regular file inside its admitted root");}
   return selected;
 }
 
@@ -153,7 +147,7 @@ function verifyBitcode(file, expected, label) {
  * @param {string} root @param {{source: string, virtual: string, sha256: string}} required @param {string} label
  * @returns {{file: string, sha256: string}} */
 function pinnedBitcodeInput(root, required, label) {
-  if (!required || typeof required !== "object" || Array.isArray(required) || Object.keys(required).sort().join(",") !== "sha256,source,virtual" ||
+  if (!hasExactBuildFields(required, ["sha256", "source", "virtual"]) ||
       !/^[a-f0-9]{64}$/.test(required.sha256 || "")) {throw new Error(label + " pin is malformed");}
   const selectedRoot = inputDirectory(root, label + " root"), source = relativeName(required.source, label + " source"),
     virtual = relativeName(required.virtual, label + " virtual path");
@@ -178,11 +172,11 @@ function pinnedCommitDate(gitRoot, environment, run = defaultRunner) {
  * @returns {{directory: string, files: Array<{file: string, name: string, sha256: string}>}} */
 function sourceTreeFiles(root, relative, label) {
   const directory = fs.realpathSync(path.join(root, ...relative.split("/")));
-  if (!within(root, directory) || !fs.statSync(directory).isDirectory()) {throw new Error(label + " directory escapes its admitted root");}
+  if (!containsBuildPath(root, directory) || !fs.statSync(directory).isDirectory()) {throw new Error(label + " directory escapes its admitted root");}
   const files = [];
   for (const item of fs.readdirSync(directory, {withFileTypes: true}).sort((a, b) => a.name.localeCompare(b.name))) {
     const file = path.join(directory, item.name), real = fs.realpathSync(file);
-    if (!within(root, real) || !item.isFile() || !fs.statSync(real).isFile() || files.length >= MAX_FILES) {
+    if (!containsBuildPath(root, real) || !item.isFile() || !fs.statSync(real).isFile() || files.length >= MAX_FILES) {
       throw new Error(label + " contains a link, special file, or too many entries");
     }
     files.push({file: real, name: item.name, sha256: fileHash(real)});
@@ -238,7 +232,7 @@ function prepareNativeJitBase(options, environment = process.env, dependencies =
   const dpcppRoot = inputDirectory(source.prepared.dpcpp.root, "prepared DPC++ source root");
   const openclRoot = inputDirectory(source.prepared.openclHeaders.root, "prepared OpenCL-Headers source root");
   const inputsToAvoid = [repo, selected.sdkRoot, selected.cudaRoot, selected.buildRoot, selected.dpcppGitRoot, ...sourceRoots];
-  if (inputsToAvoid.some(root => within(root, outputPath) || within(outputPath, root)) || outputPath === sourceReceipt) {
+  if (inputsToAvoid.some(root => containsBuildPath(root, outputPath) || containsBuildPath(outputPath, root)) || outputPath === sourceReceipt) {
     throw new Error("JIT base output must be outside every source, SDK, Git, build and repository input");
   }
   const sourceRecipe = sourceInputs(repo, [], RECIPE_FILES);
@@ -269,7 +263,7 @@ function prepareNativeJitBase(options, environment = process.env, dependencies =
   const realNinja = fs.realpathSync(ninja), ninjaFile = inputFile(realNinja, path.dirname(realNinja), "Ninja executable");
   const configuredOverlay = absolute(cache.get("SYCL_JIT_RESOURCE_OVERLAY"), "SYCL JIT resource overlay");
   const resourceOverlay = inputDirectory(configuredOverlay, "SYCL JIT resource overlay"), configureRoot = path.dirname(selected.buildRoot);
-  if (resourceOverlay !== configuredOverlay || [configureRoot, resourceOverlay].some(root => within(root, outputPath) || within(outputPath, root))) {
+  if (resourceOverlay !== configuredOverlay || [configureRoot, resourceOverlay].some(root => containsBuildPath(root, outputPath) || containsBuildPath(outputPath, root))) {
     throw new Error("JIT base output must be outside the configured build and resource overlay inputs");
   }
   const configuredCc = cache.get("CMAKE_C_COMPILER"), configuredCxx = cache.get("CMAKE_CXX_COMPILER"),
@@ -328,12 +322,12 @@ function prepareNativeJitBase(options, environment = process.env, dependencies =
         const selectedFile = absolute(file, name + " install source"), resolved = path.resolve(selectedFile);
         const isDirectory = operation.type === "DIRECTORY";
         const generated = !isDirectory && (name === "SYCL" && generatedSyclHeaders.has(resolved) ||
-          name === "Clang" && within(clangGeneratedDirectory, resolved));
+          name === "Clang" && containsBuildPath(clangGeneratedDirectory, resolved));
         const real = generated ? resolved : fs.realpathSync(selectedFile);
         const existingGenerated = generated ? fs.lstatSync(real, {throwIfNoEntry: false}) : undefined;
-        const permitted = name === "Clang" ? !isDirectory && (generated || within(clangSourceDirectory, real)) :
+        const permitted = name === "Clang" ? !isDirectory && (generated || containsBuildPath(clangSourceDirectory, real)) :
           isDirectory ? syclSourceDirectories.has(real) : generated;
-        if (!allowedHeaderRoots.some(root => within(root, real)) || !permitted ||
+        if (!allowedHeaderRoots.some(root => containsBuildPath(root, real)) || !permitted ||
             generated && existingGenerated && !existingGenerated.isFile() ||
             !generated && !fs.statSync(real)[isDirectory ? "isDirectory" : "isFile"]()) {
           throw new Error(`${name} install source escapes its admitted build/source roots`);
@@ -348,7 +342,7 @@ function prepareNativeJitBase(options, environment = process.env, dependencies =
     for (const sourcePath of operation.sources) {
       const sourceFile = path.resolve(sourcePath), relative = path.relative(selected.buildRoot, sourceFile).split(path.sep).join("/");
       const virtual = path.posix.join(operation.destination, path.posix.basename(sourceFile));
-      if (!within(selected.buildRoot, sourceFile) || relative !== virtual || deviceFiles.some(row => row.virtual.toLowerCase() === virtual.toLowerCase())) {
+      if (!containsBuildPath(selected.buildRoot, sourceFile) || relative !== virtual || deviceFiles.some(row => row.virtual.toLowerCase() === virtual.toLowerCase())) {
         throw new Error("libsycldevice install metadata escapes or aliases its upstream SDK path");
       }
       const sdkFile = inputFile(path.join(selected.sdkRoot, ...virtual.split("/")), selected.sdkRoot, "pinned libsycldevice input");

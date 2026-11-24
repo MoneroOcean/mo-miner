@@ -5,7 +5,7 @@
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto");
 const support = require("./build-local-native-windows-support"), sources = require("./fetch-native-sdk-sources"),
   ci = require("./native-ci-windows-controller"), exporter = require("./build-local-native-windows-support-export");
-const {fileHash} = require("./build-source-inputs"), {opensslPin} = require("./build-native-openssl");
+const {hasExactBuildFields, requireBuildFields, buildPathsOverlap, fileHash} = require("./build-source-inputs"), {opensslPin} = require("./build-native-openssl");
 const repo = fs.realpathSync(path.resolve(__dirname, "..")), maxInputBytes = 64 << 10, maxToolsBytes = 128 << 10, maxOutputBytes = 16 << 20;
 const inputKeys = ["exportWorkspace", "hermesArchive", "workspace"], archiveKeys = ["originalRoot", "path", "rootName", "sha256"],
   toolKeys = {core: ["compiler", "dumpbin", "msbuild", "nodeGyp", "python"], io: ["cc", "cmake", "ninja"],
@@ -15,22 +15,9 @@ const inputKeys = ["exportWorkspace", "hermesArchive", "workspace"], archiveKeys
 
 /** @param {string} left @param {string} right */
 function samePath(left, right) {return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;}
-/** @param {string} a @param {string} b */
-function overlaps(a, b) {
-  /** @param {string} parent @param {string} child */
-  const contains = (parent, child) => {const rel = path.relative(parent, child); return !rel || !path.isAbsolute(rel) && rel !== ".." && !rel.startsWith(".." + path.sep);};
-  return contains(a, b) || contains(b, a);
-}
-/** @param {unknown} value @param {string[]} keys @param {string} label */
-function exactObject(value, keys, label) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== [...keys].sort().join(",")) {
-    throw new Error(label + " has unknown or missing fields");
-  }
-  return /** @type {Record<string, any>} */ (value);
-}
 /** @param {string} file @param {string} label */
 function canonicalJsonFile(file, label) {
-  if (typeof file !== "string" || !path.isAbsolute(file) || path.resolve(file) !== file || /[\r\n\0]/.test(file) || overlaps(file, repo)) {
+  if (typeof file !== "string" || !path.isAbsolute(file) || path.resolve(file) !== file || /[\r\n\0]/.test(file) || buildPathsOverlap(file, repo)) {
     throw new Error(label + " must be an absolute canonical path outside the checkout");
   }
   const parent = path.dirname(file), parentStat = fs.lstatSync(parent, {throwIfNoEntry: false}), stat = fs.lstatSync(file, {throwIfNoEntry: false});
@@ -68,8 +55,8 @@ function readStableInput(file) {
   } finally {fs.closeSync(fd);}
   let value;
   try {value = JSON.parse(new TextDecoder("utf-8", {fatal: true}).decode(bytes));} catch (error) {throw new Error("Windows support command input must be valid UTF-8 JSON", {cause: error});}
-  const parsed = exactObject(value, inputKeys, "Windows support command input");
-  const archive = exactObject(parsed["hermesArchive"], archiveKeys, "Original Hermes archive descriptor");
+  const parsed = requireBuildFields(value, inputKeys, "Windows support command input");
+  const archive = requireBuildFields(parsed["hermesArchive"], archiveKeys, "Original Hermes archive descriptor");
   for (const [name, file] of Object.entries({workspace: parsed["workspace"], exportWorkspace: parsed["exportWorkspace"], archive: archive["path"]})) {
     if (typeof file !== "string" || !path.isAbsolute(file) || /[\r\n\0]/.test(file) || file.length > 4096) {
       throw new Error("Windows support command " + name + " path must be absolute and bounded");
@@ -98,9 +85,9 @@ function decodeBoundedJson(bytes, limit, label) {
 }
 /** @param {unknown} value */
 function validateToolsJson(value) {
-  const tools = exactObject(value, Object.keys(toolKeys), "Native Windows tools JSON");
+  const tools = requireBuildFields(value, Object.keys(toolKeys), "Native Windows tools JSON");
   for (const [role, keys] of Object.entries(toolKeys)) {
-    const selected = exactObject(tools[role], keys, "Native Windows " + role + " tools");
+    const selected = requireBuildFields(tools[role], keys, "Native Windows " + role + " tools");
     for (const [name, file] of Object.entries(selected)) {
       if (typeof file !== "string" || file.length > 4096 || /[\r\n\0]/.test(file) || !path.win32.isAbsolute(file)) {
         throw new Error("Native Windows " + role + " tool " + name + " must be a bounded absolute Windows path");
@@ -123,8 +110,8 @@ async function readBoundedTools(stream) {
 }
 /** @param {string} file @param {string} inputFile @param {WindowsSupportCommandInput} input */
 function validateNewOutput(file, inputFile, input) {
-  if (typeof file !== "string" || !path.isAbsolute(file) || path.resolve(file) !== file || /[\r\n\0]/.test(file) || overlaps(file, repo) ||
-      overlaps(file, inputFile) || [input["workspace"], input["exportWorkspace"], input["hermesArchive"].path].some(root => typeof root !== "string" || overlaps(file, root))) {
+  if (typeof file !== "string" || !path.isAbsolute(file) || path.resolve(file) !== file || /[\r\n\0]/.test(file) || buildPathsOverlap(file, repo) ||
+      buildPathsOverlap(file, inputFile) || [input["workspace"], input["exportWorkspace"], input["hermesArchive"].path].some(root => typeof root !== "string" || buildPathsOverlap(file, root))) {
     throw new Error("Windows support result path must be a new canonical file outside the checkout and inputs");
   }
   const parent = path.dirname(file), stat = fs.lstatSync(parent, {throwIfNoEntry: false});
@@ -134,16 +121,16 @@ function validateNewOutput(file, inputFile, input) {
 }
 /** @param {unknown} value */
 function validateCommandResult(value) {
-  const result = exactObject(value, ["controllerSupport", "coreArchive", "coreReceipt", "exportRetirementCandidates", "supportRetirementCandidates"],
+  const result = requireBuildFields(value, ["controllerSupport", "coreArchive", "coreReceipt", "exportRetirementCandidates", "supportRetirementCandidates"],
       "Windows support command result"),
-    controller = exactObject(result["controllerSupport"], ["hermes", "io", "localBuildId"], "Controller support result"),
+    controller = requireBuildFields(result["controllerSupport"], ["hermes", "io", "localBuildId"], "Controller support result"),
     localBuildId = controller["localBuildId"];
   if (typeof localBuildId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(localBuildId)) {
     throw new Error("Windows support command result has an invalid local build identity");
   }
   for (const kind of /** @type {const} */ (["io", "hermes"])) {
-    const row = exactObject(controller[kind], ["admitted", "handoffSha256", "root"], "Controller " + kind + " result"),
-      admitted = exactObject(row["admitted"], ["kind", "localBuildId"], "Controller " + kind + " admission");
+    const row = requireBuildFields(controller[kind], ["admitted", "handoffSha256", "root"], "Controller " + kind + " result"),
+      admitted = requireBuildFields(row["admitted"], ["kind", "localBuildId"], "Controller " + kind + " admission");
     if (admitted["kind"] !== kind || admitted["localBuildId"] !== localBuildId || typeof row["root"] !== "string" || !path.isAbsolute(row["root"]) ||
         typeof row["handoffSha256"] !== "string" || !/^[a-f0-9]{64}$/.test(row["handoffSha256"])) {
       throw new Error("Windows support command result has an invalid " + kind + " handoff reference");
@@ -151,7 +138,7 @@ function validateCommandResult(value) {
   }
   if (typeof result["coreArchive"] !== "string" || !path.isAbsolute(result["coreArchive"]) ||
       !Array.isArray(result["exportRetirementCandidates"])) {throw new Error("Windows support command result is incomplete");}
-  exactObject(result["coreReceipt"], ["path", "sha256"], "Windows Core receipt reference");
+  requireBuildFields(result["coreReceipt"], ["path", "sha256"], "Windows Core receipt reference");
   return result;
 }
 /** @param {string} file @param {unknown} value */
@@ -224,8 +211,8 @@ async function buildLocalWindowsSupportCommand(input, dependencies = {}) {
   if ((dependencies.platform || process.platform) !== "win32" || process.arch !== "x64") {
     throw new Error("Local native Windows support production requires Windows x64");
   }
-  if (!input || Object.keys(input).sort().join(",") !== "exportWorkspace,hermesArchive,tools,workspace" ||
-      !input.hermesArchive || Object.keys(input.hermesArchive).sort().join(",") !== "originalRoot,path,rootName,sha256" ||
+  if (!input || !hasExactBuildFields(input, ["exportWorkspace", "hermesArchive", "tools", "workspace"]) ||
+      !input.hermesArchive || !hasExactBuildFields(input.hermesArchive, ["originalRoot", "path", "rootName", "sha256"]) ||
       !/^[a-f0-9]{64}$/.test(input.hermesArchive.sha256 || "") ||
       !ci.windowsHermesSourceName(input.hermesArchive.rootName) || !ci.canonicalHermesOriginalRoot(input.hermesArchive.originalRoot) ||
       ![input.workspace, input.exportWorkspace, input.hermesArchive.path].every(file => typeof file === "string" && path.isAbsolute(file) && !/[\r\n\0]/.test(file))) {

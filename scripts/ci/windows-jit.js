@@ -40,7 +40,7 @@ function extractHandoff(archive, name, temp, maxExpanded) {
  * @param {NodeJS.ProcessEnv} env */
 function composeWindowsJitInputs(env) {
   const suffix = ciSuffix(env), temp = fs.realpathSync(env["RUNNER_TEMP"] || ""),
-    workRoot = path.join(temp, `mom-native-windows-host-sdk-${suffix}`), sdkRoot = path.join(workRoot, `native-windows-host-sdk-${suffix}`),
+    sdkRoot = ciWindowsLlvm.windowsHostSdkPaths(temp, suffix).sdkOutput,
     toolName = `native-linux-llvm-tools-${suffix}`, hermesName = `native-windows-controller-hermes-${suffix}`,
     toolArchive = path.join(temp, "incoming", `${toolName}.tar`), hermesArchive = path.join(temp, "incoming", `${hermesName}.tar`),
     toolBundlePin = env["MOM_NATIVE_LINUX_LLVM_TOOLS_BUNDLE_SHA256"] || "", toolHandoffPin = env["MOM_NATIVE_LINUX_LLVM_TOOLS_HANDOFF_SHA256"] || "",
@@ -49,10 +49,7 @@ function composeWindowsJitInputs(env) {
   if (fileHash(toolArchive) !== toolBundlePin || fileHash(hermesArchive) !== hermesBundlePin) {
     throw new Error("Same-run Windows descriptor tool/source archive pin mismatch");
   }
-  Object.assign(process.env, {MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT: workRoot,
-    MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR: path.join(workRoot, "archives"), MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR: sdkRoot,
-    MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR: path.join(temp, `native-windows-host-sdk-${suffix}-metadata.tar`),
-    MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH: hostSdkDeadline(env)});
+  Object.assign(process.env, ciWindowsLlvm.windowsHostSdkEnvironment(temp, suffix, hostSdkDeadline(env)));
   ciWindowsLlvm.buildWindowsHostSdkSourcesCi();
   const toolRoot = extractHandoff(toolArchive, toolName, temp, 512 * 1024 ** 2),
     tools = linuxLlvmToolHandoffInputs(toolRoot, {handoffSha256: toolHandoffPin}),

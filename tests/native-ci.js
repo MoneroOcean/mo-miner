@@ -1920,7 +1920,7 @@ test.describe("Native prerequisite provenance and transport", () => {
       assert.equal(catalog["zstd"]?.sha256, zstdPin.sha256);
       assert.equal(catalog["zstd"]?.fileName, "zstd-" + zstdPin.version + ".tar.gz");
       assert.deepEqual(Object.keys(zstdSourceRecipe().graph), ["scripts/build-native-zstd.js", "scripts/build-source-inputs.js",
-        "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-linux-sysroot.js"]);
+        "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-linux-sysroot.js", "scripts/native-sdk-stage.js"]);
       const command = zstdBuildCommand(state, state.toolsFile);
       assert.deepEqual(command, {script: "scripts/build-native-zstd.js", args: [state.archive, state.sdkRoot, state.toolsFile]});
       assert.notEqual(command.args[1], path.join(state.sdkRoot, "lib/libzstd.a"), "the builder receives SDKROOT, not a raw archive path");

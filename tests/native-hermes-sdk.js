@@ -1,9 +1,9 @@
 "use strict";
 const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), test = require("node:test"), assert = require("node:assert/strict");
-const {hermesPins, hermesSdkPlan, hermesSourceFiles, validateHermesResumeCache, copyHermesSourceChanges,
+const {hermesPins, hermesRecipeFiles, hermesSdkPlan, hermesSourceFiles, validateHermesResumeCache, copyHermesSourceChanges,
   hermesResumeBaseline, buildNativeHermes} = require("../scripts/build-native-hermes");
 const {nativeSdkEnvironment} = require("../scripts/build-environment");
-const {fileHash} = require("../scripts/build-source-inputs");
+const {fileHash, sourceInputs} = require("../scripts/build-source-inputs");
 const {spawnSync} = require("node:child_process");
 const tools = {git: "/tools/git", cmake: "/tools/cmake", cc: "/tools/cc", cxx: "/tools/cxx", ninja: "/tools/ninja"};
 const sdkPlan = (jobs = 2, platform = /** @type {NodeJS.Platform} */ ("linux")) => hermesSdkPlan("/source/hermes", "/sdk/new-hermes", tools, jobs, platform);
@@ -16,16 +16,14 @@ function resumeFixture(/** @type {import("node:test").TestContext} */ t, target 
   fs.writeFileSync(path.join(source, "lib/VM/CMakeLists.txt"), "old policy\n");
   fs.writeFileSync(path.join(source, "lib/VM/Math.cpp"), "unchanged source\n");
   const plan = hermesSdkPlan("/input/hermes.git", output, tools, 2, target);
-  const graph = {"scripts/build-native-hermes.js": "c".repeat(64), "scripts/build-source-inputs.js": hermesResumeBaseline.sourceInputsCurrent,
-    "scripts/build-environment.js": "e".repeat(64), "scripts/native-audit.js": "a".repeat(64),
-    "runtime/hermes-host-rejections.patch": "b".repeat(64), ...(target === "win32" ? {"runtime/hermes-clang-cl.patch": "f".repeat(64)} : {})};
-  const recipe = {files: {}, graph}, hostPatch = path.join(path.dirname(__dirname), "runtime/hermes-host-rejections.patch"),
+  const repo = path.dirname(__dirname), recipe = sourceInputs(repo, [], hermesRecipeFiles(target)),
+    hostPatch = path.join(repo, "runtime/hermes-host-rejections.patch"),
     windowsPatch = path.join(path.dirname(__dirname), "runtime/hermes-clang-cl.patch");
   const fingerprintFiles = [...Object.values(tools), hostPatch, ...(target === "win32" ? [windowsPatch] : [])];
   const fingerprints = Object.fromEntries(fingerprintFiles.map(file => [file, "1".repeat(64)]));
-  const oldRecipe = {files: {}, graph: {...graph, "scripts/build-native-hermes.js": hermesResumeBaseline.producer,
-    ...(target === "win32" ? {"scripts/build-source-inputs.js": hermesResumeBaseline.sourceInputsOld,
-      "runtime/hermes-clang-cl.patch": hermesResumeBaseline.windowsPatch} : {})}};
+  const oldRecipe = {files: {}, graph: {...recipe.graph, "scripts/build-native-hermes.js": hermesResumeBaseline.producer,
+    "scripts/build-source-inputs.js": target === "win32" ? hermesResumeBaseline.windowsSourceInputs : hermesResumeBaseline.linuxSourceInputs,
+    ...(target === "win32" ? {"runtime/hermes-clang-cl.patch": hermesResumeBaseline.windowsPatch} : {})}};
   const oldFingerprints = {...fingerprints, ...(target === "win32" ? {[windowsPatch]: hermesResumeBaseline.windowsPatch} : {})};
   const names = "lib/VM/CMakeLists.txt\0lib/VM/Math.cpp\0", sources = hermesSourceFiles(source, names);
   const artifacts = /** @type {Record<string, {path: string, sha256: string, bytes: number}>} */ ({});
@@ -150,10 +148,10 @@ endif()
   test("Linux resume requires a known producer and unchanged source inventory", /** @param {import("node:test").TestContext} t */ t => {
     const admit = (/** @type {ReturnType<typeof resumeFixture>} */ f) => validateHermesResumeCache(f.output, f.plan, f.recipe, f.fingerprints, f.git, "linux");
     assert.doesNotThrow(() => admit(resumeFixture(t, "linux")));
-    const f = resumeFixture(t, "linux"); f.result.recipe.graph["scripts/build-source-inputs.js"] = hermesResumeBaseline.sourceInputsOld;
+    const f = resumeFixture(t, "linux"); f.result.recipe.graph["scripts/build-source-inputs.js"] = hermesResumeBaseline.windowsSourceInputs;
     f.before.recipe = f.result.recipe;
     fs.writeFileSync(path.join(f.output, "before.json"), JSON.stringify(f.before)); fs.writeFileSync(path.join(f.output, "result.json"), JSON.stringify(f.result));
-    assert.throws(() => admit(f), /recipe changed/);
+    assert.throws(() => admit(f), /recipe baseline is not recognized/);
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hermes-linux-resume-source-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
     const destination = path.join(root, "cached"), candidate = path.join(root, "candidate"), names = "lib/VM/Math.cpp\0";
@@ -177,6 +175,8 @@ endif()
   test("missing, extra or relative tools fail before a command can run", () => {
     assert.throws(() => hermesSdkPlan("/source", "/output", {...tools, git: "git"}, 2), /explicit absolute/);
     assert.throws(() => hermesSdkPlan("/source", "/output", /** @type {typeof tools} */ (/** @type {unknown} */ ({...tools, extra: "tool"})), 2), /explicit absolute/);
+    const combined = {cc: tools.cc, git: tools.git, ninja: tools.ninja, "cmake,cxx": tools.cmake};
+    assert.throws(() => hermesSdkPlan("/source", "/output", /** @type {typeof tools} */ (/** @type {unknown} */ (combined)), 2), /explicit absolute/);
   });
   test("CMake list/interpolation and control characters cannot enter SDK paths", () => {
     for (const tail of [";other", "$ENV{PATH}", '"', "\n"]) {assert.throws(() => hermesSdkPlan("/source" + tail, "/output", tools, 2), /explicit absolute/);}

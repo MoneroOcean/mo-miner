@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const {createHash} = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
 const {releaseBuildEnvironment} = require("./build-environment");
-const {fileHash, readBuildJson, readBuildText} = require("./build-source-inputs");
+const {hasExactBuildFields, containsBuildPath, fileHash, readBuildJsonSnapshot, readBuildText} = require("./build-source-inputs");
 
 const repo = path.resolve(__dirname, "..");
 const version = require("../package.json").version;
@@ -98,13 +98,13 @@ function buildWindowsSources(descriptor, workspace, environment) {
   const core = require("./build-native-windows-core"), gpu = require("./build-native-windows-gpu"), controller = require("./build-native-windows-controller");
   const {nativeApplicationGpu} = require("./build-native-application");
   const sources = descriptor.nativeSources, app = descriptor.application;
-  if (!sources || Object.keys(sources).sort().join(",") !== "core,gpu" || !absolutePath(sources.core) ||
+  if (!sources || !hasExactBuildFields(sources, ["core", "gpu"]) || !absolutePath(sources.core) ||
       !sources.gpu || typeof sources.gpu !== "object" || Array.isArray(sources.gpu) || !app ||
-      Object.keys(app).sort().join(",") !== "defaultCompiler,sdk,tools") {throw new Error("Invalid Windows source-build descriptor");}
+      !hasExactBuildFields(app, ["defaultCompiler", "sdk", "tools"])) {throw new Error("Invalid Windows source-build descriptor");}
   const factories = nativeApplicationGpu(fs.readFileSync(path.join(repo, "runtime/gpu-dispatch.cpp"), "utf8"),
     {defaultCompiler: app.defaultCompiler, flags: [], links: []}).factories;
   const keys = factories.map(name => name.replace("mom_native_gpu_", "").replaceAll("_", "-"));
-  if (Object.keys(sources.gpu).sort().join(",") !== [...keys].sort().join(",") ||
+  if (!hasExactBuildFields(sources.gpu, keys) ||
       keys.some(key => !absolutePath(sources.gpu[key]))) {throw new Error("Windows source build requires every maintained GPU profile");}
   const parent = path.dirname(workspace);
   if (!absolutePath(workspace) || !fs.statSync(parent, {throwIfNoEntry: false})?.isDirectory() ||
@@ -112,15 +112,20 @@ function buildWindowsSources(descriptor, workspace, environment) {
     throw new Error("Windows component workspace must be new and outside the repository");
   }
   // Resolve the parent before checking containment so a symlink cannot redirect build outputs into the source tree.
-  const relative = path.relative(fs.realpathSync(repo), path.join(fs.realpathSync(parent), path.basename(workspace)));
-  if (!relative || (!relative.startsWith(".." + path.sep) && !path.isAbsolute(relative))) {
+  if (containsBuildPath(fs.realpathSync(repo), path.join(fs.realpathSync(parent), path.basename(workspace)))) {
     throw new Error("Windows component workspace must be new and outside the repository");
   }
-  const files = [sources.core, ...keys.map(key => sources.gpu[key] || "")];
-  const hashes = Object.fromEntries(files.map(file => [file, fileHash(file)]));
-  core.validateWindowsCoreDescriptor(readBuildJson(sources.core));
+  /** @type {Record<string, string>} */
+  const hashes = {};
+  /** @param {string} file */
+  const readDescriptor = file => {
+    const {value, sha256} = readBuildJsonSnapshot(file);
+    hashes[file] = sha256;
+    return value;
+  };
+  core.validateWindowsCoreDescriptor(readDescriptor(sources.core));
   for (const key of keys) {
-    const selected = gpu.validateWindowsGpuConfig(readBuildJson(sources.gpu[key] || ""));
+    const selected = gpu.validateWindowsGpuConfig(readDescriptor(sources.gpu[key] || ""));
     if (selected.profile !== key) {throw new Error("Windows GPU descriptor profile differs: " + key);}
     const git = gpu.windowsGpuGit(selected, process.platform);
     if (git && !fs.statSync(git, {throwIfNoEntry: false})?.isFile()) {throw new Error("Missing Windows AdaptiveCpp Git executable: " + git);}
@@ -157,9 +162,9 @@ function bindPackingReceipt(output, binary, sourceHash, packing, value) {
   const result = /** @type {Record<string, unknown>} */ (value), receiptPath = path.join(output, "result.json");
   const stat = fs.lstatSync(receiptPath, {throwIfNoEntry: false});
   if (!stat?.isFile() || stat.isSymbolicLink()) {throw new Error("Native packer did not write a regular result receipt");}
-  const receiptBefore = fileHash(receiptPath), saved = readBuildJson(receiptPath), receiptHash = fileHash(receiptPath);
+  const {value: saved, sha256: receiptHash} = readBuildJsonSnapshot(receiptPath);
   const source = result["source"], artifact = result["artifact"], tool = result["tool"], logs = result["logs"];
-  if (receiptBefore !== receiptHash || !isDeepStrictEqual(saved, value) ||
+  if (!isDeepStrictEqual(saved, value) ||
       !source || typeof source !== "object" || Array.isArray(source) ||
       !artifact || typeof artifact !== "object" || Array.isArray(artifact) ||
       !tool || typeof tool !== "object" || Array.isArray(tool) ||
@@ -179,7 +184,7 @@ function bindPackingReceipt(output, binary, sourceHash, packing, value) {
     throw new Error("Native packing result receipt does not bind its source, artifact, or tool");
   }
   const stages = ["pack", "integrity", "restore"];
-  if (Object.keys(logRecords).sort().join(",") !== [...stages].sort().join(",")) {throw new Error("Native packing result receipt has incomplete log evidence");}
+  if (!hasExactBuildFields(logRecords, stages)) {throw new Error("Native packing result receipt has incomplete log evidence");}
   for (const stage of stages) {
     const entry = logRecords[stage], logPath = path.join(output, stage + ".log");
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {throw new Error("Native packing result receipt has invalid log evidence: " + stage);}
@@ -202,7 +207,7 @@ function matchesProducerReceipt(producer, expected, configHash, windowsTarget) {
   const targetMatches = windowsTarget ? producer.target === windowsTarget :
     producer.target === undefined || ["linux", "x86_64-unknown-linux-gnu"].includes(producer.target);
   const artifact = windowsTarget ? producer.artifact : {path: producer.binary, bytes: producer.bytes, sha256: producer.sha256};
-  return targetMatches && artifact && typeof artifact === "object" && !Array.isArray(artifact) &&
+  return targetMatches && artifact !== null && typeof artifact === "object" && !Array.isArray(artifact) &&
     artifact.path === expected.path && artifact.bytes === expected.bytes && artifact.sha256 === expected.sha256;
 }
 
@@ -214,7 +219,7 @@ function matchesProducerReceipt(producer, expected, configHash, windowsTarget) {
  * @param {typeof spawnSync} [spawn] */
 function packNativeEntrypoint(options, spawn = spawnSync) {
   const keys = ["entrypointPath", "entrypointSha256", "sourcePath", "sourceSha256", "producerReceiptPath", "target", "output", "upx", "upxSha256"];
-  if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).sort().join(",") !== keys.slice().sort().join(",")) {
+  if (!hasExactBuildFields(options, keys)) {
     throw new Error("Native entrypoint packing requires an exact pinned handoff");
   }
   const {entrypointPath, entrypointSha256, sourcePath, sourceSha256, producerReceiptPath, target, output, upx, upxSha256} = options;
@@ -248,18 +253,13 @@ function packNativeEntrypoint(options, spawn = spawnSync) {
   if (!parentStat.isDirectory() || parentStat.isSymbolicLink() || !sameParent) {
     throw new Error("Native entrypoint packing output parent must be a canonical directory");
   }
-  /** @param {string} base @param {string} candidate */
-  const inside = (base, candidate) => {
-    const relative = path.relative(base, candidate);
-    return !relative || (!relative.startsWith(".." + path.sep) && !path.isAbsolute(relative));
-  };
-  if (inside(path.dirname(sourcePath), output) || inside(path.dirname(entrypointPath), output)) {
+  if (containsBuildPath(path.dirname(sourcePath), output) || containsBuildPath(path.dirname(entrypointPath), output)) {
     throw new Error("Native entrypoint packing output must be outside the immutable handoff directories");
   }
   regularFile(entrypointPath, "original entrypoint", 8 << 20);
-  const entryHash = fileHash(entrypointPath);
-  if (entryHash !== entrypointSha256) {throw new Error("Native original entrypoint differs from its external SHA-256 pin");}
-  const entry = readBuildJson(entrypointPath);
+  const {value: entry, sha256: entryHash} = readBuildJsonSnapshot(entrypointPath, undefined, {
+    sha256: entrypointSha256, message: "Native original entrypoint differs from its external SHA-256 pin",
+  });
   if (fileHash(entrypointPath) !== entryHash) {throw new Error("Native original entrypoint changed during admission");}
   if (!record(entry) || entry.version !== 1 || entry.target !== target || entry.buildOnly !== true || entry.publicationQualified !== false ||
       entry.packingReceipt !== undefined || !record(entry.source) || !record(entry.artifact) || !record(entry.producerReceipt) ||
@@ -297,11 +297,9 @@ function packNativeEntrypoint(options, spawn = spawnSync) {
   } finally {fs.closeSync(sourceFd);}
   if (fileHash(sourcePath) !== sourceHash) {throw new Error("Native raw executable changed during target admission");}
   regularFile(producerReceiptPath, "transported producer receipt", 8 << 20);
-  const producerHash = fileHash(producerReceiptPath);
-  if (producerHash !== originalProducerHash) {
-    throw new Error("Transported producer receipt differs from its entrypoint hash");
-  }
-  const producer = readBuildJson(producerReceiptPath);
+  const {value: producer, sha256: producerHash} = readBuildJsonSnapshot(producerReceiptPath, undefined, {
+    sha256: originalProducerHash, message: "Transported producer receipt differs from its entrypoint hash",
+  });
   if (fileHash(producerReceiptPath) !== producerHash) {throw new Error("Transported producer receipt changed during admission");}
   const rawArtifact = {path: originalArtifactPath, bytes: Number(sourceStat.size), sha256: sourceHash};
   if (!matchesProducerReceipt(producer, rawArtifact, entry.generatedDescriptor?.sha256 || entry.configHash,
@@ -341,15 +339,15 @@ function packNativeEntrypoint(options, spawn = spawnSync) {
 function noticeInput(value) {
   if (value === undefined) {return undefined;}
   const selected = /** @type {{path?: unknown, sha256?: unknown, receipt?: unknown} | null} */ (value);
-  const keys = selected && typeof selected === "object" && !Array.isArray(selected) ? Object.keys(selected).sort().join(",") : "";
-  if (!selected || typeof selected !== "object" || Array.isArray(selected) || !["path,sha256", "path,receipt,sha256"].includes(keys) ||
+  const keys = ["path", "sha256"], assembled = hasExactBuildFields(selected, [...keys, "receipt"]);
+  if (!selected || (!assembled && !hasExactBuildFields(selected, keys)) ||
       typeof selected.path !== "string" || selected.path.length > 4096 || !path.isAbsolute(selected.path) ||
       Array.from(selected.path).some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) ||
       typeof selected.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(selected.sha256)) {throw new Error("Invalid native distribution notice input");}
   let assembly;
-  if (keys === "path,receipt,sha256") {
+  if (assembled) {
     const receipt = /** @type {{path?: unknown, sha256?: unknown} | null} */ (selected.receipt);
-    if (!receipt || typeof receipt !== "object" || Array.isArray(receipt) || Object.keys(receipt).sort().join(",") !== "path,sha256" ||
+    if (!receipt || !hasExactBuildFields(receipt, ["path", "sha256"]) ||
         typeof receipt.path !== "string" || !path.isAbsolute(receipt.path) || typeof receipt.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(receipt.sha256)) {
       throw new Error("Invalid native distribution notice assembly receipt");
     }
@@ -389,10 +387,10 @@ function buildNativeArtifact(configFile, output, packing, environment = process.
   if (![configFile, output].every(absolutePath) || fs.existsSync(output)) {throw new Error("Select an absolute native SDK and new output directory");}
   const env = {...releaseBuildEnvironment(environment), MOM_AOT_BUILD_ONLY: "1"};
   const unpacked = packing === undefined ? output : output + ".unpacked";
-  if (packing !== undefined && (!packing || typeof packing !== "object" || Object.keys(packing).sort().join(",") !== "upx,upxSha256" || !absolutePath(packing.upx) || !/^[0-9a-f]{64}$/.test(packing.upxSha256) ||
+  if (packing !== undefined && (!hasExactBuildFields(packing, ["upx", "upxSha256"]) || !absolutePath(packing.upx) || !/^[0-9a-f]{64}$/.test(packing.upxSha256) ||
       fileHash(packing.upx) !== packing.upxSha256 || fs.existsSync(unpacked))) {throw new Error("Native packing needs a pinned tool and a new unpacked build directory");}
   let recipe = sourceInputs(repo, [], ["scripts/build-release.js", "scripts/build-environment.js"]);
-  const configHash = fileHash(configFile), descriptor = readBuildJson(configFile);
+  const {value: descriptor, sha256: configHash} = readBuildJsonSnapshot(configFile);
   if (fileHash(configFile) !== configHash) {throw new Error("Native release descriptor changed during admission");}
   if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor) || descriptor.version !== 1) {throw new Error("Invalid native release SDK descriptor");}
   const selectedNotices = noticeInput(descriptor.notices);
@@ -422,9 +420,9 @@ function buildNativeArtifact(configFile, output, packing, environment = process.
   const sourceHash = fileHash(binary);
   const producerReceiptPath = path.join(unpacked, "result.json");
   if (!fs.existsSync(producerReceiptPath)) {throw new Error("Native source builder did not write its build receipt");}
-  const receiptBefore = fileHash(producerReceiptPath), producer = readBuildJson(producerReceiptPath), producerReceiptHash = fileHash(producerReceiptPath);
+  const {value: producer, sha256: producerReceiptHash} = readBuildJsonSnapshot(producerReceiptPath);
   const artifact = {path: binary, bytes: fs.statSync(binary).size, sha256: sourceHash};
-  if (receiptBefore !== producerReceiptHash || !matchesProducerReceipt(producer, artifact, generatedDescriptor?.sha256 || configHash,
+  if (!matchesProducerReceipt(producer, artifact, generatedDescriptor?.sha256 || configHash,
     windows ? descriptor.target || "x86_64-pc-windows-msvc" : undefined)) {
     throw new Error("Native producer receipt does not match the build-only executable and target");
   }
@@ -475,7 +473,8 @@ function nativeReleaseArguments(args, env) {
 
 // The default command calls shared helpers which import this module's build APIs.
 // Publish them before dispatch, including when this file is the process entrypoint.
-module.exports = {buildEngineeringArchive, buildNativeArtifact, packNativeEntrypoint, nativeReleaseArguments, engineeringArchiveCommands, releaseBuildEnvironment, releaseVersion, noticeInput};
+module.exports = {buildEngineeringArchive, buildNativeArtifact, packNativeEntrypoint, matchesProducerReceipt,
+  nativeReleaseArguments, engineeringArchiveCommands, releaseBuildEnvironment, releaseVersion, noticeInput};
 
 if (require.main === module) {
   try {

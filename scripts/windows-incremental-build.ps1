@@ -58,6 +58,20 @@ function Resolve-MomBuildPath([string]$Path) {
   return [IO.Path]::GetFullPath($Path)
 }
 
+# Keep a previously published DLL from surviving a failed replacement. Check both destinations
+# before touching either one because the build and publication directories may differ.
+function Initialize-MomSyclOutput([string]$CacheDir, [string]$OutDir) {
+  $out = Resolve-MomBuildPath (Join-Path $CacheDir 'sycl.dll')
+  $publishedOutput = Resolve-MomBuildPath (Join-Path $OutDir 'sycl.dll')
+  $buildRoot = Resolve-MomBuildPath 'build'
+  Assert-MomBuildArtifactPath $out $buildRoot
+  Assert-MomBuildArtifactPath $publishedOutput $buildRoot
+  New-Item -ItemType Directory -Force $CacheDir, (Split-Path -Parent $publishedOutput) | Out-Null
+  $publishSeparate = $publishedOutput -ne $out
+  if ($publishSeparate) { Remove-Item -LiteralPath $publishedOutput -Force -ErrorAction SilentlyContinue }
+  @{ Out = $out; Published = $publishedOutput; PublishSeparate = $publishSeparate }
+}
+
 function Get-MomBuildHash([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Build input missing: $Path" }
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash

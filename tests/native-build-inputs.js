@@ -1,7 +1,8 @@
 "use strict";
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const {createHash} = require("node:crypto"), {spawnSync} = require("node:child_process");
-const {fileHash, walk, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildJson, readBuildText,
+const {buildPathsOverlap, fileHash, walk, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildJson, readBuildText,
+  hasExactBuildFields, requireBuildFields, hasBuildDirectoryEntries, canonicalBuildFile, readCanonicalBuildJson, verifyStableBuildJson,
   buildDependencies, buildFileInputs, completeBuildInputs} = require("../scripts/build-source-inputs");
 const {admitCpuCache} = require("../scripts/build-native-core");
 const {nativeApplicationInputs, nativeApplicationBuildInputs, nativeApplicationCudaImages, verifyCudaImageReceiptInputs} = require("../scripts/build-native-application");
@@ -120,13 +121,19 @@ test.describe("Shared build source content and membership", () => {
   });
   test("Windows GPU source receipts cover every directly imported build helper", () => {
     const graph = nativeSourceInputs(repo, "gpu").graph;
-    for (const file of ["build-native-windows-gpu.js", "native-windows-wrapper.js", "native-sycl-inputs.js"]) {
+    for (const file of ["build-native-gpu.js", "native-gpu-build.js", "build-native-windows-gpu.js", "native-windows-wrapper.js", "native-sycl-inputs.js"]) {
       const source = fs.readFileSync(path.join(repo, "scripts", file), "utf8");
       for (const match of source.matchAll(/require\("\.\/([^"\n]+)"\)/g)) {
         const dependency = "scripts/" + match[1] + ".js";
         assert.ok(Object.hasOwn(graph, dependency), "untracked GPU helper from " + file + ": " + dependency);
       }
     }
+  });
+  test("shared source-input changes invalidate both CPU and GPU receipts", t => {
+    const f = fixture(t), cpu = nativeSourceInputs(f.root, "cpu"), gpu = nativeSourceInputs(f.root, "gpu");
+    f.put("scripts/build-source-inputs.js", "changed shared source input module");
+    assert.throws(() => verifySourceInputs(cpu, nativeSourceInputs(f.root, "cpu"), "Core"), /stale/);
+    assert.throws(() => verifySourceInputs(gpu, nativeSourceInputs(f.root, "gpu"), "GPU"), /stale/);
   });
   for (const file of ["scripts/native-elf.js", "scripts/native-jit-link.js"]) {
     test(`backdated ${file} edits invalidate GPU audits without rebuilding Core or Engineering`, t => {
@@ -161,6 +168,13 @@ test.describe("Shared build source content and membership", () => {
 });
 
 test.describe("Bounded native input and receipt IO", {concurrency: false}, () => {
+  test("managed paths overlap their ancestor, including the filesystem root, and exclude siblings", () => {
+    const input = path.resolve("sdk"), output = path.join(input, "build");
+    assert.ok(buildPathsOverlap(input, output));
+    assert.ok(buildPathsOverlap(output, path.parse(input).root));
+    assert.ok(buildPathsOverlap(input, input));
+    assert.ok(!buildPathsOverlap(input, input + "-other"));
+  });
   test("streamed hashes match independent SHA256", t => {const f = fixture(t); assert.equal(fileHash(f.put("payload", "hello")), digest("hello"));});
   test("empty regular files are valid source content", t => {const f = fixture(t); assert.equal(fileHash(f.put("empty", "")), digest(""));});
   test("multi-megabyte inputs are read in bounded chunks without readFileSync", t => {
@@ -187,6 +201,60 @@ test.describe("Bounded native input and receipt IO", {concurrency: false}, () =>
   });
   test("directory receipts cannot block admission", t => {const f = fixture(t); assert.throws(() => readBuildJson(f.root), /Invalid/);});
   test("valid bounded JSON survives unchanged", t => {const f = fixture(t); assert.deepEqual(readBuildJson(f.put("valid.json", '{"value":7}')), {value: 7});});
+  test("field names containing the delimiter cannot impersonate separate required fields", () => {
+    const value = {root: "/sdk", receipt: "result.json"};
+    assert.equal(requireBuildFields(value, ["root", "receipt"], "SDK"), value);
+    for (const delimiter of [",", "\0"]) {
+      const malformed = {[["receipt", "root"].join(delimiter)]: value};
+      assert.equal(hasExactBuildFields(malformed, ["root", "receipt"]), false);
+      assert.throws(() => requireBuildFields(malformed, ["root", "receipt"], "SDK"), /unknown or missing fields/);
+    }
+  });
+  test("a combined filename cannot impersonate two build directory entries", t => {
+    const f = fixture(t), directory = path.join(f.root, "managed"), combined = f.put("managed/config.json,result.json", "{}");
+    const expected = ["config.json", "result.json"];
+    assert.equal(hasBuildDirectoryEntries(directory, expected), false);
+    assert.deepEqual(fs.readdirSync(directory), [path.basename(combined)]);
+    fs.renameSync(combined, path.join(directory, "config.json"));
+    assert.equal(hasBuildDirectoryEntries(directory, expected), false);
+    f.put("managed/result.json", "{}");
+    assert.equal(hasBuildDirectoryEntries(directory, expected), true);
+  });
+  test("stable JSON admission returns the digest of the exact serialized bytes", t => {
+    const f = fixture(t), bytes = '{\n  "value": 7\n}\n', file = f.put("stable.json", bytes);
+    assert.equal(verifyStableBuildJson(file, {value: 7}, "Config"), digest(bytes));
+    assert.throws(() => verifyStableBuildJson(file, {value: 8}, "Config"), /Config is stale/);
+    fs.linkSync(file, path.join(f.root, "hardlink.json"));
+    assert.throws(() => canonicalBuildFile(file, "Config"), /bounded canonical regular file/);
+  });
+  test("replacing a receipt during admission invalidates the snapshot", {skip: process.platform === "win32"}, t => {
+    const f = fixture(t), file = f.put("stable.json", "{}\n"), replacement = f.put("replacement.json", "{}\n"), read = fs.readSync;
+    fs.readSync = /** @type {typeof fs.readSync} */ ((...args) => {
+      fs.readSync = read;
+      fs.renameSync(replacement, file);
+      return Reflect.apply(read, fs, args);
+    });
+    try {assert.throws(() => verifyStableBuildJson(file, {}, "Config"), /changed/);} finally {fs.readSync = read;}
+  });
+  test("the receipt digest covers the same bytes that supplied the parsed value", {skip: process.platform === "win32"}, t => {
+    const f = fixture(t), bytes = '{"value":1}', file = f.put("pinned.json", bytes);
+    const pinned = readCanonicalBuildJson(file, 1024, "Config");
+    assert.deepEqual(pinned.value, {value: 1});
+    assert.equal(pinned.sha256, digest(bytes));
+
+    const replacement = f.put("replacement.json", '{"value":2}'), saved = path.join(f.root, "saved.json"), open = fs.openSync;
+    fs.openSync = /** @type {typeof fs.openSync} */ ((...args) => {
+      if (args[0] !== file) {return Reflect.apply(open, fs, args);}
+      fs.renameSync(file, saved);
+      fs.renameSync(replacement, file);
+      const fd = Reflect.apply(open, fs, args);
+      fs.renameSync(file, replacement);
+      fs.renameSync(saved, file);
+      return fd;
+    });
+    try {assert.throws(() => readCanonicalBuildJson(file, 1024, "Config"), /changed before admission/);} finally {fs.openSync = open;}
+    assert.equal(fileHash(file), pinned.sha256);
+  });
   test("receipt growth during reading fails before parsing a partial object", t => {
     const f = fixture(t), file = f.put("changing.json", "{}"), read = fs.readSync; let changed = false;
     fs.readSync = /** @type {typeof fs.readSync} */ ((...args) => {
@@ -447,7 +515,7 @@ test.describe("Native application recipe and runtime freshness", () => {
   test("unchanged runtime sources and recipes produce identical receipts", t => {
     const f = fixture(t); assert.deepEqual(nativeApplicationBuildInputs(f.root), nativeApplicationBuildInputs(f.root));
   });
-  for (const file of ["runtime/host.cpp", "scripts/build-native-application.js", "scripts/native-bundle.js", "scripts/native-resources.js", "sycl/cuda-images.cpp", "sycl/cuda-images.h"]) {
+  for (const file of ["runtime/host.cpp", "scripts/build-native-application.js", "scripts/build-source-inputs.js", "scripts/native-bundle.js", "scripts/native-resources.js", "sycl/cuda-images.cpp", "sycl/cuda-images.h"]) {
     test(`mid-build ${file} edits invalidate application publication`, t => {
       const f = fixture(t), before = nativeApplicationBuildInputs(f.root); f.put(file, "changed");
       assert.throws(() => verifySourceInputs(before, nativeApplicationBuildInputs(f.root), "Native controller build"), /stale.*rebuild/);

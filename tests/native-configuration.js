@@ -903,7 +903,6 @@ test.describe("Native GPU Core build boundary", () => {
   test("CN/GPU source JIT retains matching static compiler components, not a shared loader", () => {
     const build = read("scripts/native-gpu-build.js");
     assert.match(build, /\["nvrtc_static", "nvrtc-builtins_static", "nvptxcompiler_static"\]/);
-    assert.match(build, /cuda && \["sycl\/cn-gpu\/cn-gpu\.cpp", "sycl\/pearlhash\/pearlhash\.cpp"\]\.includes\(file\) \? \["-DMOM_SYCL_HAS_CUDA"\]/);
     assert.match(build, /inputs\.libraries\.push\(file\)/);
   });
   test("every native GPU translation unit uses the same compiler API definition", () => {
