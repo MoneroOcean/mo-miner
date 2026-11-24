@@ -29,6 +29,12 @@ const sycl::event round1_event = compute_queue.submit([&](sycl::handler& handler
   sycl::accessor acc_i1{buffer_i1, handler, sycl::read_write};
   const uint32_t initial_counter_words = 1u << (EDGE_BITS - initial_bucket_bits - 4);
   sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(initial_counter_words), handler};
+  // Survivors are paired by destination bucket exactly as in seeding (see seed.inc). Only this
+  // round: both edges of a pair share their source and destination buckets, so from the next round
+  // on adjacent lanes would contend for one slot and half the survivors would leave unpaired.
+  const uint32_t round1_parking_words = 2u * trim_bucket_count;
+  sycl::local_accessor<uint32_t, 1> parking{
+      sycl::range<1>(round1_parking ? round1_parking_words : 2u), handler};
   handler.parallel_for(
       sycl::nd_range<1>(sycl::range<1>(initial_bucket_count * initial_trim_threads),
                         sycl::range<1>(initial_trim_threads)),
@@ -43,6 +49,19 @@ const sycl::event round1_event = compute_queue.submit([&](sycl::handler& handler
         for (uint32_t counter_index = local_id; counter_index < initial_counter_words;
              counter_index += initial_trim_threads)
           edge_counters[counter_index] = 0;
+        if (round1_parking) {
+          for (uint32_t word = local_id; word < round1_parking_words; word += initial_trim_threads)
+            parking[word] = 0;
+        }
+        // Store two swapped edges of destination bucket `bucket_id` (the second may be the zero
+        // edge).
+        const auto store_pair = [&](const uint32_t bucket_id, const uint32_t v0, const uint32_t u0,
+                                    const uint32_t v1, const uint32_t u1) {
+          const uint32_t bucket_index = c29_global_atomic(acc_i1, bucket_id).fetch_add(2);
+          if (bucket_index + 1 < trim_bucket_edges)
+            *reinterpret_cast<sycl::uint4*>(&acc_b[bucket_id * trim_bucket_edges + bucket_index]) =
+                sycl::uint4(v0, u0, v1, u1);
+        };
 
         item.barrier(sycl::access::fence_space::local_space);
 
@@ -74,11 +93,35 @@ const sycl::event round1_event = compute_queue.submit([&](sycl::handler& handler
                 read_2bit_counter((current_edge.x() & EDGE_MASK) >> initial_bucket_bits,
                                   edge_counters, initial_counter_words / 2)) {
               const uint32_t bucket_id = current_edge.y() & trim_bucket_mask;
+              if (round1_parking) {
+                const uint32_t tag = local_atomic_ref(parking[2 * bucket_id]).exchange(0xffffffffu);
+                if (tag == 0) {   // empty: park this edge (tag = u + 1, data = v)
+                  parking[2 * bucket_id + 1] = current_edge.y();
+                  local_atomic_ref(parking[2 * bucket_id]).store(current_edge.x() + 1);
+                } else if (tag == 0xffffffffu) {   // held by another thread: do not wait
+                  store_pair(bucket_id, current_edge.y(), current_edge.x(), 0, 0);
+                } else {
+                  const uint32_t parked_v = parking[2 * bucket_id + 1];
+                  local_atomic_ref(parking[2 * bucket_id]).store(0);
+                  store_pair(bucket_id, current_edge.y(), current_edge.x(), parked_v, tag - 1);
+                }
+                continue;
+              }
               const uint32_t bucket_index = sycl::min(
                   c29_global_atomic(acc_i1, bucket_id).fetch_add(1), trim_bucket_edges - 1);
               acc_b[bucket_id * trim_bucket_edges + bucket_index] =
                   sycl::uint2(current_edge.y(), current_edge.x()); // Swap edge direction
             }
+          }
+        }
+
+        if (round1_parking) {
+          item.barrier(sycl::access::fence_space::local_space);
+          for (uint32_t bucket_id = local_id; bucket_id < trim_bucket_count;
+               bucket_id += initial_trim_threads) {
+            const uint32_t tag = parking[2 * bucket_id];
+            if (tag != 0)
+              store_pair(bucket_id, parking[2 * bucket_id + 1], tag - 1, 0, 0);
           }
         }
 
@@ -128,7 +171,7 @@ const sycl::event round_no1_event = compute_queue.submit([&](sycl::handler& hand
 
         item.barrier(sycl::access::fence_space::local_space);
 
-        // Second pass: write filtered edges with memory offset for better cache locality
+        // Second pass: write filtered edges
         for (uint32_t loop_index = 0; loop_index < processing_loops; loop_index++) {
           const uint32_t edge_local_index = loop_index * round_no1_threads + local_id;
           if (edge_local_index < edges_in_bucket) {
@@ -138,12 +181,9 @@ const sycl::event round_no1_event = compute_queue.submit([&](sycl::handler& hand
                 read_2bit_counter((current_edge.x() & EDGE_MASK) >> trim_bucket_bits, edge_counters,
                                   trim_counter_words / 2)) {
               const uint32_t bucket_id = current_edge.y() & trim_bucket_mask;
-              const uint32_t bucket_offset =
-                  trim_bucket_bits == 12 ? (bucket_id & BUCKET_OFFSET) * BUCKET_STEP : 0;
-              const uint32_t bucket_index =
-                  sycl::min(c29_global_atomic(acc_i2, bucket_id).fetch_add(1),
-                            trim_bucket_edges - 1 - bucket_offset);
-              acc_a1[bucket_id * trim_bucket_edges + bucket_offset + bucket_index] =
+              const uint32_t bucket_index = sycl::min(
+                  c29_global_atomic(acc_i2, bucket_id).fetch_add(1), trim_bucket_edges - 1);
+              acc_a1[bucket_id * trim_bucket_edges + bucket_index] =
                   sycl::uint2(current_edge.y(), current_edge.x());
             }
           }
@@ -157,33 +197,44 @@ const sycl::event round_no1_event = compute_queue.submit([&](sycl::handler& hand
 profile.add_event("round_no1", round_no1_event);
 profile.mark("round_no1 submitted");
 
-// FluffyRoundNON: Subsequent trimming rounds
+// FluffyRoundNON: Subsequent trimming rounds.
+// A nonzero fold_multiplier counts degrees in a table an eighth of the size, indexed by a
+// multiplicative hash of the node. Clearing the table is the fixed cost of a round, and all but the
+// first rounds are nearly empty. Nodes that share a slot keep each other's edges for that round, so
+// folding only trims less, never wrongly; the multiplier must be odd and differ from round to
+// round, or two colliding leaves would keep each other alive for ever and trimming would stall.
 auto trim_round = [&](sycl::queue& queue, sycl::buffer<sycl::uint2, 1>& source_buffer,
                       sycl::buffer<sycl::uint2, 1>& dest_buffer,
                       sycl::buffer<uint32_t, 1>& source_indexes,
-                      sycl::buffer<uint32_t, 1>& dest_indexes, const uint32_t threads) {
+                      sycl::buffer<uint32_t, 1>& dest_indexes, const uint32_t threads,
+                      const uint32_t fold_multiplier) {
+  const uint32_t counter_words = fold_multiplier ? trim_counter_words >> 3 : trim_counter_words;
+  const uint32_t fold_shift = 32u - (EDGE_BITS - trim_bucket_bits - 3u);
   return queue.submit([&](sycl::handler& handler) {
     sycl::accessor acc_source{source_buffer, handler, sycl::read_only};
     sycl::accessor acc_dest{dest_buffer, handler, sycl::write_only, sycl::no_init};
     sycl::accessor acc_source_indexes{source_indexes, handler, sycl::read_write};
     sycl::accessor acc_dest_indexes{dest_indexes, handler, sycl::read_write};
-    sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(trim_counter_words), handler};
+    sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(counter_words), handler};
     handler.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(trim_bucket_count * threads), sycl::range<1>(threads)),
         [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
           const uint32_t local_id = item.get_local_id(0);
           const uint32_t work_group_id = item.get_group(0);
+          // Counter slot of an edge's node within this bucket.
+          const auto counter_slot = [=](const uint32_t node_id) {
+            const uint32_t node = (node_id & EDGE_MASK) >> trim_bucket_bits;
+            return fold_multiplier ? (node * fold_multiplier) >> fold_shift : node;
+          };
 
-          for (uint32_t counter_index = local_id; counter_index < trim_counter_words;
+          for (uint32_t counter_index = local_id; counter_index < counter_words;
                counter_index += threads)
             edge_counters[counter_index] = 0;
 
           item.barrier(sycl::access::fence_space::local_space);
 
-          const uint32_t bucket_offset =
-              trim_bucket_bits == 12 ? (work_group_id & BUCKET_OFFSET) * BUCKET_STEP : 0;
           const uint32_t edges_in_bucket =
-              sycl::min(acc_source_indexes[work_group_id], trim_bucket_edges - bucket_offset);
+              sycl::min(acc_source_indexes[work_group_id], trim_bucket_edges);
           const uint32_t processing_loops = (edges_in_bucket + threads - 1) / threads;
 
           // First pass: count edge occurrences
@@ -191,10 +242,10 @@ auto trim_round = [&](sycl::queue& queue, sycl::buffer<sycl::uint2, 1>& source_b
             const uint32_t edge_local_index = loop_index * threads + local_id;
             if (edge_local_index < edges_in_bucket) {
               const sycl::uint2 current_edge =
-                  acc_source[trim_bucket_edges * work_group_id + bucket_offset + edge_local_index];
+                  acc_source[trim_bucket_edges * work_group_id + edge_local_index];
               if (current_edge.x() || current_edge.y())
-                increment_2bit_counter((current_edge.x() & EDGE_MASK) >> trim_bucket_bits,
-                                       edge_counters, trim_counter_words / 2);
+                increment_2bit_counter(counter_slot(current_edge.x()), edge_counters,
+                                       counter_words / 2);
             }
           }
 
@@ -205,17 +256,15 @@ auto trim_round = [&](sycl::queue& queue, sycl::buffer<sycl::uint2, 1>& source_b
             const uint32_t edge_local_index = loop_index * threads + local_id;
             if (edge_local_index < edges_in_bucket) {
               const sycl::uint2 current_edge =
-                  acc_source[trim_bucket_edges * work_group_id + bucket_offset + edge_local_index];
+                  acc_source[trim_bucket_edges * work_group_id + edge_local_index];
               if ((current_edge.x() || current_edge.y()) &&
-                  read_2bit_counter((current_edge.x() & EDGE_MASK) >> trim_bucket_bits,
-                                    edge_counters, trim_counter_words / 2)) {
+                  read_2bit_counter(counter_slot(current_edge.x()), edge_counters,
+                                    counter_words / 2)) {
                 const uint32_t bucket_id = current_edge.y() & trim_bucket_mask;
-                const uint32_t dest_offset =
-                    trim_bucket_bits == 12 ? (bucket_id & BUCKET_OFFSET) * BUCKET_STEP : 0;
                 const uint32_t bucket_index =
                     sycl::min(c29_global_atomic(acc_dest_indexes, bucket_id).fetch_add(1),
-                              trim_bucket_edges - 1 - dest_offset);
-                acc_dest[bucket_id * trim_bucket_edges + dest_offset + bucket_index] =
+                              trim_bucket_edges - 1);
+                acc_dest[bucket_id * trim_bucket_edges + bucket_index] =
                     sycl::uint2(current_edge.y(), current_edge.x());
               }
             }
@@ -229,7 +278,7 @@ auto trim_round = [&](sycl::queue& queue, sycl::buffer<sycl::uint2, 1>& source_b
 
 // Main trimming loop: iteratively reduce edge count by removing low-degree edges
 profile.add_event("trim_a_to_b_initial", trim_round(compute_queue, buffer_a1_u2, buffer_b_u2,
-                                                    buffer_i2, buffer_i1, trim_threads));
+                                                    buffer_i2, buffer_i1, trim_threads, 0));
 profile.mark("initial trim submitted");
 
 const uint32_t trim_rounds = c29_trim_rounds(device);
@@ -237,13 +286,20 @@ const uint32_t trim_rounds = c29_trim_rounds(device);
 const bool intel_late_trim = device.is_gpu() &&
     device.get_info<sycl::info::device::vendor_id>() == 0x8086;
 for (uint32_t round_index = 0; round_index < trim_rounds; round_index++) {
-  // Later Intel buckets are sparse: fewer lanes reduce idle work without changing
-  // bucket coverage. Keep the dense initial rounds and other vendors unchanged.
-  const uint32_t round_threads = intel_late_trim && round_index >= 4u ? 128u : trim_threads;
+  // Later buckets are sparse: fewer lanes reduce idle work without changing bucket coverage. On an
+  // RTX 5060 Ti a nearly empty round costs 0.13 ms with 1024 lanes per bucket and 0.05 ms with 256,
+  // and about 150 of the 161 rounds are nearly empty. From the tenth pair on the rounds also count
+  // degrees in folded tables, which lets AMD drop to 128 lanes as well.
+  const bool folded = round_index >= 9u;
+  const uint32_t round_threads = round_index < 4u ? trim_threads
+      : intel_late_trim ? 128u : cuda_gpu ? 256u : folded && hip_gpu ? 128u : trim_threads;
+  // Odd, and different for every folded round.
+  const uint32_t fold_multiplier = folded ? 0x9e3779b1u + 4u * round_index * 0x7feb352du : 0u;
   profile.add_event("trim_b_to_a", trim_round(compute_queue, buffer_b_u2, buffer_a1_u2, buffer_i1,
-                                              buffer_i2, round_threads));
-  profile.add_event("trim_a_to_b", trim_round(compute_queue, buffer_a1_u2, buffer_b_u2, buffer_i2,
-                                              buffer_i1, round_threads));
+                                              buffer_i2, round_threads, fold_multiplier));
+  profile.add_event("trim_a_to_b",
+                    trim_round(compute_queue, buffer_a1_u2, buffer_b_u2, buffer_i2, buffer_i1,
+                               round_threads, folded ? fold_multiplier + 0xfd6a6a5au : 0u));
 }
 
 profile.mark("trim loop submitted");
@@ -264,10 +320,7 @@ const sycl::event tail_event = compute_queue.submit([&](sycl::handler& handler) 
       [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
         const uint32_t local_id = item.get_local_id(0);
         const uint32_t work_group_id = item.get_group(0);
-        const uint32_t bucket_offset =
-            trim_bucket_bits == 12 ? (work_group_id & BUCKET_OFFSET) * BUCKET_STEP : 0;
-        const uint32_t edges_to_copy =
-            sycl::min(acc_i1[work_group_id], trim_bucket_edges - bucket_offset);
+        const uint32_t edges_to_copy = sycl::min(acc_i1[work_group_id], trim_bucket_edges);
 
         // Thread 0 reserves space in output buffer
         if (local_id == 0)
@@ -280,8 +333,7 @@ const sycl::event tail_event = compute_queue.submit([&](sycl::handler& handler) 
              edge_index += COMPUTE_THREADS) {
           const uint32_t index = output_index[0] + edge_index;
           if (index < MAX_TRIMMED_EDGE_COUNT)
-            acc_edges[index] =
-                acc_b[work_group_id * trim_bucket_edges + bucket_offset + edge_index];
+            acc_edges[index] = acc_b[work_group_id * trim_bucket_edges + edge_index];
         }
 
         if (local_id == 0)

@@ -18,24 +18,30 @@ inline __attribute__((always_inline)) void siphash_round(uint64_t& v0, uint64_t&
   v2 = mom_rotate(v2, static_cast<uint64_t>(32));
 }
 
+// One nonce of the stateful SipHash-2-4 walk through a 64-nonce block.
+inline __attribute__((always_inline)) uint64_t siphash_step(uint64_t& v0, uint64_t& v1,
+                                                            uint64_t& v2, uint64_t& v3,
+                                                            const uint64_t nonce) {
+  v3 ^= nonce;
+  siphash_round(v0, v1, v2, v3);
+  siphash_round(v0, v1, v2, v3);
+  v0 ^= nonce;
+  v2 ^= 0xff;
+  siphash_round(v0, v1, v2, v3);
+  siphash_round(v0, v1, v2, v3);
+  siphash_round(v0, v1, v2, v3);
+  siphash_round(v0, v1, v2, v3);
+  return (v0 ^ v1) ^ (v2 ^ v3);
+}
+
 // Walk the stateful 64-nonce SipHash block; callers apply the final-word XOR to its edges.
 inline __attribute__((always_inline)) void siphash_fill_block(uint64_t& v0, uint64_t& v1,
                                                               uint64_t& v2, uint64_t& v3,
                                                               const uint64_t base,
                                                               uint64_t* const output) {
 #pragma vector always
-  for (uint32_t offset = 0; offset < EDGE_BLOCK_SIZE; ++offset) {
-    v3 ^= base + offset;
-    siphash_round(v0, v1, v2, v3);
-    siphash_round(v0, v1, v2, v3);
-    v0 ^= base + offset;
-    v2 ^= 0xff;
-    siphash_round(v0, v1, v2, v3);
-    siphash_round(v0, v1, v2, v3);
-    siphash_round(v0, v1, v2, v3);
-    siphash_round(v0, v1, v2, v3);
-    output[offset] = (v0 ^ v1) ^ (v2 ^ v3);
-  }
+  for (uint32_t offset = 0; offset < EDGE_BLOCK_SIZE; ++offset)
+    output[offset] = siphash_step(v0, v1, v2, v3, base + offset);
 }
 
 struct C29SearchCompletionGuard {

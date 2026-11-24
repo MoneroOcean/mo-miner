@@ -11,6 +11,19 @@
 // - BZMiner 100.45 provides a controlled B580 reference: 2.62 g/s on Linux and 2.55 g/s on
 //   Windows (final five warmed samples, offline benchmark). Its Intel path explicitly rejects
 //   A770, whose comparison still uses the 7.40 g/s NVIDIA peer, not a proven hardware ceiling.
+// - NVIDIA and AMD seeding is bound by the number of scattered global stores, each costing the same
+//   for 4, 8 or 16 bytes, so a work group pairs the edges of a bucket and writes two per store;
+//   NVIDIA does the same in the first trim round (seed.inc). Later rounds cannot: both edges of a
+//   pair share their source and destination buckets, so adjacent lanes would contend for the same
+//   pairing slot.
+// - Intel gains nothing from pairing. There it pays to walk each SipHash block twice instead of
+//   reading the block's 64 hashes back from thread-private memory.
+// - A bucket's byte stride is 16 times an odd number. Strides with many factors of two put every
+//   bucket's write position on the same cache sets, which costs AMD 6 ms in every trim round.
+// - From the tenth trim pair on the rounds are nearly empty and their cost is clearing the degree
+//   counters, so they count in tables an eighth of the size with a per-round hash (trim.inc).
+// - Measured per graph: RTX 5060 Ti 160 -> 108 ms, RX 9060 XT 170 -> 133 ms, Arc B580 156 -> 149
+//   ms.
 // - Keep the complete portable SYCL path available; vendor-specific changes must be capability-gated.
 #include <sycl/sycl.hpp>
 #include <algorithm>

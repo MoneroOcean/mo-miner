@@ -1,17 +1,24 @@
 
-// Cuckaroo Cycle algorithm constants and fixed kernel sizing.
-const constexpr uint64_t DUCK_SIZE_A = 129, DUCK_SIZE_B = 83, MAX_INITIAL_INDEX_SIZE = 65536;
+// Cuckaroo Cycle algorithm constants and fixed kernel sizing. Buffer A holds every edge after
+// seeding and buffer B the 63% that survive the first trim round. Paired stores (see seed.inc)
+// leave holes: up to 3.3% more slots than edges after seeding, which A's 5.5% spare covers, and
+// 5.6% more after a paired first round, for which B needs DUCK_SIZE_B_PAIRED rather than
+// DUCK_SIZE_B units per bucket.
+const constexpr uint64_t DUCK_SIZE_A = 131, DUCK_SIZE_B = 83, DUCK_SIZE_B_PAIRED = 88,
+                         MAX_INITIAL_INDEX_SIZE = 65536;
 
 const constexpr uint64_t BUFFER_SIZE_A1 = DUCK_SIZE_A * 1024 * (4096 - 128) * 2,
-                         BUFFER_SIZE_A2 = DUCK_SIZE_A * 1024 * 256 * 2,
-                         BUFFER_SIZE_B = DUCK_SIZE_B * 1024 * 4096 * 2;
+                         BUFFER_SIZE_A2 = DUCK_SIZE_A * 1024 * 256 * 2;
 
 const constexpr uint32_t COMPUTE_THREADS = 1024, PORTABLE_TRIMMING_ROUNDS = 80,
                          INTEL_TRIMMING_ROUNDS = 42, EDGE_BLOCK_SIZE = 64,
-                         EDGE_BITS = mom_c29::kEdgeBits,
-                         BUCKET_OFFSET = 255, BUCKET_STEP = 32;
+                         EDGE_BITS = mom_c29::kEdgeBits;
 #ifdef MOM_C29_INTEL
 const constexpr uint32_t MAX_TRIMMED_EDGE_COUNT = 512 * COMPUTE_THREADS, DEFAULT_SEED_BLOCKS = 4,
+                         DEFAULT_SEED_LOCAL_SIZE = 256;
+#elif defined(MOM_SYCL_HAS_HIP)
+// AMD pairs seed edges best in larger work groups (see seed.inc).
+const constexpr uint32_t MAX_TRIMMED_EDGE_COUNT = 128 * COMPUTE_THREADS, DEFAULT_SEED_BLOCKS = 16,
                          DEFAULT_SEED_LOCAL_SIZE = 256;
 #else
 const constexpr uint32_t MAX_TRIMMED_EDGE_COUNT = 128 * COMPUTE_THREADS, DEFAULT_SEED_BLOCKS = 16,
@@ -174,10 +181,23 @@ struct C29Profile {
   }
 };
 
+// Buffer B units per bucket. Only a CUDA device pairs the first trim round (see seed.inc), and only
+// one with memory beyond the documented 8 GiB minimum is given the 160 MiB that the pairs' holes
+// take.
+static uint64_t c29_duck_size_b(const sycl::device& device) {
+  return mom_is_cuda(device) &&
+                 device.get_info<sycl::info::device::global_mem_size>() >= (9ull << 30)
+             ? DUCK_SIZE_B_PAIRED
+             : DUCK_SIZE_B;
+}
+
 struct C29Buffers {
+  explicit C29Buffers(const sycl::device& device)
+      : buffer_b{sycl::range<1>{c29_duck_size_b(device) * 1024 * 4096 * 2}} {}
+
   sycl::buffer<uint32_t, 1> buffer_a1{sycl::range<1>{BUFFER_SIZE_A1}};
   sycl::buffer<uint32_t, 1> buffer_a2{sycl::range<1>{BUFFER_SIZE_A2}};
-  sycl::buffer<uint32_t, 1> buffer_b{sycl::range<1>{BUFFER_SIZE_B}};
+  sycl::buffer<uint32_t, 1> buffer_b;
   sycl::buffer<uint32_t, 1> buffer_i1{sycl::range<1>{MAX_INITIAL_INDEX_SIZE}};
   sycl::buffer<uint32_t, 1> buffer_i2{sycl::range<1>{MAX_INITIAL_INDEX_SIZE}};
   sycl::buffer<uint32_t, 1> buffer_trimmed_edge_count{sycl::range<1>{1}};
@@ -239,7 +259,8 @@ struct C29State {
                                 sycl::property_list{sycl::property::queue::in_order{},
                                                     sycl::property::queue::enable_profiling{}}}
                   : sycl::queue{device, c29_exception_handler(),
-                                sycl::property_list{sycl::property::queue::in_order{}}}) {
+                                sycl::property_list{sycl::property::queue::in_order{}}}),
+        buffers(device) {
     result_state = std::make_shared<C29ResultState>();
   }
 
