@@ -9,8 +9,11 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <vector>
+
+#include "../native/job-boundary.h"
 
 namespace mom_equihash::pow {
 
@@ -121,14 +124,13 @@ inline void sha256(const std::uint8_t* message, const std::size_t length,
 inline bool meets_target(const std::uint8_t* header, const std::size_t header_length,
                          const std::uint8_t* solution, const std::size_t solution_length,
                          const std::uint8_t* target) {
+  if (solution_length > UINT16_MAX)
+    return false;
+  std::uint8_t prefix[3];
+  const unsigned prefix_size =
+      mom::job_boundary::write_compact_size16(static_cast<std::uint16_t>(solution_length), prefix);
   std::vector<std::uint8_t> preimage(header, header + header_length);
-  if (solution_length < 253) {
-    preimage.push_back(static_cast<std::uint8_t>(solution_length));
-  } else {
-    preimage.push_back(253);
-    preimage.push_back(static_cast<std::uint8_t>(solution_length));
-    preimage.push_back(static_cast<std::uint8_t>(solution_length >> 8));
-  }
+  preimage.insert(preimage.end(), prefix, prefix + prefix_size);
   preimage.insert(preimage.end(), solution, solution + solution_length);
   std::uint8_t first[32];
   std::uint8_t hash[32];
@@ -139,28 +141,52 @@ inline bool meets_target(const std::uint8_t* header, const std::size_t header_le
   return true;
 }
 
-// Fill the worker's out-of-band buffer as [count:u8][count * proof bytes] from canonical proofs that
-// expose `encoded` bytes. A non-null target keeps only proofs meeting it (mining); tests keep only
-// the first proof. Returns the number written.
+// All solvers use [count:u8][count * proof bytes]. A null byte pointer skips a proof.
+template <typename Solutions, typename Encode>
+inline unsigned pack_solutions(const Solutions& solutions, std::size_t proof_length,
+                               std::size_t buffer_length, bool first_only, std::uint8_t* out,
+                               Encode encode) {
+  if (!buffer_length)
+    return 0;
+  const std::size_t capacity = proof_length
+      ? std::min<std::size_t>(first_only ? 1 : 255, (buffer_length - 1) / proof_length) : 0;
+  unsigned count = 0;
+  for (const auto& solution : solutions) {
+    if (count == capacity)
+      break;
+    if (const auto* encoded = encode(solution)) {
+      std::memcpy(out + 1 + count * proof_length, encoded, proof_length);
+      ++count;
+    }
+  }
+  out[0] = static_cast<std::uint8_t>(count);
+  return count;
+}
+
+// Diagnostics use the bytes accepted by the worker, including the buffer capacity limit.
+inline void log_solutions(const std::uint8_t* packed, std::size_t proof_length) {
+  const auto* byte = packed + 1;
+  for (unsigned proof = 0; proof < packed[0]; ++proof) {
+    std::fputs("  ", stderr);
+    for (std::size_t i = 0; i < proof_length; ++i)
+      std::fprintf(stderr, "%02x", static_cast<unsigned>(*byte++));
+    std::fputc('\n', stderr);
+  }
+  std::fflush(stderr);
+}
+
+// A non-null target keeps only qualifying canonical proofs. Tests request the first proof.
 template <typename Solutions>
 inline unsigned write_solutions(const Solutions& solutions, const std::size_t proof_length,
                                 const std::size_t buffer_length, const bool first_only,
                                 const std::uint8_t* const header, const std::size_t header_length,
                                 const std::uint8_t* const target, std::uint8_t* const out) {
-  const std::size_t capacity =
-      first_only ? 1 : std::min<std::size_t>(255, (buffer_length - 1) / proof_length);
-  unsigned count = 0;
-  for (const auto& solution : solutions) {
-    if (count == capacity)
-      break;
-    if (target && !meets_target(header, header_length, solution.encoded.data(), proof_length,
-                                target))
-      continue;
-    std::memcpy(out + 1 + count * proof_length, solution.encoded.data(), proof_length);
-    ++count;
-  }
-  out[0] = static_cast<std::uint8_t>(count);
-  return count;
+  return pack_solutions(solutions, proof_length, buffer_length, first_only, out,
+                        [&](const auto& solution) -> const std::uint8_t* {
+    const auto* proof = solution.encoded.data();
+    return !target || meets_target(header, header_length, proof, proof_length, target)
+        ? proof : nullptr;
+  });
 }
 
 }  // namespace mom_equihash::pow

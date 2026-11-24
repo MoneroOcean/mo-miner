@@ -79,11 +79,7 @@ namespace mom_xelishashv3 {
 
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void xelishashv3_cleanup_states() noexcept {
-  try {
-    registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "xelishashv3: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<State>("xelishashv3");
 }
 
 #include "search.inc"
@@ -98,7 +94,7 @@ int xelishashv3(unsigned, uint32_t, const uint8_t* input, unsigned input_size, u
   if (!input || !output || !nonce || !target || input_size != 112 || !intensity)
     throw std::string(
       "xelishashv3 requires input, output, nonce, target, a 112-byte header, and nonzero intensity");
-  State& s = state_for(dev);
+  State& s = persistentDeviceState<State>(dev);
   std::lock_guard<std::mutex> lock(s.mutex);
   s.ensure(intensity);
   sycl_wait_and_throw(s.queue.memcpy(s.input, input, 112), s.device);

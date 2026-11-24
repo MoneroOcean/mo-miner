@@ -124,23 +124,43 @@ declare global {
     protocol?: string;
   };
 
-  interface PoolConfig {
-    algo_params?: Record<string, AlgoParam>;
-    bad_shares: number;
+  /** Job controls are scoped to the current connection and negotiated algorithm. */
+  interface PoolJobState {
     beam_difficulty?: number;
     beam_nonceprefix?: string;
     cortex_nonce?: string;
-    donation_until?: number;
     eth_difficulty?: number;
     eth_target?: string;
     extra_nonce?: string;
     extra_nonce2_size?: number;
+    pending_job?: PoolMessage;
+    ironfish_target?: string;
+    ironfish_xn?: string;
+    kaspa_difficulty?: number;
+    kaspa_target?: string;
+    nexa_difficulty?: number;
+    nexa_target?: string;
+    pearlhash_difficulty?: number;
+    pearlhash_proof_encodings?: Array<"none" | "gzip">;
+    raven_target?: string;
+    stratum_target?: string;
+    verthash_difficulty?: number;
+    xelis_difficulty?: number | string;
+    xelis_extra_nonce?: string;
+    xelis_public_key?: string;
+    zelhash_target?: string;
+  }
+
+  interface PoolConfig {
+    algo_params?: Record<string, AlgoParam>;
+    bad_shares: number;
+    donation_until?: number;
     good_shares: number;
     extensions?: string[];
     requested_extensions?: string[];
     requested_algos?: string[];
     job_algo?: string;
-    pending_job?: PoolMessage;
+    job_state: PoolJobState;
     pending_controls?: PoolMessage[];
     pending_cortex_login?: boolean;
     pending_cortex_submit_ids?: Set<number>;
@@ -148,46 +168,31 @@ declare global {
     first_job_timer?: NodeJS.Timeout;
     idle_timer?: NodeJS.Timeout;
     inferred_protocol?: string;
-    ironfish_target?: string;
-    ironfish_xn?: string;
     is_keepalive: boolean;
     is_nicehash: boolean;
     is_tls: boolean;
-    kaspa_difficulty?: number;
-    kaspa_target?: string;
     keepalive: NodeJS.Timeout | null;
     last_connect_time: number;
     last_job: PoolJob | null;
     logged_in: boolean;
     login: string;
-    nexa_difficulty?: number;
-    nexa_target?: string;
     negotiated_keepalive?: boolean;
     negotiated_nicehash?: boolean;
     pass: string;
-    pearlhash_difficulty?: number;
-    pearlhash_proof_encodings?: Array<"none" | "gzip">;
     pearlhash_target_format: "base" | "jackpot";
     pending_subscribe: boolean;
     pending_authorize: boolean;
     pending_submit_count: number;
     port: number;
     protocol: string | null;
-    raven_target?: string;
     response_timer?: NodeJS.Timeout;
     socket: PoolSocket | null;
-    stratum_target?: string;
     tls_verify: boolean;
     tls_fingerprint: string;
     url: string;
     use_subscribe: boolean;
-    verthash_difficulty?: number;
     worker: string;
     worker_id?: string | number;
-    xelis_difficulty?: number | string;
-    xelis_extra_nonce?: string;
-    xelis_public_key?: string;
-    zelhash_target?: string;
   }
 
   interface JobOptions {

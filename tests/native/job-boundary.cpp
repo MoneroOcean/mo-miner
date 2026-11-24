@@ -397,8 +397,16 @@ void test_share_targets() {
   assert(parse_big_target(std::string(64, 'f'), bytes) && bytes[0] == 0xff && bytes[31] == 0xff);
   assert(!parse_big_target("0g", bytes));
   std::uint8_t decoded[2]{};
+  assert(!decode_hex("ff0f1", decoded) && decoded[0] == 0 && decoded[1] == 0);
   assert(decode_hex("aB0f", decoded) && decoded[0] == 0xab && decoded[1] == 0x0f);
   assert(strip_hex_prefix("0Xff") == "ff" && strip_hex_prefix("ff") == "ff");
+  using mom::job_boundary::write_compact_size16;
+  std::uint8_t prefix[3]{};
+  assert(write_compact_size16(252, prefix) == 1 && prefix[0] == 252);
+  assert(write_compact_size16(253, prefix) == 3 &&
+         prefix[0] == 253 && prefix[1] == 253 && prefix[2] == 0);
+  assert(write_compact_size16(400, prefix) == 3 &&
+         prefix[0] == 253 && prefix[1] == 0x90 && prefix[2] == 1);
 }
 
 } // namespace

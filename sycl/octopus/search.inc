@@ -1,40 +1,15 @@
 // DAG construction and search submissions, including capability-gated matrix backends.
-class OctopusDagKernel;
 template <bool FULL_DAG> class OctopusScalarSearchKernel;
 template <bool FULL_DAG> class OctopusBatchedSearchKernel;
 class OctopusCooperativeSearchKernel;
 
-// Materialize the full DAG from the epoch cache; padded work-items stop before the dataset bound.
+// Keep Octopus's existing chunk/wait boundary while sharing the consensus node transform.
 static sycl::event build_dag(sycl::queue& queue, const uint32_t* const cache,
                              const uint32_t cache_nodes,
                              uint32_t* const dag, const uint32_t start, const uint32_t count) {
-  constexpr unsigned WORKGROUP = 128;
   const FastModData cache_mod = make_fast_mod_data(cache_nodes);
-  const size_t global = (static_cast<size_t>(count) + WORKGROUP - 1) / WORKGROUP * WORKGROUP;
-  return queue.submit([&](sycl::handler& handler) {
-    handler.parallel_for<OctopusDagKernel>(
-        sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WORKGROUP)),
-        [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
-          const uint32_t local = static_cast<uint32_t>(item.get_global_id(0));
-          if (local >= count)
-            return;
-          const uint32_t index = start + local;
-          uint32_t node[CACHE_NODE_WORDS];
-          const uint32_t cache_index = fast_mod_dev(index, cache_mod);
-          for (unsigned word = 0; word < CACHE_NODE_WORDS; ++word)
-            node[word] = cache[cache_index * CACHE_NODE_WORDS + word];
-          node[0] ^= index;
-          keccak512_words(node);
-          for (uint32_t i = 0; i < DATASET_PARENTS; ++i) {
-            const uint32_t parent = fast_mod_dev(fnv32(index ^ i, node[i & 15]), cache_mod);
-            for (unsigned word = 0; word < CACHE_NODE_WORDS; ++word)
-              node[word] = fnv32(node[word], cache[parent * CACHE_NODE_WORDS + word]);
-          }
-          keccak512_words(node);
-          for (unsigned word = 0; word < CACHE_NODE_WORDS; ++word)
-            dag[static_cast<size_t>(index) * CACHE_NODE_WORDS + word] = node[word];
-        });
-  });
+  return submit_ethash_dag_chunk<DATASET_PARENTS, size_t>(queue, cache, cache_mod, dag, start,
+                                                          count, 128);
 }
 
 // Submit the one-nonce-per-work-group reference kernel (MOM_OCTOPUS_SCALAR correctness oracle).
@@ -75,10 +50,7 @@ search_batched(sycl::queue& queue, const uint8_t* const header, const uint32_t* 
                const uint32_t* const points, const uint64_t start, const uint32_t count,
                const uint8_t* const target, Result* const result, const bool is_test) {
   constexpr size_t local = POLYNOMIAL_LANES * 4;
-  const uint64_t aligned_start = start & ~(static_cast<uint64_t>(POLYNOMIAL_LANES) - 1);
-  const uint64_t covered = (start - aligned_start) + count;
-  const size_t groups = static_cast<size_t>((covered + local - 1) / local);
-  const size_t global = groups * local;
+  const size_t global = mom_round_up_size(start % POLYNOMIAL_LANES + count, local);
   return queue.submit([&](sycl::handler& handler) {
     sycl::local_accessor<uint32_t, 1> coefficients(sycl::range<1>(POLYNOMIAL_SIZE * 4), handler);
     handler.parallel_for<OctopusBatchedSearchKernel<FULL_DAG>>(
@@ -99,9 +71,7 @@ static sycl::event search_cooperative(sycl::queue& queue, const uint8_t* const h
                                       const uint8_t* const target, Result* const result,
                                       const bool is_test) {
   constexpr size_t local = POLYNOMIAL_LANES * COOPERATIVE_WARPS;
-  const uint64_t aligned_start = start & ~(static_cast<uint64_t>(POLYNOMIAL_LANES) - 1);
-  const uint64_t covered = (start - aligned_start) + count;
-  const size_t global = static_cast<size_t>((covered + local - 1) / local) * local;
+  const size_t global = mom_round_up_size(start % POLYNOMIAL_LANES + count, local);
   return queue.submit([&](sycl::handler& handler) {
     sycl::local_accessor<uint32_t, 1> coefficients(
         sycl::range<1>(POLYNOMIAL_SIZE * COOPERATIVE_WARPS), handler);
@@ -119,5 +89,5 @@ static sycl::event search_cooperative(sycl::queue& queue, const uint8_t* const h
 #if defined(MOM_SYCL_HAS_HIP)
 #include "amd-wmma.inc"
 #endif
-#include "nvidia-tensor.inc"
+#include "matrix-search.inc"
 #endif

@@ -1,8 +1,8 @@
 "use strict";
 
 const crypto = require("node:crypto");
-const {isValidNonce} = require("./submission");
-const {PROGPOW_ALGOS, ZELHASH_ALGOS, KASPA_HEADER_ALGOS} = require("./algorithms");
+const {hexWithoutPrefix, isValidNonce} = require("./submission");
+const {normalizeAlgoName, PROGPOW_ALGOS, ZCASH_HEADER_ALGOS, KASPA_HEADER_ALGOS} = require("./algorithms");
 const {isIdentifier} = require("../helper/worker-protocol");
 
 // Supported headers are small; leave ample room without forwarding an unbounded pool blob.
@@ -15,8 +15,6 @@ const MAX_MINING_BLOB_HEX_CHARS = 64 * 1024 * 2;
  *   process: NodeJS.Process,
  *   compilerPolicy: typeof import("../compiler-policy"),
  *   gpuTuning: typeof import("../gpu-tuning"),
- *   hexWithoutPrefix(value: unknown): string,
- *   normalizeAlgoName(algo: string | null | undefined): string | null | undefined,
  *   messageHandler: WorkerMessageHandler,
  *   isExiting(): boolean,
  *   getComputeCore(): ComputeCore | null,
@@ -26,7 +24,7 @@ const MAX_MINING_BLOB_HEX_CHARS = 64 * 1024 * 2;
  */
 module.exports = ({
   h, opt, process, compilerPolicy, gpuTuning,
-  hexWithoutPrefix, normalizeAlgoName, messageHandler, isExiting,
+  messageHandler, isExiting,
   getComputeCore, getLastJob, setLastJob,
 }) => {
 
@@ -438,27 +436,19 @@ module.exports = ({
   /** @param {PoolJob} poolJob @param {string} algo @param {Partial<MiningJob>} [job] */
   function jobTarget(poolJob, algo, job = {}) {
     const explicitTarget = poolJob.target || "";
-    if (algo === "pearlhash") {
-      if (poolJob.pearlhash_base_target) {
-        if (!job.pearlhash_k || !job.pearlhash_rank) {
-          throw new Error("PearlHash job shape is incomplete");
-        }
-        return h.pearlhashTarget(
-          poolJob.pearlhash_base_target, job.pearlhash_k, job.pearlhash_rank,
-          job.pearlhash_cert_version);
+    if (algo === "pearlhash" && poolJob.pearlhash_base_target) {
+      if (!job.pearlhash_k || !job.pearlhash_rank) {
+        throw new Error("PearlHash job shape is incomplete");
       }
-      if (explicitTarget) {return hexWithoutPrefix(explicitTarget).padStart(64, "0");}
-      return h.fullDiff2Target(validDifficulty(poolJob.difficulty, algo));
+      return h.pearlhashTarget(
+        poolJob.pearlhash_base_target, job.pearlhash_k, job.pearlhash_rank,
+        job.pearlhash_cert_version);
     }
-    if (ZELHASH_ALGOS.has(algo) || algo === "nexapow") {
-      // Flux and Nexa deliver a 256-bit big-endian share target. When a pool does not send one, use
-      // the lenient floor(2^256 / difficulty) fallback.
+    // These pools accept a 256-bit target. Verthash applies its own Stratum difficulty scale.
+    if (algo === "pearlhash" || ZCASH_HEADER_ALGOS.has(algo) || algo === "nexapow" || algo === "verthash") {
       if (explicitTarget) {return hexWithoutPrefix(explicitTarget).padStart(64, "0");}
-      return h.fullDiff2Target(validDifficulty(poolJob.difficulty, algo));
-    }
-    if (algo === "verthash") {
-      if (explicitTarget) {return hexWithoutPrefix(explicitTarget).padStart(64, "0");}
-      return h.ethDiff2Target(validDifficulty(poolJob.difficulty, algo), 256n);
+      const difficulty = validDifficulty(poolJob.difficulty, algo);
+      return algo === "verthash" ? h.ethDiff2Target(difficulty, 256n) : h.fullDiff2Target(difficulty);
     }
     if (!nonceAt32Algos.has(algo)) {
       if (explicitTarget) {return explicitTarget;}
@@ -470,8 +460,9 @@ module.exports = ({
     }
     // Pool adapters normalize full targets to hexadecimal, including Ergo's decimal wire target.
     // Generic MoneroOcean jobs may still carry compact targets, converted through difficulty below.
-    if (explicitTarget && hexWithoutPrefix(explicitTarget).length > 16) {
-      return hexWithoutPrefix(explicitTarget).padStart(64, "0");
+    const targetHex = hexWithoutPrefix(explicitTarget);
+    if (targetHex.length > 16) {
+      return targetHex.padStart(64, "0");
     }
     const difficulty = poolJob.difficulty ??
       (explicitTarget ? h.target2diff(explicitTarget) : undefined);
@@ -507,7 +498,7 @@ module.exports = ({
   }
 
   /** @param {MiningJob} job @param {PoolJob} poolJob */
-  function addEthHashJobFields(job, poolJob) {
+  function addNonceAt32JobFields(job, poolJob) {
     job.noncebytes = poolJob.noncebytes || 8;
     job.nonceoffset = poolJob.nonceoffset !== undefined ? poolJob.nonceoffset : 32;
 
@@ -518,7 +509,7 @@ module.exports = ({
   }
 
   /** @param {MiningJob} job @param {PoolJob} poolJob */
-  function addZelHashJobFields(job, poolJob) {
+  function addEquihashJobFields(job, poolJob) {
     // ZIP-301: the 32-byte nonce starts at byte 108. The search counter follows the pool's nonce1;
     // retain ntime and nonce1 length so submission can reconstruct nonce2.
     addFixedNonceBlobFields(job, poolJob, 108);
@@ -563,7 +554,7 @@ module.exports = ({
     // by the native) and the nicehash mask are the plain {prefix || counter} layout, prefix at the front.
     // The low bytes are the free search counter; seed its top free byte to 1 so the first m_nonce64 is
     // never 0 (the native loop treats m_nonce64==0 as a test dispatch).
-    const rawPrefix = poolJob.xn ?? pool?.beam_nonceprefix;
+    const rawPrefix = poolJob.xn ?? pool?.job_state.beam_nonceprefix;
     if (rawPrefix !== undefined && typeof rawPrefix !== "string") {
       throw new Error("Invalid Beam nonce prefix");
     }
@@ -571,15 +562,11 @@ module.exports = ({
     if (!/^(?:[0-9a-f]{2}){0,6}$/i.test(prefix)) {
       throw new Error("Invalid Beam nonce prefix");
     }
-    const prefixBytes = prefix.length / 2;
-    let nonce = prefix.slice(0, prefixBytes * 2);
-    if (prefixBytes < 8) {
-      nonce += "01"; // Seed the first free counter byte so native test mode is not selected.
-    }
-    job.nonce = poolJob.nonce === undefined ? nonce.padEnd(16, "0") : poolJob.nonce;
+    // The prefix leaves at least two counter bytes. Seed the first to keep the nonce nonzero.
+    job.nonce = poolJob.nonce === undefined ? (prefix + "01").padEnd(16, "0") : poolJob.nonce;
     if (!isValidNonce(job.nonce, 8, prefix, true)) {throw new Error("Invalid Beam nonce");}
     poolJob.xn = prefix;
-    job.nicehash_mask = "ff".repeat(prefixBytes).padEnd(16, "0");
+    job.nicehash_mask = "ff".repeat(prefix.length / 2).padEnd(16, "0");
   }
 
   /** @param {MiningJob} job @param {PoolJob} poolJob */
@@ -618,7 +605,7 @@ module.exports = ({
     if (invalidNonceOffset) {
       throw new Error(`Invalid ${job.algo} nonce offset`);
     }
-    return Object.assign(job, {blob_hex: job.blob_hex});
+    return /** @type {NativeJob} */ (job);
   }
 
   // A live job additionally needs a target and the identifiers that route its results back.
@@ -629,15 +616,14 @@ module.exports = ({
     if (typeof target !== "string" || !/^(?:0x)?[0-9a-f]{1,64}$/i.test(target)) {
       throw new Error(`Invalid ${job.algo} target`);
     }
-    const job_token = nativeJob.job_token;
-    if (typeof job_token !== "string" || job_token.length === 0) {
+    const {job_token: jobToken, job_id: jobId, pool_id: poolId, worker_id: workerId} = nativeJob;
+    if (typeof jobToken !== "string" || jobToken.length === 0) {
       throw new Error(`Invalid ${job.algo} job token`);
     }
-    const {job_id, pool_id, worker_id} = nativeJob;
-    if (!isIdentifier(job_id)) {throw new Error(`Invalid ${job.algo} job_id`);}
-    if (!isIdentifier(pool_id)) {throw new Error(`Invalid ${job.algo} pool_id`);}
-    if (!isIdentifier(worker_id)) {throw new Error(`Invalid ${job.algo} worker_id`);}
-    return Object.assign(nativeJob, {target, job_id, pool_id, worker_id, job_token});
+    if (!isIdentifier(jobId)) {throw new Error(`Invalid ${job.algo} job_id`);}
+    if (!isIdentifier(poolId)) {throw new Error(`Invalid ${job.algo} pool_id`);}
+    if (!isIdentifier(workerId)) {throw new Error(`Invalid ${job.algo} worker_id`);}
+    return /** @type {LiveNativeJob} */ (nativeJob);
   }
 
   /** @param {MiningJob} job */
@@ -754,14 +740,14 @@ module.exports = ({
     } else if (KASPA_HEADER_ALGOS.has(algo)) {
       // Kaspa-family headers place their 8-byte little-endian nonce at offset 72.
       addFixedNonceBlobFields(job, poolJob, 72);
-    } else if (ZELHASH_ALGOS.has(algo)) {
-      addZelHashJobFields(job, poolJob);
+    } else if (ZCASH_HEADER_ALGOS.has(algo)) {
+      addEquihashJobFields(job, poolJob);
     } else if (algo === "verthash") {
       addVerthashJobFields(job, poolJob);
     } else if (algo === "xelishashv3" || algo === "nexapow") {
       addFixedNonceBlobFields(job, poolJob, 40);
     } else if (nonceAt32Algos.has(algo)) {
-      addEthHashJobFields(job, poolJob);
+      addNonceAt32JobFields(job, poolJob);
     } else {
       addStandardJobFields(job, poolJob);
     }
@@ -780,15 +766,14 @@ module.exports = ({
   }
 
   // Resolve the backend and PearlHash shape for a bench or test job that did not come from a pool.
-  /** @param {MiningJob} job @returns {MiningJob} */
+  /** @param {MiningJob} job */
   function addDirectJobDefaults(job) {
-    const requestedBackend = compilerPolicy.validateBackend(job.backend || "auto");
+    job.algo = normalizeAlgoName(job.algo) || job.algo;
+    const requestedBackend = compilerPolicy.validateBackend(job.backend);
     job.backend_request = requestedBackend;
-    job.backend = requestedBackend === "auto"
-      ? jobBackend(normalizeAlgoName(job.algo) || job.algo)
-      : requestedBackend;
+    job.backend = requestedBackend === "auto" ? jobBackend(job.algo) : requestedBackend;
     job.noncebytes ??= 4;
-    if (normalizeAlgoName(job.algo) === "pearlhash") {
+    if (job.algo === "pearlhash") {
       // Direct pool/bench/test jobs have no negotiated downstream extension. Ignore a stray
       // proxy-only stride rather than allowing it to alter the established seed-0/stride-1 path.
       delete job.nonce_stride;
@@ -796,7 +781,6 @@ module.exports = ({
       job.nonce ??= 0;
       addPearlHashJobFields(job);
     }
-    return job;
   }
 
   /** @param {MiningJob} job @returns {NativeJob} */
@@ -860,7 +844,7 @@ module.exports = ({
       if (job.blob_hex?.length !== layout.blob.length) {job.blob_hex = layout.blob;}
       if (layout.nonce) {job.nonce = job.nonce || layout.nonce;}
     }
-    if (ZELHASH_ALGOS.has(job.algo) && job.blob_hex) {
+    if (ZCASH_HEADER_ALGOS.has(job.algo) && job.blob_hex) {
       // The solver's search counter starts at zero inside the 32-byte header nonce.
       job.blob_hex = job.blob_hex.slice(0, 216) + "0".repeat(16) + job.blob_hex.slice(232);
       job.height = job.height || 400000;

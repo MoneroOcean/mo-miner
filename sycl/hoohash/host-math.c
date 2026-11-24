@@ -177,7 +177,7 @@ static uint64_t rotl64(uint64_t value, unsigned count) {
 }
 
 // Expand the seed with the reference PRNG and preserve the FP64 scaling operation order.
-static void make_matrix(const uint8_t seed[32], double matrix[4096]) {
+void mom_hoohash_make_matrix(const uint8_t seed[32], double matrix[4096]) {
   uint64_t s0 = load64le(seed), s1 = load64le(seed + 8), s2 = load64le(seed + 16),
            s3 = load64le(seed + 24);
   for (unsigned i = 0; i < 4096; ++i) {
@@ -271,7 +271,7 @@ void mom_hoohash_canonical_hash(const uint8_t input[72], uint64_t nonce, uint8_t
                 (uint32_t)first[4 * i + 2] << 8 | first[4 * i + 3];
 
   double matrix[4096];
-  make_matrix(input, matrix);
+  mom_hoohash_make_matrix(input, matrix);
   canonical_mix(first, hash_mod, nonce, matrix, mixed);
   b3_hash(mixed, 32, output);
 }

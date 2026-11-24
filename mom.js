@@ -149,7 +149,6 @@ if (!h.cluster_process()) {
   }
 
   const submission = require("./miner/submission");
-  const {hexWithoutPrefix} = submission;
   const parseArgs = require("./miner/cli")({o, opt: global.opt, normalizeAlgoName});
   directive = parseArgs(process.argv, test);
 
@@ -161,7 +160,7 @@ if (!h.cluster_process()) {
 
   const jobApi = require("./miner/jobs")({
     h, opt: global.opt, process, compilerPolicy, gpuTuning,
-    hexWithoutPrefix, normalizeAlgoName, messageHandler, isExiting: () => exiting,
+    messageHandler, isExiting: () => exiting,
     getComputeCore: () => computeCore,
     getLastJob: () => lastJob,
     setLastJob: (job) => { lastJob = job; },

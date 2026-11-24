@@ -48,7 +48,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <stdexcept>
 #include <string>
 #endif
 
@@ -157,14 +156,15 @@ static_assert(sycl_pipeline::SearchResult::kCapacity == Result::kCapacity);
 
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void nexapow_cleanup_states() noexcept {
-  try {
-    registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "nexapow: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<State>("nexapow");
 }
 
 #include "host.inc"
+#endif
+
+} // namespace mom_nexapow
+
+using namespace mom_nexapow;
 
 // Validate the work-blob ABI and dispatch a serialized nonce batch without altering its fixed extranonce.
 int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8_t* output,
@@ -174,8 +174,10 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
     throw std::string("nexapow requires a 40-, 44-, or 48-byte work blob and nonzero intensity");
   if (!input || !output || !pnonce || (!target && !is_test))
     throw std::string("nexapow received null work pointers");
+#ifndef MOM_NEXAPOW_HOST_TEST
   if (!mom::job_boundary::padded_u32_range_fits(intensity, sycl_pipeline::kWorkGroup))
     throw std::string("nexapow intensity is too large");
+#endif
   const unsigned extra_bytes = input_size == 40u ? 0u : input_size == 44u ? 4u : 8u;
   const bool recorded_test = is_test && input_size == 48u;
   if (recorded_test &&
@@ -183,10 +185,20 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
        !np_equal(input + 40, kRecordedMinerNonceBytes, 8)))
     throw std::string("nexapow test requires the recorded Echelon vector");
 
-  State& state = state_for(dev);
+#ifndef MOM_NEXAPOW_HOST_TEST
+  State& state = persistentDeviceState<State>(dev);
   std::lock_guard<std::mutex> lock(state.mutex);
+#endif
   const uint64_t first = recorded_test ? kRecordedMinerNonce : *pnonce;
   const unsigned count = is_test ? 1u : intensity;
+#ifdef MOM_NEXAPOW_HOST_TEST
+  (void)is_benchmark;
+  (void)dev;
+  const int hits = scan_host(input, extra_bytes, first, count, target, is_test, output, pnonce);
+  if (hits && recorded_test && !np_equal(output, kRecordedHash, 32))
+    throw std::string("nexapow host vector mismatch");
+  return hits;
+#else
   const bool staged_test = is_test && env_enabled("MOM_NEXAPOW_STAGED_TEST");
   const bool staged_required = staged_test || env_enabled("MOM_NEXAPOW_STAGED_REQUIRE");
   // CPU CI runs the existing one-nonce SYCL ECC/search fallback, not just the SHA probe plus
@@ -294,39 +306,5 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
     std::memcpy(output + index * 32, found.hash[index], 32);
   }
   return static_cast<int>(hits);
-}
-#else
-// Validate the work-blob ABI and dispatch a serialized nonce batch without altering its fixed extranonce.
-int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8_t* output,
-            uint8_t*, uint64_t* pnonce, const uint8_t* target, const uint8_t*, unsigned intensity,
-            bool is_test, bool, const std::string&) {
-  if ((input_size != 40 && input_size != 44 && input_size != 48) ||
-      !input || !output || !pnonce || !intensity)
-    throw std::runtime_error("invalid nexapow host-test arguments");
-  const unsigned extra_bytes = input_size == 40u ? 0u : input_size == 44u ? 4u : 8u;
-  const bool recorded_test = is_test && input_size == 48u;
-  if (recorded_test &&
-      (!np_equal(input, kRecordedHeader, 32) || !np_equal(input + 32, kRecordedExtranonce, 8) ||
-       !np_equal(input + 40, kRecordedMinerNonceBytes, 8)))
-    throw std::runtime_error("nexapow test requires the recorded Echelon vector");
-  const uint64_t first = recorded_test ? kRecordedMinerNonce : *pnonce;
-  const int found = scan_host(input, extra_bytes, first, is_test ? 1u : intensity,
-                              target, is_test, output, pnonce);
-  if (found && recorded_test && !np_equal(output, kRecordedHash, 32))
-    throw std::runtime_error("nexapow host vector mismatch");
-  return found;
-}
 #endif
-
-} // namespace mom_nexapow
-
-#ifndef MOM_NEXAPOW_HOST_TEST
-// Validate the work-blob ABI and dispatch a serialized nonce batch without altering its fixed extranonce.
-int nexapow(unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size,
-            uint8_t* output, uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target,
-            const uint8_t* seed_hash, unsigned intensity, bool is_test, bool is_benchmark,
-            const std::string& dev) {
-  return mom_nexapow::nexapow(job_id, height, input, input_size, output, mix_hash, pnonce, target,
-                              seed_hash, intensity, is_test, is_benchmark, dev);
 }
-#endif

@@ -26,14 +26,14 @@ namespace mom_equihash192_7 {
 namespace direct {
 using Spec = mom_equihash::Equihash192_7;
 // Production BucketLayout and ProductionSlotsPerBucket from sycl/equihash192-7/layout.h.
-#include "equihash192_layout.inc"
+#include "equihash192-7-layout.inc"
 } // namespace direct
 // Session<>::Layout is ProductionArena's level-0 layout, ArenaLayout<12, ProductionSlotsPerBucket>.
 struct Solver {
   using Layout = direct::BucketLayout<12, direct::ProductionSlotsPerBucket>;
 };
 // Production equihash192_7_intensity from equihash192-7.cpp.
-#include "equihash192_admission.inc"
+#include "equihash192-7-admission.inc"
 } // namespace mom_equihash192_7
 
 namespace mom_zhash {

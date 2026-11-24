@@ -38,16 +38,6 @@ public:
   }
 };
 
-// Keep device owners heap-registered so explicit shutdown controls SYCL destruction order.
-static DeviceStateRegistry<State>& registry() {
-  static auto* const value = new DeviceStateRegistry<State>;
-  return *value;
-}
-// Reuse one mutex-serialized staged/monolithic search owner for the selected device.
-static State& state_for(const std::string& dev) {
-  return registry().get(dev, [&] { return std::make_unique<State>(dev); });
-}
-
 // Program build options for sycl_set_compile_options(): the native-field CUDA kernels need
 // --maxrregcount=128 unless MOM_NEXAPOW_COMPILE_OPTIONS or an existing
 // SYCL_PROGRAM_COMPILE_OPTIONS says otherwise; other devices take none.

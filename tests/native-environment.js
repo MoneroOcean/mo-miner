@@ -153,14 +153,16 @@ test.describe("Native process environment", {concurrency: false}, () => {
     assert.match(binding, /const int status = setEnvironment\(name\.c_str\(\), args\[1\]\.isNull\(\) \? nullptr : value\.c_str\(\)\)/);
   });
 
-  test("the native core's compile-option filter names exactly the algorithms that publish options", () => {
-    // Core::prepare() skips sycl_set_compile_options() for unlisted algorithms so a rejected job never
-    // delay-loads sycl.dll on Windows; an algorithm missing from the filter would silently lose its options.
-    const algos = (/** @type {string} */ block) => [...block.matchAll(/algo == "([^"]+)"/g)].map(match => match[1]).sort();
+  test("native compile-option routes retain their first-job allowlist", {skip: process.platform === "win32"}, () => {
     const sycl = path.join(__dirname, "../sycl");
-    const filter = extractCppBlock(fs.readFileSync(path.join(sycl, "lib.h"), "utf8"), "inline bool sycl_has_compile_options(");
     const publisher = extractCppBlock(fs.readFileSync(path.join(sycl, "algo-params.inc"), "utf8"), "void sycl_set_compile_options(");
-    assert.ok(algos(filter).length >= 8);
-    assert.deepEqual(algos(filter), algos(publisher));
+    assert.match(publisher, /switch \(sycl_compile_options_for\(algo\)\)/);
+    const routes = {etchash: ["etchash"], progpow: ["kawpow", "firopow", "evrprogpow", "meowpow"],
+      autolykos2: ["autolykos2"], cnGpu: ["cn/gpu"], nexapow: ["nexapow"], none: ["", "octopus", "pearlhash", "rx/0"]};
+    const checks = Object.entries(routes).flatMap(([route, names]) => names.map(name =>
+      `static_assert(sycl_compile_options_for(${JSON.stringify(name)}) == SyclCompileOptions::${route});`));
+    const result = spawnSync("c++", ["-std=c++17", "-I", sycl, "-x", "c++", "-fsyntax-only", "-"],
+      {input: ['#include "lib.h"', ...checks].join("\n"), encoding: "utf8", timeout: 5000});
+    assert.equal(result.status, 0, result.error?.message || result.stderr);
   });
 });

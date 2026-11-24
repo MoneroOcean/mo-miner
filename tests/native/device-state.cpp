@@ -102,20 +102,20 @@ void test_null_factory(TestContext& context) {
 
 void test_cached_factory(TestContext& context) {
   std::atomic<unsigned> destructors{0};
-  Registry registry;
+  Registry& registry = persistentDeviceStates<State>();
   unsigned factory_calls = 0;
   State& first = registry.get("cached", [&] {
     ++factory_calls;
     return make_state(11, destructors);
   });
-  State& second = registry.get("cached", [&] {
+  State& second = persistentDeviceStates<State>().get("cached", [&] {
     ++factory_calls;
     return make_state(12, destructors);
   });
   context.check(&first == &second, "cached get returns the existing state");
   context.check(factory_calls == 1, "cached get does not invoke the factory");
   context.check(first.value == 11, "cached state keeps its original value");
-  registry.clear();
+  clearPersistentDeviceStates<State>("test");
   context.check(destructors.load(std::memory_order_relaxed) == 1,
                "cached state is destroyed exactly once");
 }

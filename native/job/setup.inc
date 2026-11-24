@@ -130,7 +130,7 @@ void Core::set_job(
                     new_thread_num     = opt_uint("thread_num", 1),
                     new_nonce_bytes    = opt_uint("noncebytes", 4),
                     new_nonce_offset   = opt_uint("nonceoffset", 39),
-                    new_c29_proof_size = opt_uint("proofsize", 32),
+                    new_cuckaroo_proof_size = opt_uint("proofsize", 32),
                     new_pearlhash_n        = opt_uint("pearlhash_n", 131072),
                     new_pearlhash_k        = opt_uint("pearlhash_k", 4096),
                     new_pearlhash_rank     = opt_uint("pearlhash_rank", 256),
@@ -160,11 +160,9 @@ void Core::set_job(
         ? static_cast<unsigned>(parse_uint(
             std::string(dev_batch_view), 10, std::numeric_limits<unsigned>::max(), "dev batch"))
         : 1);
-  // Unknown GPU algorithms take the cn/gpu path and are rejected by its entry-point lookup.
-  const auto gpu_algo = gpu_algos.find(new_algo_str);
-  const DEV new_dev =
-    new_dev_name == "cpu" ? (rx_cpu_name2config.contains(new_algo_str) ? DEV::RX_CPU : DEV::CPU) :
-    gpu_algo != gpu_algos.end() ? gpu_algo->second.dev : DEV::GPU;
+  const auto* gpu_algo = new_dev_name == "cpu" ? nullptr : &algo_lookup(gpu_algos, new_algo_str);
+  const DEV new_dev = gpu_algo ? gpu_algo->dev :
+    (rx_cpu_name2config.contains(new_algo_str) ? DEV::RX_CPU : DEV::CPU);
   std::uint32_t new_pearlhash_seed_base = 0;
   std::uint32_t new_pearlhash_seed_stride = 1;
   std::uint32_t new_pearlhash_seed_start = 0;
@@ -187,7 +185,7 @@ void Core::set_job(
   }
   // NiceHash reserves physical nonce byte 3; BE generic counters therefore advance in increments of 256.
   const unsigned nonce_unit = new_nonce_bytes == 4 && new_nicehash_mask == 0xff &&
-    (new_dev == DEV::CPU || new_dev == DEV::RX_CPU || new_dev == DEV::GPU) ? 256 : 1;
+    (new_dev == DEV::CPU || new_dev == DEV::RX_CPU || new_dev == DEV::CN_GPU) ? 256 : 1;
 
   if (new_batch == 0) throw std::string("Batch size must be positive");
   if (new_thread_num == 0 || new_thread_id >= new_thread_num)
@@ -196,11 +194,11 @@ void Core::set_job(
     throw std::string("Worker nonce step is too large");
   if ((new_dev == DEV::C29_GPU || new_dev == DEV::C30_GPU) && new_batch != 1)
     throw std::string("Cycle solvers require batch size 1");
-  if ((new_dev == DEV::ZELHASH_GPU || new_dev == DEV::BEAMHASH3_GPU) && new_batch != 1)
+  if (is_equihash_gpu_dev(new_dev) && new_batch != 1)
     throw std::string("Single-header solvers require intensity 1");
-  if (new_dev == DEV::C29_GPU && new_c29_proof_size != 32 && new_c29_proof_size != 42)
+  if (new_dev == DEV::C29_GPU && new_cuckaroo_proof_size != 32 && new_cuckaroo_proof_size != 42)
     throw std::string("c29 requires proof size 32 or 42");
-  if (new_dev == DEV::C30_GPU && new_c29_proof_size != 42)
+  if (new_dev == DEV::C30_GPU && new_cuckaroo_proof_size != 42)
     throw std::string("c30 requires proof size 42");
   if (new_backend != "auto" && new_backend != "sycl" &&
       new_backend != "sycl-opencl" && new_backend != "sycl-l0" &&
@@ -243,7 +241,7 @@ void Core::set_job(
     throw std::string("verthash requires a 4-byte nonce at offset 76");
   // Zcash-family headers carry a 32-byte nonce at offset 108. Advance an 8-byte counter after any
   // fixed pool prefix while keeping it entirely inside that nonce.
-  if (new_dev == DEV::ZELHASH_GPU &&
+  if (new_dev == DEV::ZCASH_EQUIHASH_GPU &&
       (new_nonce_bytes != 8 || new_nonce_offset < 108 || new_nonce_offset > 132))
     throw std::string(new_algo_str + " requires an 8-byte counter inside its 32-byte nonce");
   // BeamHash III: the blob is prework(32)||nonce(8)||extranonce(4); the 8-byte Beam nonce is at offset 32.
@@ -285,7 +283,7 @@ void Core::set_job(
       break;
     }
 
-    case DEV::ETCHASH_GPU:
+    case DEV::ETHASH_FAMILY_GPU:
       // Etchash and Octopus resolve their epoch from an optional pool seed hash.
       if (!new_seed_hex.empty()) {
         if (new_seed_hex.size() != HASH_LEN * 2) throw std::string("Bad seed length");
@@ -293,7 +291,7 @@ void Core::set_job(
       }
       [[fallthrough]];
     default:
-      new_fn = algo_lookup(gpu_algos, new_algo_str).fn;
+      new_fn = gpu_algo->fn;
       break;
   }
 
@@ -323,12 +321,12 @@ void Core::set_job(
     : new_dev == DEV::MISC_GPU
       ? (new_algo_str == "xelishashv3" ? 112 : new_algo_str == "nexapow" ? 40 : 80)
     : new_dev == DEV::VERTHASH_GPU ? 80
-    : new_dev == DEV::ZELHASH_GPU ? 140 // full Zcash/Flux header
+    : new_dev == DEV::ZCASH_EQUIHASH_GPU ? 140 // full Zcash/Flux header
     : new_dev == DEV::BEAMHASH3_GPU ? 44 // prework(32)||nonce(8)||extranonce(4)
     : is_nonce_at_32_gpu_dev(new_dev) ? 40 : 0;
   const bool exact_input_len = new_algo_str == "xelishashv3" ||
     new_dev == DEV::PEARLHASH_GPU || new_dev == DEV::MISC_GPU ||
-    new_dev == DEV::VERTHASH_GPU || new_dev == DEV::ZELHASH_GPU;
+    new_dev == DEV::VERTHASH_GPU || new_dev == DEV::ZCASH_EQUIHASH_GPU;
   bool bad_input_len;
   if (new_algo_str == "nexapow") {
     bad_input_len = new_nonce_bytes != 8 ||
@@ -341,7 +339,7 @@ void Core::set_job(
   }
   if (bad_input_len)
     throw std::string("Bad " + new_algo_str + " input length");
-  if (new_dev == DEV::GPU && !mom::job_boundary::valid_cn_gpu_input(new_input_len))
+  if (new_dev == DEV::CN_GPU && !mom::job_boundary::valid_cn_gpu_input(new_input_len))
     throw std::string("cn/gpu input must be 1 to 135 bytes");
   // FishHash keeps its short offline vector at offset 32; FIP-9 Iron Fish headers end with
   // an 8-byte big-endian nonce at offset 172.
@@ -361,7 +359,7 @@ void Core::set_job(
   // mining or GPU-dispatch path reads the embedded nonce and requires it inside the validated input.
   const bool external_nonce = new_dev == DEV::C30_GPU || new_dev == DEV::PEARLHASH_GPU;
   const bool test_skips_nonce = new_dev == DEV::CPU || new_dev == DEV::RX_CPU ||
-    new_dev == DEV::GPU || new_dev == DEV::C29_GPU;
+    new_dev == DEV::CN_GPU || new_dev == DEV::C29_GPU;
   const bool validates_embedded_nonce = !external_nonce &&
     (is_set_nonce || !test_skips_nonce || v.contains("nonceoffset"));
   if (validates_embedded_nonce &&
@@ -404,7 +402,7 @@ void Core::set_job(
     m_seed_hex == new_seed_hex && m_algo_str == new_algo_str &&
     m_dev == new_dev && m_dev_str == new_dev_name &&
     m_height == new_height && m_nonce_bytes == new_nonce_bytes &&
-    m_nonce_offset == new_nonce_offset && m_c29_proof_size == new_c29_proof_size &&
+    m_nonce_offset == new_nonce_offset && m_cuckaroo_proof_size == new_cuckaroo_proof_size &&
     m_input_len == new_input_len && m_nicehash_mask == new_nicehash_mask &&
     m_thread_id == new_thread_id && m_thread_num == new_thread_num &&
     m_pearlhash_seed_start == new_pearlhash_seed_start &&
@@ -443,7 +441,7 @@ void Core::set_job(
     // free previous memory
     const bool is_device_owned_memory_change =
       is_small_blob_gpu_dev(m_dev) || is_small_blob_gpu_dev(new_dev) ||
-      m_dev == DEV::GPU || new_dev == DEV::GPU;
+      m_dev == DEV::CN_GPU || new_dev == DEV::CN_GPU;
     free_memory(
       m_batch != new_batch || is_device_owned_memory_change,
       m_mem_size != new_mem_size,
@@ -452,7 +450,7 @@ void Core::set_job(
     );
 
     try {
-      if (!is_small_blob_gpu_dev(new_dev) && new_dev != DEV::GPU && m_lpads == nullptr)
+      if (!is_small_blob_gpu_dev(new_dev) && new_dev != DEV::CN_GPU && m_lpads == nullptr)
         m_lpads = alloc_huge_mem(allocation_size(new_batch, new_mem_size));
 
       if (new_dev == DEV::RX_CPU) {
@@ -525,7 +523,7 @@ void Core::set_job(
           }
           m_vms = std::move(new_vms);
         }
-      } else if (new_dev == DEV::GPU) {
+      } else if (new_dev == DEV::CN_GPU) {
         if (m_input == nullptr)
           m_input = static_cast<uint8_t*>(alloc_mem(allocation_size(new_batch, MAX_BLOB_LEN)));
         if (m_output == nullptr)
@@ -575,7 +573,7 @@ void Core::set_job(
   m_height         = new_height;
   m_nonce_bytes    = new_nonce_bytes;
   m_nonce_offset   = new_nonce_offset;
-  m_c29_proof_size = new_c29_proof_size;
+  m_cuckaroo_proof_size = new_cuckaroo_proof_size;
   m_input_len      = new_input_len;
   m_nicehash_mask  = new_nicehash_mask;
   m_nonce_prefix   = new_nonce_prefix;

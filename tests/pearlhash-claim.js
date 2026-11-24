@@ -284,7 +284,7 @@ test.describe("PearlHash claim verification", {concurrency: false}, () => {
     ]) {
       const actual = vm.runInNewContext(selected, {
         use_portable: fixture.portable, esimd_width: fixture.width, rank: fixture.rank,
-        q: {get_backend: () => fixture.backend, get_device: () => true},
+        q: {get_backend: () => fixture.backend}, device: true,
         sycl: {backend: {ext_oneapi_level_zero: 1}},
         dpasw_esimd_device: () => fixture.dg2 !== false, pearlhash_dpasw_route: paired,
       }, {timeout: 1000, contextCodeGeneration: {strings: false, wasm: false}});

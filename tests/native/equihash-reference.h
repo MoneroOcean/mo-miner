@@ -210,14 +210,14 @@ inline bool recover_node(const ProvenanceView<Spec>& view, const unsigned round,
 }
 
 template <typename Spec>
-inline bool is_zero_root(const ZHashRootRecord<Spec>& root) {
+inline bool is_zero_root(const EquihashRootRecord<Spec>& root) {
   static_assert(Spec::rounds == 6, "the ZHash root has one final active field");
   return load_collision_field<Spec, 1>(root, 0) == 0;
 }
 
 template <typename Spec>
 // Expand a zero-XOR root only if its checked provenance contains exactly one complete proof.
-inline bool recover_root(const ProvenanceView<Spec>& view, const ZHashRootRecord<Spec>& root,
+inline bool recover_root(const ProvenanceView<Spec>& view, const EquihashRootRecord<Spec>& root,
                          std::uint32_t leaves[Spec::proof_indices]) {
   if (!is_zero_root<Spec>(root)) return false;
   LeafSet<Spec> recovered{};
@@ -232,7 +232,7 @@ inline bool recover_root(const ProvenanceView<Spec>& view, const ZHashRootRecord
 
 template <typename Spec>
 // Encode only a root whose retained provenance passes complete recovery checks.
-inline bool recover_solution(const ProvenanceView<Spec>& view, const ZHashRootRecord<Spec>& root,
+inline bool recover_solution(const ProvenanceView<Spec>& view, const EquihashRootRecord<Spec>& root,
                              std::uint32_t leaves[Spec::proof_indices],
                              std::uint8_t solution[Spec::solution_length]) {
   if (!recover_root<Spec>(view, root, leaves)) return false;

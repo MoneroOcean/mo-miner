@@ -84,24 +84,15 @@ struct CnGpuState {
   }
 };
 
-// Keep the registry shell alive across static teardown; ordered cleanup releases its values.
-static DeviceStateRegistry<CnGpuState>& cn_gpu_registry() {
-  static auto* const registry = new DeviceStateRegistry<CnGpuState>;
-  return *registry;
-}
-
 // Reuse one mutex-serialized batch-buffer owner for the selected device.
 static CnGpuState& cn_gpu_state(const std::string& dev_str) {
-  return cn_gpu_registry().get(dev_str, [&] { return std::make_unique<CnGpuState>(dev_str); });
+  return persistentDeviceStates<CnGpuState>().get(dev_str,
+      [&] { return std::make_unique<CnGpuState>(dev_str); });
 }
 
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void cn_gpu_cleanup_states() noexcept {
-  try {
-    cn_gpu_registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "cn/gpu: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<CnGpuState>("cn/gpu");
 }
 
 struct CnGpuDevicePointers {

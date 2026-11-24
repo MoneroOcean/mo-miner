@@ -56,7 +56,7 @@ let workerLogLevel = 0;
 const WORKER_MESSAGE_PREFIX = "MOM_WORKER_MESSAGE ";
 const MAX_WORKER_MESSAGE_LINE = 1024 * 1024;
 const {
-  MAX_PEARL_PROOF_BASE64, MAX_PROOF_EVENT_OVERHEAD, isIdentifier, isJobNonce, isNonceHex,
+  MAX_PEARL_PROOF_BASE64, MAX_PROOF_EVENT_OVERHEAD, hasValidJobNumbers, isIdentifier, isJobNonce, isNonceHex,
 } = require("./helper/worker-protocol");
 const MAX_WORKER_PROOF_LINE = MAX_PEARL_PROOF_BASE64 + MAX_PROOF_EVENT_OVERHEAD;
 const {filterWorkerStderr, filterWorkerStdoutLine} = require("./helper/diagnostics");
@@ -66,13 +66,6 @@ const miningJobStringFields = [
   "backend", "backend_request", "blob", "extra_nonce", "extranonce2", "header_hash",
   "id", "nicehash_mask", "ntime", "pearlhash_base_target", "pre_pow", "seed_hex", "seed_hash",
   "solution", "submit_mode", "target", "xn", "job_token",
-];
-const miningJobUnsignedFields = [
-  "extra_nonce2_size", "height", "nonce1_len", "nonceoffset", "thread_id",
-];
-const miningJobPositiveFields = [
-  "intensity", "noncebytes", "pearlhash_k", "pearlhash_n",
-  "pearlhash_rank", "proofsize", "thread_num",
 ];
 
 /** @param {unknown} value @returns {value is NativeCoreModule} */
@@ -99,29 +92,7 @@ function isNativeJob(value) {
     const fieldValue = value[field];
     if (fieldValue !== undefined && typeof fieldValue !== "string") {return false;}
   }
-  if (value["difficulty"] !== undefined &&
-      (typeof value["difficulty"] !== "number" || !Number.isFinite(value["difficulty"]) ||
-        value["difficulty"] <= 0)) {
-    return false;
-  }
-  for (const field of miningJobUnsignedFields) {
-    const fieldValue = value[field];
-    if (fieldValue !== undefined &&
-        (typeof fieldValue !== "number" || !Number.isSafeInteger(fieldValue) || fieldValue < 0)) {
-      return false;
-    }
-  }
-  for (const field of miningJobPositiveFields) {
-    const fieldValue = value[field];
-    if (fieldValue !== undefined &&
-        (typeof fieldValue !== "number" || !Number.isSafeInteger(fieldValue) || fieldValue <= 0)) {
-      return false;
-    }
-  }
-  const certVersion = value["pearlhash_cert_version"];
-  if (certVersion !== undefined && certVersion !== 3) {
-    return false;
-  }
+  if (!hasValidJobNumbers(value)) {return false;}
   if (value["algo"] === "pearlhash") {
     const pearlShapeFields = ["pearlhash_n", "pearlhash_k", "pearlhash_rank"];
     const hasPearlShape = pearlShapeFields.some((field) => value[field] !== undefined);
@@ -167,9 +138,9 @@ function isWorkerCommand(value) {
 
 /** @param {unknown} value @returns {value is WorkerEvent} */
 function isWorkerEvent(value) {
-  return Boolean(isObject(value) && isObject(value["value"]) && typeof value["type"] === "string" &&
+  return isObject(value) && isObject(value["value"]) && typeof value["type"] === "string" &&
     typeof value["thread_id"] === "number" && Number.isSafeInteger(value["thread_id"]) &&
-    value["thread_id"] >= 0);
+    value["thread_id"] >= 0;
 }
 module.exports.is_worker_event = isWorkerEvent;
 
@@ -429,6 +400,8 @@ function handleWorkerMessage(computeCore, msg, workerThreadId) {
 /** @param {(message: unknown) => boolean} handleMessage @param {() => void} onEnd */
 function readStdinMessages(handleMessage, onEnd) {
   let input = "";
+  // The UTF-8 stream decoder keeps split code points together; count each pending chunk once.
+  let inputBytes = 0;
   let failed = false;
   const fail = function(/** @type {string} */ message) {
     if (failed) {return;}
@@ -442,11 +415,14 @@ function readStdinMessages(handleMessage, onEnd) {
   process.stdin.on("data", function(chunk) {
     if (failed) {return;}
     input += chunk;
+    inputBytes += Buffer.byteLength(chunk);
     let eol;
     while ((eol = input.indexOf("\n")) !== -1) {
       const line = input.slice(0, eol);
+      const lineBytes = Buffer.byteLength(line);
       input = input.slice(eol + 1);
-      if (line.length > MAX_WORKER_MESSAGE_LINE) {
+      inputBytes -= lineBytes + 1;
+      if (lineBytes > MAX_WORKER_MESSAGE_LINE) {
         return fail("Worker IPC input exceeded the message line limit");
       }
       if (!line) {continue;}
@@ -460,10 +436,11 @@ function readStdinMessages(handleMessage, onEnd) {
         return fail("Worker IPC input was malformed");
       }
     }
-    if (input.length > MAX_WORKER_MESSAGE_LINE) {
+    if (inputBytes > MAX_WORKER_MESSAGE_LINE) {
       return fail("Worker IPC input exceeded the message line limit");
     }
   });
+  process.stdin.on("error", error => fail("Worker IPC input error: " + error.message));
   process.stdin.once("end", function() {
     if (failed) {return;}
     if (input.trim()) {return fail("Worker IPC input was malformed");}
@@ -762,6 +739,7 @@ function createSubprocessThread(i, env, messageHandler) {
       stdio: ["pipe", "pipe", "pipe"],
     });
   let output = "";
+  let outputBytes = 0;
   let recentStdout = "";
   let recentStderr = "";
   let pendingStderr = "";
@@ -776,31 +754,39 @@ function createSubprocessThread(i, env, messageHandler) {
   thread.stdout.setEncoding("utf8");
   thread.stdout.on("data", function(chunk) {
     output += chunk;
+    outputBytes += Buffer.byteLength(chunk);
     let eol;
     while ((eol = output.indexOf("\n")) !== -1) {
       const line = output.slice(0, eol);
+      const lineBytes = Buffer.byteLength(line);
       output = output.slice(eol + 1);
-      if (line.startsWith(WORKER_MESSAGE_PREFIX)) {
+      outputBytes -= lineBytes + 1;
+      const isEvent = line.startsWith(WORKER_MESSAGE_PREFIX);
+      if (lineBytes > (isEvent ? MAX_WORKER_PROOF_LINE : MAX_WORKER_MESSAGE_LINE)) {
+        failWorker("Worker " + i + " exceeded the worker output line limit");
+        continue;
+      }
+      if (isEvent) {
         if (failureReported) {continue;}
         let message;
         try {
-          if (line.length > MAX_WORKER_PROOF_LINE) {throw new Error("oversized worker output");}
           message = JSON.parse(line.slice(WORKER_MESSAGE_PREFIX.length));
         } catch {
           failWorker("Worker " + i + " emitted malformed worker output");
           output = "";
+          outputBytes = 0;
           break;
         }
         if (!isWorkerEvent(message) || message.thread_id !== i) {
           failWorker("Worker " + i + " emitted invalid worker output");
           continue;
         }
-        if (line.length > MAX_WORKER_MESSAGE_LINE) {
+        if (lineBytes > MAX_WORKER_MESSAGE_LINE) {
           const proof = message.value["plain_proof"];
           // Only proof-bearing results get the larger budget; all other envelope fields stay small.
           if (message.type !== "result" || typeof proof !== "string" ||
               proof.length > MAX_PEARL_PROOF_BASE64 ||
-              line.length - proof.length > MAX_PROOF_EVENT_OVERHEAD) {
+              lineBytes - proof.length > MAX_PROOF_EVENT_OVERHEAD) {
             failWorker("Worker " + i + " exceeded the worker output line limit");
             continue;
           }
@@ -816,9 +802,10 @@ function createSubprocessThread(i, env, messageHandler) {
     }
     const pendingLimit = output.startsWith(WORKER_MESSAGE_PREFIX) ?
       MAX_WORKER_PROOF_LINE : MAX_WORKER_MESSAGE_LINE;
-    if (output.length > pendingLimit) {
+    if (outputBytes > pendingLimit) {
       failWorker("Worker " + i + " exceeded the worker output line limit");
       output = "";
+      outputBytes = 0;
     }
   });
   thread.stdout.on("end", function() {
@@ -830,23 +817,19 @@ function createSubprocessThread(i, env, messageHandler) {
     }
   });
   thread.stderr.setEncoding("utf8");
-  thread.stderr.on("data", function(chunk) {
-    const filtered = filterWorkerStderr(pendingStderr, chunk);
+  /** @param {string} chunk */
+  function forwardStderr(chunk, flush = false) {
+    const filtered = filterWorkerStderr(pendingStderr, chunk, flush);
     pendingStderr = filtered.pending;
     if (!filtered.visible) {return;}
     recentStderr = appendRecentText(recentStderr, filtered.visible);
     process.stderr.write(filtered.visible);
-  });
-  thread.stderr.on("end", function() {
-    const filtered = filterWorkerStderr(pendingStderr, "", true);
-    pendingStderr = filtered.pending;
-    if (!filtered.visible) {return;}
-    recentStderr = appendRecentText(recentStderr, filtered.visible);
-    process.stderr.write(filtered.visible);
-  });
-  thread.stdin.on("error", function(error) {
-    failWorker("Worker " + i + " IPC error: " + error.message);
-  });
+  }
+  thread.stderr.on("data", forwardStderr);
+  thread.stderr.on("end", () => forwardStderr("", true));
+  for (const pipe of [thread.stdin, thread.stdout, thread.stderr]) {
+    pipe.on("error", error => failWorker("Worker " + i + " IPC error: " + error.message));
+  }
   thread.on("error", function(error) {
     failWorker("Worker " + i + " failed to start: " + error.message);
   });
@@ -856,12 +839,10 @@ function createSubprocessThread(i, env, messageHandler) {
       delete workerProcs[i];
       workerIds = workerIds.filter((workerId) => workerId !== i);
     }
-    if (handleExpectedWorkerExit(thread, i, code, signal,
-      workerExitDetail(recentStdout, recentStderr))) {return;}
+    const detail = workerExitDetail(recentStdout, recentStderr);
+    if (handleExpectedWorkerExit(thread, i, code, signal, detail)) {return;}
     if (!current) {return;}
-    workerError(messageHandler, i, workerExitMessage(i, code, signal,
-      workerExitDetail(recentStdout, recentStderr)
-    ));
+    workerError(messageHandler, i, workerExitMessage(i, code, signal, detail));
   });
   workerIds.push(i);
   workerProcs[i] = thread;

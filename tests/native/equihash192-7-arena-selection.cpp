@@ -186,7 +186,7 @@ static void run_checks() {
   Session<RetryArena> retry_session;
   retry_session.run_with_cache<false>(header);
   require(retry_session.calls == std::vector<int>{1}, "non-production session calibrated");
-  std::puts("PASS actual-source Equihash192 arena selection");
+  std::puts("PASS actual-source Equihash 192,7 arena selection");
 }
 
 int main() {

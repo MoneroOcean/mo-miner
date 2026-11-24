@@ -213,7 +213,7 @@ struct alignas(packed_bucket_collision_alignment(Spec::n, FieldCount))
 };
 
 template <typename Spec>
-using ZHashRootRecord = CollisionRoundRecord<Spec, Spec::rounds - 1>;
+using EquihashRootRecord = CollisionRoundRecord<Spec, Spec::rounds - 1>;
 
 inline std::uint64_t packed_mask(const unsigned bits) {
   return bits == 32 ? 0xffffffffull : ((1ull << bits) - 1ull);

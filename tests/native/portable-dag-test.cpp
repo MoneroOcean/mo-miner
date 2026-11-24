@@ -1,7 +1,9 @@
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <string>
 #include <stdexcept>
 
@@ -15,6 +17,33 @@ struct host_unified_memory {};
 } // namespace info::device
 
 inline unsigned host_unified_memory_queries = 0;
+inline bool fail_buffer_allocation = false;
+
+template <int> struct range { size_t size; };
+template <typename T, int Dimensions> class buffer {
+public:
+  explicit buffer(range<Dimensions>) {
+    if (fail_buffer_allocation) throw std::bad_alloc();
+  }
+};
+enum class access_mode { write };
+enum class target { device };
+template <typename, int, access_mode, target> class accessor;
+struct event {};
+struct handler {
+  template <typename... Args> void copy(Args&&...);
+  template <typename... Args> void fill(Args&&...);
+};
+struct queue {
+  template <typename Function> event submit(Function&&);
+  void wait_and_throw() {}
+};
+enum { read_only };
+template <typename T, int Dimensions> class host_accessor {
+public:
+  host_accessor(buffer<T, Dimensions>&, decltype(read_only));
+  T* begin();
+};
 
 class device {
 public:
@@ -50,6 +79,21 @@ using namespace portable_fixture;
 void require(const bool condition, const char* const message) {
   if (!condition)
     throw std::runtime_error(message);
+}
+
+void check_portable_result_growth() {
+  PortableResultState state;
+  state.ensure_portable_results(16);
+  sycl::fail_buffer_allocation = true;
+  try {
+    state.ensure_portable_results(32);
+    throw std::runtime_error("expected allocation failure");
+  } catch (const std::bad_alloc&) {
+    require(state.portable_results.capacity() == 0, "failed growth retained capacity");
+  }
+  sycl::fail_buffer_allocation = false;
+  state.ensure_portable_results(8);
+  require(state.portable_results.capacity() == 8, "smaller retry did not allocate results");
 }
 
 void set_portable_flag(const char* const value) {
@@ -124,6 +168,15 @@ void check_cache_key() {
   const uint64_t full_dag_words = dag_sizes[0] / sizeof(uint32_t);
   const void* const allocated = reinterpret_cast<const void*>(1);
 
+  require(portable_fixture::kawpow_cache_key_matches(
+              0, 0, compact_cache_words, compact_cache_words, compact_dag_words,
+              compact_dag_words, allocated, allocated),
+          "KawPow did not reuse unchanged dimensions");
+  require(!portable_fixture::kawpow_cache_key_matches(
+              0, 0, compact_cache_words, full_cache_words, compact_dag_words,
+              compact_dag_words, allocated, allocated),
+          "KawPow reused the DAG after only the light cache size changed");
+
   require(portable_fixture::etchash_cache_key_matches(
               0, 0, 0, 0, compact_cache_words, compact_cache_words, compact_dag_words,
               compact_dag_words, allocated, allocated),
@@ -146,6 +199,7 @@ void check_cache_key() {
 
 int main() {
   try {
+    check_portable_result_growth();
     const sycl::device cpu(true);
     const sycl::device gpu(false);
 

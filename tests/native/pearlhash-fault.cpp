@@ -148,6 +148,9 @@ struct queue {
 static bool mom_is_hip(const sycl::device& device) {
   return device.selected == sycl::backend::hip;
 }
+static bool mom_is_cuda(const sycl::device& device) {
+  return device.selected == sycl::backend::ext_oneapi_cuda;
+}
 
 // Model the shared helper's GPU query/completion boundary; its polling/unwind policy has its own
 // actual-source tests. This fixture keeps device.is_gpu() false outside this dispatch boundary.

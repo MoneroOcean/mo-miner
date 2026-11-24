@@ -43,16 +43,11 @@ const repoRoot = path.join(__dirname, "..", "..");
  *   socket: SocketLike | null, keepalive: ReturnType<typeof setTimeout> | null,
  *   first_job_timer?: ReturnType<typeof setTimeout>, response_timer?: ReturnType<typeof setTimeout>,
  *   idle_timer?: ReturnType<typeof setTimeout>,
- *   last_job: TestJob | null, pending_job?: PoolMessage, last_connect_time: number,
+ *   last_job: TestJob | null, job_state: PoolJobState, last_connect_time: number,
  *   pending_cortex_submit_ids?: Set<number>,
  *   good_shares: number, bad_shares: number,
  *   login: string, pass: string, worker?: string, worker_id?: string, logged_in: boolean,
- *   algo_params?: Record<string, TestAlgoParam>, extra_nonce?: string, extra_nonce2_size?: number,
- *   beam_nonceprefix?: string, xelis_extra_nonce?: string, xelis_public_key?: string,
- *   zelhash_target?: string, ironfish_xn?: string, ironfish_target?: string,
- *   stratum_target?: string,
- *   kaspa_difficulty?: number, pending_authorize?: boolean, donation_until?: number,
- *   xelis_difficulty?: number | string,
+ *   algo_params?: Record<string, TestAlgoParam>, pending_authorize?: boolean, donation_until?: number,
  *   [key: string]: unknown
  * }} TestPoolConfig
 /** @typedef {{
@@ -338,6 +333,7 @@ function mockPoolConfig(overrides = {}) {
     socket: null,
     keepalive: null,
     last_job: null,
+    job_state: {},
     last_connect_time: 0,
     pending_submit_count: 0,
     good_shares: 0,

@@ -327,7 +327,8 @@ test.describe("Helper worker lifecycle", {concurrency: false}, () => {
 
   test.describe("Worker dispatch, replacement, and shutdown", {concurrency: false}, () => {
     test("subprocess worker failures stay bounded and cleanup remains forceable", () => {
-      for (const mode of ["malformed", "oversized", "unwritable", "unexpected-exit"]) {
+      for (const mode of ["malformed", "oversized", "oversized-terminated", "oversized-utf8", "oversized-utf8-proof",
+        "bounded-proof", "read-error", "unwritable", "unexpected-exit"]) {
         /** @type {TestEnvironment} */
         const env = {...process.env, MOM_WORKER_FAILURE_MODE: mode};
         delete env["MOM_CLUSTER_WORKER"];
@@ -427,6 +428,8 @@ test.describe("Helper worker lifecycle", {concurrency: false}, () => {
         ["malformed", "{bad\n", /input was malformed/],
         ["trailing", '{"type":"close"', /input was malformed/],
         ["oversized", "x".repeat(1024 * 1024 + 1), /message line limit/],
+        ["oversized UTF-8", JSON.stringify({type: "close", note: "é".repeat(540000)}) + "\n",
+          /message line limit/],
       ];
       for (const [name, input, expected] of malformedInputs) {
         const result = runStdinFixture(input);

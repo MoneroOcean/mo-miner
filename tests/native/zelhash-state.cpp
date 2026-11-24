@@ -27,7 +27,7 @@ static void require(bool value, const char *label) {
   std::abort();
 }
 static std::map<void *, size_t> live;
-static unsigned allocations = 0, fail_allocation = 0, waits = 0, memsets = 0;
+static unsigned allocations = 0, fail_allocation = 0;
 static bool throw_allocation = false, fail_wait = false, fail_memset = false;
 namespace sycl {
 namespace info::device {
@@ -56,11 +56,9 @@ struct queue {
   device d;
   queue(device selected, property_list) : d(selected) {}
   void wait_and_throw() {
-    ++waits;
     if (fail_wait) throw std::runtime_error("wait failure");
   }
   event memset(void *, int, size_t) {
-    ++memsets;
     if (fail_memset) throw std::runtime_error("memset failure");
     return {};
   }

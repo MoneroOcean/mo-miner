@@ -138,7 +138,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
       input_size != BLOB_BYTES || intensity != 1)
     throw std::string(
       "beamhash3 requires input, output, a mining target, a 44-byte header, and intensity 1");
-  State& state = state_for(dev_str);
+  State& state = persistentDeviceState<State>(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_io();
 
@@ -518,22 +518,13 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
       if (!mom_equihash::pow::leaves_distinct(leaves, NUM_LEAVES))
         continue;
       std::array<uint8_t, 104> sol{};
-      uint8_t minimal[100];
-      compress_indices(leaves, minimal);
-      std::memcpy(sol.data(), minimal, 100);
+      compress_indices(leaves, sol.data());
       std::memcpy(sol.data() + 100, extranonce, 4);
-      bool dup = false;
-      for (const auto& s : seen)
-        if (s == sol) {
-          dup = true;
-          break;
-        }
-      if (dup)
-        continue;
       seen.push_back(sol);
     }
-    distinct_count = seen.size();
     std::sort(seen.begin(), seen.end());
+    seen.erase(std::unique(seen.begin(), seen.end()), seen.end());
+    distinct_count = seen.size();
 
     // Mining submits only distinct proofs whose SHA-256 meets the packed Beam network difficulty.
     // The is_test SOLVE path keeps every distinct solution so the offline checker can assert the known
@@ -546,7 +537,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
     // distinct solution. A debug aid to exercise the live JSON-RPC `solution` submit ABI end-to-end on
     // a hard network difficulty (the pool will low-diff-reject it, which still proves the wire path).
     static const bool force_submit = std::getenv("MOM_BEAMHASH3_FORCE_SUBMIT") != nullptr;
-    std::vector<std::array<uint8_t, 104>> emit;
+    const uint8_t* forced = nullptr;
     if (force_submit && !is_test && !is_benchmark && !seen.empty()) {
       size_t best = 0;
       uint8_t best_h[32];
@@ -559,38 +550,24 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
           best = i;
         }
       }
-      emit.push_back(seen[best]);
-    } else
-      for (const auto& sol : seen) {
-        if (is_test || is_benchmark || packed == 0) {
-          emit.push_back(sol);
-          continue;
-        }
-        uint8_t digest[32];
-        mom_equihash::pow::sha256(sol.data(), 104, digest);
-        if (beam_target_reached(digest, packed))
-          emit.push_back(sol);
-      }
-
-    // Hand back: [count:u8][count * 104-byte solution].
-    const unsigned cap = (SMALL_BLOB_SOL_LEN - 1) / 104;
-    n_solutions = (int)std::min<size_t>(emit.size(), cap);
-    solution_out[0] = (uint8_t)n_solutions;
-    for (int i = 0; i < n_solutions; ++i)
-      std::memcpy(solution_out + 1 + (size_t)i * 104, emit[i].data(), 104);
+      forced = seen[best].data();
+    }
+    n_solutions = static_cast<int>(mom_equihash::pow::pack_solutions(
+        seen, 104, SMALL_BLOB_SOL_LEN, forced != nullptr, solution_out,
+        [&](const auto& proof) -> const uint8_t* {
+      if (forced)
+        return proof.data() == forced ? forced : nullptr;
+      if (is_test || is_benchmark || packed == 0)
+        return proof.data();
+      uint8_t digest[32];
+      mom_equihash::pow::sha256(proof.data(), proof.size(), digest);
+      return beam_target_reached(digest, packed) ? proof.data() : nullptr;
+    }));
     if (log) {
       std::fprintf(stderr, "beamhash3 emitted solutions=%d (of %zu distinct):\n", n_solutions,
                    distinct_count);
-      for (int i = 0; i < n_solutions; ++i) {
-        std::fprintf(stderr, "  ");
-        for (int b = 0; b < 104; ++b)
-          std::fprintf(stderr, "%02x", emit[i][b]);
-        std::fprintf(stderr, "\n");
-      }
-      std::fflush(stderr);
+      mom_equihash::pow::log_solutions(solution_out, 104);
     }
-  } else {
-    solution_out[0] = 0;
   }
 
   if (log) {

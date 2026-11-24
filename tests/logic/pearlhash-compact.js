@@ -315,6 +315,7 @@ function groupOrderExercise(code) {
     for(let lane=0;lane<16;++lane){${body}}
     return canonical;
   })`);
+  /** @type {[number, number, number, number][]} */
   const profiles=[
     [0,0,0,0],[1,1,0,0],[0,0,1,0],[1,1,0,1],
     [3,1,2,1],[1,3,2,1],[4,2,3,0],[1,1,1,1],
@@ -323,8 +324,8 @@ function groupOrderExercise(code) {
   ];
   const groups=profiles.map(profile=>profile.map(maximum=>({maximum})));
   const actual=orderFor(groups,keyFor);
-  /** @param {number[]} profile */
-  const score=([a0=0,a1=0,b0=0,b1=0])=>((b0+b1)*128+16*b0+2*(a0+a1));
+  /** @param {[number, number, number, number]} profile */
+  const score=([a0,a1,b0,b1])=>((b0+b1)*128+16*b0+2*(a0+a1));
   const expected=profiles.map((profile,group)=>({group,score:score(profile)}))
     .sort((a,b)=>b.score-a.score||b.group-a.group);
   assert.equal(new Set(actual).size,16,"group destinations form a permutation");

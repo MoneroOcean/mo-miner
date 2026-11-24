@@ -295,7 +295,7 @@ test.describe("Pearl mixed-backend proof geometry", {skip: process.platform !== 
       fs.writeFileSync(path.join(root, "dispatch.inc"), source.slice(start, end));
       const binary = path.join(root, "dispatch");
       const build = spawnSync(process.env["CXX"] || "c++", ["-std=c++17", "-O2", ...flags, "-I", root,
-        "-I", path.join(__dirname, "../sycl/pearlhash"), path.join(__dirname, "native/pearl-search-profiles.cpp"), "-o", binary], {encoding: "utf8", timeout: 30000});
+        "-I", path.join(__dirname, "../sycl/pearlhash"), path.join(__dirname, "native/pearlhash-search-profiles.cpp"), "-o", binary], {encoding: "utf8", timeout: 30000});
       assert.equal(build.status, 0, build.error?.message || build.stderr);
       const run = spawnSync(binary, [], {encoding: "utf8", timeout: 5000, env: {...process.env, MOM_PEARLHASH_AMD_DP4A_TILE: ""}});
       assert.equal(run.status, 0, run.error?.message || run.stderr);
@@ -325,7 +325,7 @@ test.describe("Pearl producer and compiler-feature routing", {skip: process.plat
     fs.writeFileSync(path.join(root, "tensor.inc"), state.slice(begin, state.indexOf("#endif", field) + 6) + "\n");
     for (const [index, profile] of profiles.entries()) {
       const result = spawnSync(process.env["CXX"] || "c++", ["-std=c++17", "-O2", "-DMOM_SYCL_HAS_CUDA", `-DMOM_TEST_CUDA_TENSOR=${Number(profile.tensor)}`, ...profile.flags,
-        "-I", root, path.join(__dirname, "native/pearl-compiler-routes.cpp"), "-o", path.join(root, String(index))], {encoding: "utf8", timeout: 30000});
+        "-I", root, path.join(__dirname, "native/pearlhash-compiler-routes.cpp"), "-o", path.join(root, String(index))], {encoding: "utf8", timeout: 30000});
       assert.equal(result.status, 0, result.error?.message || result.stderr);
     }
   });

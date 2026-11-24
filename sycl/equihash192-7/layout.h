@@ -71,7 +71,7 @@ struct StagedArenaLayout {
       mom_equihash::PackedBucketCollisionRecord<Spec, 2, Round6Layout::local_bits,
                                                 Round5Layout::bucket_bits,
                                                 Round5Layout::bucket_slot_capacity>;
-  using RootRecord = mom_equihash::ZHashRootRecord<Spec>;
+  using RootRecord = mom_equihash::EquihashRootRecord<Spec>;
 
   static_assert(Level0Layout::slot_count == Round1Layout::slot_count &&
                 Level0Layout::slot_count == Round2Layout::slot_count &&

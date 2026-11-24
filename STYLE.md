@@ -11,6 +11,8 @@ unchanged except for a narrowly required integration fix.
   exceptions are conventional or vendor-named files (`LICENSE`, `Hermes.cmake`, vendored headers)
   and `xmrig/`. JavaScript and C++ internal identifiers are camelCase; preserve snake_case names that
   are part of native, configuration, environment, pool, or wire contracts.
+- Use the algorithm's name consistently in source and test paths, with kebab-case where the
+  public ID contains punctuation (`equihash192_7` becomes `equihash192-7` in paths).
 - Reuse the shared helpers instead of re-declaring them: `helper/validate.js` for input checks and
   `tests/common/cpp-source.js` for reading SYCL sources in tests.
 - JavaScript uses strict CommonJS, `node:` for built-ins, double quotes, semicolons, `const`/`let`,

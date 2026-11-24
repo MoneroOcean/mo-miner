@@ -338,7 +338,7 @@ template <typename Spec, typename InputRecord>
 inline bool make_bucket_root_unordered(
     const InputRecord& a, const InputRecord& b, const std::uint32_t bucket,
     const std::uint32_t a_slot, const std::uint32_t b_slot,
-    const std::uint32_t input_slots, ZHashRootRecord<Spec>& root) {
+    const std::uint32_t input_slots, EquihashRootRecord<Spec>& root) {
   const std::uint32_t field =
       load_bucket_field(a, bucket, 1) ^ load_bucket_field(b, bucket, 1);
   if (field != 0) return false;
@@ -1412,7 +1412,7 @@ template <typename Spec, typename Layout, typename InputRecord>
 // Emit only zero-XOR root pairs; reservation counts may exceed capacity but writes never do.
 inline sycl::event submit_zero_root_round_bucketed(
     sycl::queue& queue, const InputRecord* device_input,
-    const std::uint32_t* device_input_counts, ZHashRootRecord<Spec>* device_roots,
+    const std::uint32_t* device_input_counts, EquihashRootRecord<Spec>* device_roots,
     std::uint32_t* device_root_count, const std::uint32_t root_capacity) {
   using global_atomic_u32 = sycl::atomic_ref<std::uint32_t, sycl::memory_order::relaxed,
                                              sycl::memory_scope::device,
@@ -1452,7 +1452,7 @@ inline sycl::event submit_zero_root_round_bucketed(
             while (link != 0) {
               const unsigned b = link - 1u;
               link = bin_next[b];
-              ZHashRootRecord<Spec> root{};
+              EquihashRootRecord<Spec> root{};
               if (!make_bucket_root_unordered<Spec>(
                       device_input[base + a], device_input[base + b], bucket, a, b,
                       Layout::bucket_slot_capacity, root))
@@ -1544,7 +1544,7 @@ inline sycl::event submit_recover_root_leaves(
     sycl::queue& queue, const SplitRecordHead* level0_heads, const std::uint32_t* level0_tails,
     const SplitRecordHead* round1_heads, const std::uint32_t* round1_tails,
     const Round2* round2, const Round3* round3, const Round4* round4,
-    const ZHashRootRecord<Spec>* roots,
+    const EquihashRootRecord<Spec>* roots,
     const std::uint32_t* candidate_count, std::uint32_t* leaves, std::uint8_t* valid,
     const std::uint32_t candidate_begin, const std::uint32_t candidate_size,
     const std::uint32_t initial_capacity,

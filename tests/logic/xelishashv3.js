@@ -42,8 +42,8 @@ test("XELIS v3 jobs infer the versioned subscribe and authorize protocol", async
     assert.ok(jobMessage);
     assert.deepEqual(writes[1].params, ["xel:wallet", "worker", "x"]);
     assert.equal(poolConfig.logged_in, true);
-    assert.equal(poolConfig.xelis_extra_nonce, extraNonce);
-    assert.equal(poolConfig.xelis_public_key, publicKey);
+    assert.equal(poolConfig.job_state.xelis_extra_nonce, extraNonce);
+    assert.equal(poolConfig.job_state.xelis_public_key, publicKey);
     assert.equal(jobMessage.algo, "xelishashv3");
     assert.equal(jobMessage.submit_mode, "xelis");
     assert.equal(jobMessage.job_id, jobId);
@@ -165,8 +165,8 @@ test("XELIS rejects a mixed stale key pair after a malformed update", async () =
     ].map((message) => JSON.stringify(message)).join("\n") + "\n"));
 
     assert.equal(received, false);
-    assert.equal(poolConfig.xelis_extra_nonce, "");
-    assert.equal(poolConfig.xelis_public_key, "");
+    assert.equal(poolConfig.job_state.xelis_extra_nonce, "");
+    assert.equal(poolConfig.job_state.xelis_public_key, "");
     assert.equal(poolConfig.last_job, null);
   });
 });
@@ -221,7 +221,7 @@ test("XELIS keeps full 256-bit pool difficulty exact", async () => {
     ].map((message) => JSON.stringify(message)).join("\n") + "\n"));
 
     assert.ok(jobMessage);
-    assert.equal(poolConfig.xelis_difficulty, difficulty);
+    assert.equal(poolConfig.job_state.xelis_difficulty, difficulty);
     assert.equal(jobMessage.target,
       (((1n << 256n) - 1n) / BigInt(difficulty)).toString(16).padStart(64, "0"));
     assert.equal(jobMessage.difficulty, undefined);

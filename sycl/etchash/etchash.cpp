@@ -58,7 +58,7 @@ int etchash(const unsigned, const uint32_t block_height, const uint8_t* const in
   if (!input || !output || !mix_hash || !pnonce || !target || input_size < 40 || !intensity)
     throw std::string("Etchash requires input, output, target, nonce, and nonzero intensity");
 
-  State& state = state_for(dev_str);
+  State& state = persistentDeviceState<State>(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
   state.ensure_input(input_size);
   uint32_t epoch = 0;

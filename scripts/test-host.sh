@@ -111,8 +111,8 @@ build_run zhash-session-hip -DMOM_SYCL_HAS_HIP "$root/tests/native/zhash-session
 build_run zhash-session-intel -D__INTEL_LLVM_COMPILER -DMOM_ZHASH_INTEL_LATE_BUCKETS \
   "$root/tests/native/zhash-session.cpp"
 extract_cpp local_memory_fits.inc sycl/lib-internal.h 'inline bool sycl_local_memory_fits('
-extract_cpp equihash192_layout.inc sycl/equihash192-7/layout.h 'struct BucketLayout {'
-printf ';\n' >> "$out/equihash192_layout.inc"
+extract_cpp equihash192-7-layout.inc sycl/equihash192-7/layout.h 'struct BucketLayout {'
+printf ';\n' >> "$out/equihash192-7-layout.inc"
 # The production slot count is a preprocessor-selected constant, so copy its whole conditional.
 awk '
   /^#if/ { group = ""; grouping = 1 }
@@ -122,8 +122,8 @@ awk '
     if (group ~ /constexpr unsigned ProductionSlotsPerBucket =/) { printf "%s", group; found++ }
   }
   END { if (found != 1) exit 1 }
-' "$root/sycl/equihash192-7/layout.h" >> "$out/equihash192_layout.inc"
-extract_cpp equihash192_admission.inc sycl/equihash192-7/equihash192-7.cpp \
+' "$root/sycl/equihash192-7/layout.h" >> "$out/equihash192-7-layout.inc"
+extract_cpp equihash192-7-admission.inc sycl/equihash192-7/equihash192-7.cpp \
   'unsigned equihash192_7_intensity('
 extract_cpp zhash_admission.inc sycl/zhash/zhash.cpp 'unsigned zhash_intensity('
 build_run equihash-admission -UNDEBUG -I "$out" "$root/tests/native/equihash-admission.cpp"
@@ -133,15 +133,15 @@ build_run equihash-admission-intel -UNDEBUG -D__INTEL_LLVM_COMPILER -DMOM_ZHASH_
   -I "$out" "$root/tests/native/equihash-admission.cpp"
 build_run equihash-admission-intel-unbranded -UNDEBUG -DMOM_SYCL_INTEL_LAYOUT \
   -DMOM_ZHASH_INTEL_LATE_BUCKETS -I "$out" "$root/tests/native/equihash-admission.cpp"
-build_run equihash192-core "$root/tests/native/equihash192-core.cpp"
-build_run equihash192-core-intel -D__INTEL_LLVM_COMPILER \
-  "$root/tests/native/equihash192-core.cpp"
-build_run equihash192-core-intel-unbranded -DMOM_SYCL_INTEL_LAYOUT \
-  "$root/tests/native/equihash192-core.cpp"
+build_run equihash192-7-core "$root/tests/native/equihash192-7-core.cpp"
+build_run equihash192-7-core-intel -D__INTEL_LLVM_COMPILER \
+  "$root/tests/native/equihash192-7-core.cpp"
+build_run equihash192-7-core-intel-unbranded -DMOM_SYCL_INTEL_LAYOUT \
+  "$root/tests/native/equihash192-7-core.cpp"
 build_run zhash-session-intel-unbranded -DMOM_SYCL_INTEL_LAYOUT -DMOM_ZHASH_INTEL_LATE_BUCKETS \
   "$root/tests/native/zhash-session.cpp"
-build_run equihash192-core-spir -D__SYCL_DEVICE_ONLY__ -D__SPIR__ \
-  "$root/tests/native/equihash192-core.cpp"
+build_run equihash192-7-core-spir -D__SYCL_DEVICE_ONLY__ -D__SPIR__ \
+  "$root/tests/native/equihash192-7-core.cpp"
 build_run zhash-core-spir -D__SYCL_DEVICE_ONLY__ -D__SPIR__ \
   "$root/tests/native/zhash-core.cpp"
 build_run c30-host -I "$root/xmrig" -I "$root/sycl/c30" \
@@ -171,7 +171,7 @@ build_run c30-reference -I "$root/xmrig" "$root/tests/reference/c30-cortex.cpp" 
 # differential build and its separate standards-only implementation variant.
 flags=(-std=c++17 -O2 -Wall -Wextra -Werror)
 build_run zhash-reference "$root/tests/reference/zhash-144-5.cpp"
-build_run equihash192-reference "$root/tests/reference/equihash-192-7-zclassic.cpp"
+build_run equihash192-7-reference "$root/tests/reference/equihash192-7-zclassic.cpp"
 flags=(-std=c++20 -O2)
 build_run xelishashv3-operations "$root/tests/logic/xelishashv3-operations.cpp"
 build_run xelishashv3-operations-portable -DMOM_SYCL_PORTABLE_OPENCL \

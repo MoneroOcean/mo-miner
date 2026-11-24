@@ -66,7 +66,7 @@ test("Nexa numeric job IDs survive native result matching and submission", async
   await withMockPool({
     pool: {
       login: "nexa:wallet.worker", protocol: "echelon", logged_in: true,
-      extra_nonce: "01".repeat(8), extra_nonce2_size: 8,
+      job_state: {extra_nonce: "01".repeat(8), extra_nonce2_size: 8},
     },
     opt: {job: {algo: "nexapow"}},
   }, async ({socket, poolConfig}) => {
@@ -106,7 +106,7 @@ test("Nexa official Echelon jobs require the clean-jobs boolean", async () => {
   let dispatched = 0;
   await withMockPool({
     pool: {protocol: "echelon", logged_in: true,
-      extra_nonce: "0000000000000001", extra_nonce2_size: 8},
+      job_state: {extra_nonce: "0000000000000001", extra_nonce2_size: 8}},
     opt: {job: {algo: "nexapow"}},
   }, async ({socket}) => {
     pool.connect_pool_throttle(0, (job) => {
@@ -125,7 +125,7 @@ test("Nexa submit preserves the job's complete 128-bit Echelon nonce", async () 
   const miner = await loadMinerWithStubs();
   const poolConfig = miner.global.opt.pools[0];
   poolConfig.login = "nexa:wallet.worker";
-  poolConfig.extra_nonce = "0000000000000002";
+  poolConfig.job_state.extra_nonce = "0000000000000002";
   poolConfig.last_job = {
     job_id: "old", job_token: "token", submit_mode: "echelon",
     extra_nonce: "0000000000000001", ntime: "0000000063b1fb60",
@@ -146,7 +146,7 @@ test("Nexa four-field jobs separate the pool prefix from the eight-byte worker n
   const miner = await loadMinerWithStubs();
   const wireHeader = Buffer.from(Array.from({length: 32}, (_, index) => index));
   await withMockPool({
-    pool: {protocol: "echelon", logged_in: true, extra_nonce: "10203040", extra_nonce2_size: 4},
+    pool: {protocol: "echelon", logged_in: true, job_state: {extra_nonce: "10203040", extra_nonce2_size: 4}},
     opt: {job: {algo: "nexapow"}},
   }, async ({socket, poolConfig}) => {
     miner.global.opt.pools[0] = poolConfig;
@@ -176,8 +176,8 @@ test("Nexa four-field jobs separate the pool prefix from the eight-byte worker n
 test("Nexa four-field submission sends the complete worker nonce with the job's fixed prefix", async () => {
   const miner = await loadMinerWithStubs();
   const poolConfig = miner.global.opt.pools[0];
-  poolConfig.extra_nonce = "99887766";
-  poolConfig.extra_nonce2_size = 8;
+  poolConfig.job_state.extra_nonce = "99887766";
+  poolConfig.job_state.extra_nonce2_size = 8;
   poolConfig.last_job = {
     job_id: "short-job", job_token: "short-token", submit_mode: "echelon",
     extra_nonce: "10203040", extra_nonce2_size: 4, noncebytes: 8, nonceoffset: 36,
@@ -210,7 +210,7 @@ for (const [name, extraNonce, extraSize, height, bits] of [
     let dispatched = 0;
     await withMockPool({
       pool: {protocol: "echelon", logged_in: true,
-        extra_nonce: String(extraNonce), extra_nonce2_size: Number(extraSize)},
+        job_state: {extra_nonce: String(extraNonce), extra_nonce2_size: Number(extraSize)}},
       opt: {job: {algo: "nexapow"}},
     }, async ({socket}) => {
       pool.connect_pool_throttle(0, (job) => {

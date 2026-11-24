@@ -13,8 +13,6 @@ const path = require("node:path");
 const gpuTuning = require("../gpu-tuning");
 const helper = require("../helper");
 const createJobApi = require("../miner/jobs");
-const {normalizeAlgoName} = require("../miner/algorithms");
-const {hexWithoutPrefix} = require("../miner/submission");
 const {hashTests} = require("./vectors");
 const {addDiscreteCases, addGenericCases, addIntegratedCases} = require("./common/gpu-test-matrix");
 const {
@@ -174,8 +172,6 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       process: testProcess,
       compilerPolicy: policyModule,
       gpuTuning,
-      hexWithoutPrefix,
-      normalizeAlgoName,
       messageHandler: () => undefined,
       isExiting: () => false,
       getComputeCore: () => null,
@@ -2465,12 +2461,15 @@ int main() {
       const root = path.join(__dirname, "..");
       const read = (/** @type {string} */ file) => fs.readFileSync(path.join(root, file), "utf8");
       const kawpow = read("sycl/kawpow/state.inc"), etchash = read("sycl/etchash/state.inc");
+      const library = read("sycl/lib-internal.h");
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-ethash-dag-chunks-"));
       try {
-        fs.writeFileSync(path.join(fixture, "mom_parse_env_ulong.inc"),
-          extractCppBlock(read("sycl/lib-internal.h"), "inline bool mom_parse_env_ulong("));
+        fs.writeFileSync(path.join(fixture, "unsigned-env.inc"),
+          extractCppBlock(library, "inline bool mom_parse_env_ulong(") + "\n" +
+          extractCppBlock(library, "inline bool mom_parse_env_u32("));
+        fs.writeFileSync(path.join(fixture, "round-up-size.inc"),
+          extractCppBlock(library, "inline size_t mom_round_up_size("));
         fs.writeFileSync(path.join(fixture, "kawpow_dag_chunk.inc"),
-          extractCppBlock(kawpow, "  static bool parse_env_u32(") +
           extractCppBlock(kawpow, "  static uint32_t kawpow_dag_chunk_nodes("));
         fs.writeFileSync(path.join(fixture, "etchash_dag_chunk.inc"),
           extractCppBlock(etchash, "  static uint32_t etchash_dag_chunk_nodes("));
@@ -2909,6 +2908,9 @@ int main() {
       const api = testJobApi();
       const job = api.prepareTestJob({algo: "rx/0", dev: "cpu", blob_hex: "00"});
       assert.equal(job.nonceoffset, undefined);
+      const aliasJob = api.prepareTestJob({algo: "CUCKAROO", dev: "gpu1", blob_hex: "00".repeat(32)});
+      assert.equal(aliasJob.algo, "c29");
+      assert.equal(aliasJob.nonceoffset, undefined);
       const pearlJob = api.prepareTestJob({
         algo: "pearlhash", dev: "gpu1*[m=256]", blob_hex: "00".repeat(76),
       });
@@ -4133,8 +4135,8 @@ static_assert(sizeof(mom::NvrtcProgram) > 0);
         assert.ok(begin >= 0 && stop > begin, start);
         return source.slice(begin, stop);
       };
-      const entry = section(host, "  state.init_portable();", "  return static_cast<int>(hits);\n}") +
-        "  return static_cast<int>(hits);\n";
+      const finalReturn = "  return static_cast<int>(hits);\n";
+      const entry = section(host, "  state.init_portable();", finalReturn) + finalReturn;
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nexapow-submission-"));
       try {
         const source = path.join(fixture, "submission.cpp"), executable = path.join(fixture, "probe");
@@ -4580,7 +4582,7 @@ int main(int argc, char** argv) {
     }, async (t) => {
       const root = path.join(__dirname, "../sycl");
       const header = fs.readFileSync(path.join(root, "hiprtc-api.h"), "utf8");
-      const octopus = fs.readFileSync(path.join(root, "octopus/nvidia-tensor.inc"), "utf8");
+      const octopus = fs.readFileSync(path.join(root, "octopus/matrix-search.inc"), "utf8");
       const classStart = octopus.indexOf("class OctopusSyclNativeSearch {");
       const wmma = fs.readFileSync(path.join(root, "octopus/amd-wmma.inc"), "utf8");
       const wmmaStart = wmma.indexOf("  bool ensure(");
@@ -6859,11 +6861,11 @@ int main(int argc, char** argv) {
       const state = readSyclSource(path.join(__dirname, "../sycl/autolykos2/state.inc"));
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-autolykos-pipeline-"));
       try {
-        fs.writeFileSync(path.join(fixture, "autolykos_pipeline_selector.inc"),
+        fs.writeFileSync(path.join(fixture, "autolykos2-pipeline-selector.inc"),
           extractCppBlock(state, "struct AutolykosPipelineSelection {") + ";\n");
         const executable = path.join(fixture, "selector");
         const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
-          "-pedantic", "-I" + fixture, path.join(__dirname, "native/autolykos-pipeline-selection.cpp"),
+          "-pedantic", "-I" + fixture, path.join(__dirname, "native/autolykos2-pipeline-selection.cpp"),
           "-o", executable], {encoding: "utf8"});
         assert.equal(compiled.error, undefined);
         assert.equal(compiled.status, 0, compiled.stderr);
@@ -6916,7 +6918,7 @@ int main(int argc, char** argv) {
       }
     });
 
-    test("Equihash192 CUDA arena selection compares full proofs and preserves fault boundaries", {
+    test("Equihash 192,7 CUDA arena selection compares full proofs and preserves fault boundaries", {
       skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
     }, () => {
       const session = readSyclSource(path.join(__dirname,
@@ -6924,7 +6926,7 @@ int main(int argc, char** argv) {
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-e192-arena-selection-"));
       try {
         const source = path.join(fixture, "fixture.cpp");
-        fs.copyFileSync(path.join(__dirname, "native/equihash192-arena-selection.cpp"), source);
+        fs.copyFileSync(path.join(__dirname, "native/equihash192-7-arena-selection.cpp"), source);
         for (const name of ["run_with_cache", "select_cuda_arena"]) {
           const member = extractCppBlock(session, `  std::vector<Solution> ${name}(`);
           fs.writeFileSync(path.join(fixture, `${name}.inc`), member.replaceAll("std::chrono::", "fixture_clock::"));
@@ -6940,7 +6942,7 @@ int main(int argc, char** argv) {
           assert.equal(result.error, undefined);
           assert.equal(result.signal, null);
           assert.equal(result.status, 0, result.stderr);
-          assert.equal(result.stdout, "PASS actual-source Equihash192 arena selection\n");
+          assert.equal(result.stdout, "PASS actual-source Equihash 192,7 arena selection\n");
         }
       } finally {
         fs.rmSync(fixture, {recursive: true, force: true});
@@ -7236,11 +7238,11 @@ int main(int argc, char** argv) {
         fs.writeFileSync(path.join(fixture, "active-guard.inc"),
           extract(execution, "    if (!m_has_fn) {", "\n    { // A compute function is active"));
         fs.writeFileSync(path.join(fixture, "dispatch.inc"),
-          extract(execution, "          case DEV::C30_GPU:", "          case DEV::KAWPOW_GPU:"));
+          extract(execution, "          case DEV::C30_GPU:", "          case DEV::PROGPOW_GPU:"));
         fs.writeFileSync(path.join(fixture, "compute-catch.inc"), execution.slice(catchStart, catchEnd));
         fs.writeFileSync(path.join(fixture, "accounting.inc"),
           extract(execution, "      uint64_t completed = m_batch;",
-            "      if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU ||"));
+            "      if (is_nonce_at_32_gpu_dev(m_dev) ||"));
         fs.writeFileSync(path.join(fixture, "nonce-commit.inc"),
           extract(execution, "      if (m_dev == DEV::C30_GPU) {", "      if (m_nonce_bytes == 4) {"));
         const compiled = spawnSync("c++", ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
@@ -7502,7 +7504,7 @@ int main() {
         fs.writeFileSync(path.join(fixture, "compute-catch.inc"), execution.slice(catchStart, catchEnd));
         fs.writeFileSync(path.join(fixture, "accounting.inc"),
           extract(execution, "      uint64_t completed = m_batch;",
-            "      if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU ||"));
+            "      if (is_nonce_at_32_gpu_dev(m_dev) ||"));
         const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
           "-pedantic", source, "-o", executable], {encoding: "utf8"});
         assert.equal(compiled.error, undefined);
@@ -7640,12 +7642,8 @@ int main() {
         {name: "Wala tiled matrix", file: "walahash/walahash.cpp", owner: "    uint8_t matrix[4096];",
           start: "    MomSyclHostTransferGuard matrix_transfers(",
           end: "    std::memcpy(state.matrix_seed, input, 32);", shared: false, tiled: true},
-        {name: "Etchash", file: "etchash/state.inc", owner: "    std::vector<uint32_t> host_cache;",
-          start: "    MomSyclHostTransferGuard host_cache_transfers(",
-          end: "    const uint32_t light_nodes", shared: true},
-        {name: "KawPow", file: "kawpow/state.inc", owner: "    std::vector<uint32_t> host_cache;",
-          start: "    MomSyclHostTransferGuard host_cache_transfers(",
-          end: "    const uint32_t light_nodes", shared: true},
+        {name: "Ethash light cache", file: "ethash-dag.inc", owner: "inline void upload_ethash_light_cache(",
+          start: "  MomSyclHostTransferGuard transfers(", end: "\n}", shared: true},
         {name: "FishHash", file: "fishhash/state.inc", owner: "      std::vector<uint64_t> hcache;",
           start: "      MomSyclHostTransferGuard host_cache_transfers(",
           end: "      cache_built = true;", shared: true},
@@ -7653,10 +7651,6 @@ int main() {
           owner: "    std::array<uint32_t, POLYNOMIAL_SIZE> host_points;",
           start: "    MomSyclHostTransferGuard host_points_transfers(",
           end: "    std::memcpy(points_header.data(), next_header, HASH_LEN);", shared: true},
-        {name: "Octopus cache", file: "octopus/state.inc",
-          owner: "    std::vector<uint32_t> host_cache(static_cast<size_t>(bytes / sizeof(uint32_t)));",
-          start: "    MomSyclHostTransferGuard host_cache_transfers(",
-          end: "    cache_nodes = nodes;", shared: true},
         {name: "Verthash", file: "verthash/verthash.cpp", owner: "    std::vector<Uint2> host;",
           start: "    MomSyclHostTransferGuard host_data_transfers(",
           end: "\n  }\n};", shared: true},
@@ -7781,6 +7775,32 @@ int main() {
       }
     });
 
+    test("FishHash cooperative selection checks output before timing or caching", {
+      skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+    }, () => {
+      const state = fs.readFileSync(path.join(__dirname, "../sycl/fishhash/state.inc"), "utf8");
+      const library = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-fishhash-cooperative-"));
+      try {
+        fs.writeFileSync(path.join(fixture, "selection.inc"),
+          [extractCppBlock(library, "inline bool mom_parse_env_ulong("),
+            extractCppBlock(library, "inline unsigned sycl_default_workgroup("),
+            extractCppBlock(state, "  static unsigned cooperative_workgroup("),
+            extractCppBlock(state, "template <class Search>\nstatic bool selectCooperative(")].join("\n"));
+        const executable = path.join(fixture, "fishhash-cooperative");
+        const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
+          "-I", fixture, path.join(__dirname, "native/fishhash-cooperative.cpp"), "-o", executable], {encoding: "utf8"});
+        assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
+        const result = spawnSync(executable, [], {
+          env: {...process.env, MOM_FISHHASH_COOP: undefined}, encoding: "utf8", timeout: 5000,
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout, "PASS FishHash cooperative selection\n");
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
+
     test("Host upload guards retire accepted copies before caller-owned buffers", {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, async (t) => {
@@ -7798,11 +7818,8 @@ int main() {
         {name: "cn/gpu", file: "cn-gpu/cn-gpu.cpp", end: "  // Initial Keccak", uploads: 1},
         {name: "Etchash", file: "etchash/etchash.cpp", end: "  sycl::queue& q = state.queue;", uploads: 2},
         {name: "KawPow", file: "kawpow/kawpow.cpp", end: "  sycl::queue& q = state.queue;", uploads: 1},
-        {name: "FishHash", file: "fishhash/fishhash.cpp",
-          end: "#if !defined(MOM_SYCL_PORTABLE_OPENCL)\n  const auto full_search =", uploads: 2},
-        {name: "KarlsenHashV2", file: "fishhash/fishhash.cpp", scope: "int karlsenhashv2(",
-          end: "#if !defined(MOM_SYCL_PORTABLE_OPENCL)\n  const auto full_search =",
-          uploads: 2, focused: true, shared: true},
+        {name: "FishHash and KarlsenHashV2", file: "fishhash/fishhash.cpp", end: "  const auto search",
+          uploads: 2, fixedDag: true},
         {name: "Nexa monolithic", file: "nexapow/nexapow.cpp", scope: "  state.init_portable();",
           end: "  state.queue.memset(state.result,", uploads: 3, focused: true},
       ];
@@ -7818,7 +7835,8 @@ int main() {
             if (route.scope) {
               assert.ok(entry.includes(route.scope), route.scope);
             }
-            const upload = extract(scope, "  MomSyclHostTransferGuard ", route.end);
+            let upload = extract(scope, "  MomSyclHostTransferGuard ", route.end);
+            if (route.fixedDag) {upload = upload.replace(/Karlsen \? "[^"]+" : /, "");}
             fs.writeFileSync(path.join(fixture, "upload.after.inc"), upload);
             // The negative removes only the fix from the otherwise identical real upload scope.
             fs.writeFileSync(path.join(fixture, "upload.before.inc"),
@@ -7835,11 +7853,13 @@ int main() {
               assert.equal(compiled.signal, null);
               assert.equal(compiled.status, 0, compiled.stderr);
               const cases = [];
-              if (route.focused) {
+              if (route.focused || route.fixedDag) {
                 for (const [kind, error] of ["std::exception", "std::string", "unknown"].entries()) {
                   cases.push({stage: 4, kind, secondary: kind ? 1 : 0, mode: 0,
                     name: "second upload: " + error + (kind ? " and cleanup fault" : "")});
                 }
+              }
+              if (route.focused) {
                 cases.push({stage: 1, kind: 0, secondary: 1, mode: 0,
                   name: "first submit and cleanup fault"});
               } else {
@@ -7853,7 +7873,7 @@ int main() {
                 }
               }
               cases.push({stage: 0, kind: 0, secondary: 0, mode: 0, name: "device success wait trace"});
-              if (!route.focused || route.shared) {
+              if (!route.focused) {
                 cases.push({stage: 0, kind: 0, secondary: 0, mode: 1, name: "shared success wait trace"});
               }
               if (route.name === "cn/gpu") {

@@ -76,7 +76,7 @@ static std::string nonce_to_hex(const uint64_t nonce, const unsigned noncebytes)
 // mix hash or cycle edges as present) with the current job's submit ids.
 void Core::send_result(
   const uint64_t nonce, const unsigned noncebytes, const uint8_t* const output,
-  const uint32_t* const edges, const unsigned c29_proof_size,
+  const uint32_t* const edges, const unsigned cuckaroo_proof_size,
   const uint8_t* const commitment, const uint8_t* const mix_hash,
   const uint8_t* const solution, const unsigned solution_len
 ) {
@@ -102,9 +102,9 @@ void Core::send_result(
 
   if (edges) {
     std::string edges_hex;
-    edges_hex.reserve(c29_proof_size * 8); // 8 hex chars per edge
+    edges_hex.reserve(cuckaroo_proof_size * 8); // 8 hex chars per edge
     char buf[9]; // enough for "%08x" + null
-    for (unsigned i = 0; i < c29_proof_size; ++i) {
+    for (unsigned i = 0; i < cuckaroo_proof_size; ++i) {
       snprintf(buf, sizeof(buf), "%08x", edges[i]);
       edges_hex.append(buf);
     }
@@ -149,13 +149,19 @@ void Core::send_equihash_results(
 ) {
   const uint8_t* const solutions = static_cast<const uint8_t*>(m_spads);
   const unsigned count = solutions[0];
+  uint8_t submit[3 + 400];
+  if (!solution_size || solution_size > sizeof(submit) - 3) {
+    send_error("Invalid " + m_algo_str + " solution size");
+    return;
+  }
   const unsigned capacity = (EQUIHASH_SOL_BUFFER_LEN - 1) / solution_size;
   if (count > capacity) {
     send_error("Invalid " + m_algo_str + " solution count");
     return;
   }
 
-  const unsigned prefix_size = compact_size_prefix ? (solution_size < 253 ? 1 : 3) : 0;
+  const unsigned prefix_size = compact_size_prefix
+      ? mom::job_boundary::write_compact_size16(static_cast<uint16_t>(solution_size), submit) : 0;
   for (unsigned i = 0; i < count; ++i) {
     const uint8_t* const solution = solutions + 1 + static_cast<size_t>(i) * solution_size;
     if (!compact_size_prefix) {
@@ -164,14 +170,6 @@ void Core::send_equihash_results(
       continue;
     }
 
-    uint8_t submit[3 + 400];
-    if (prefix_size == 1) {
-      submit[0] = static_cast<uint8_t>(solution_size);
-    } else {
-      submit[0] = 253;
-      submit[1] = static_cast<uint8_t>(solution_size);
-      submit[2] = static_cast<uint8_t>(solution_size >> 8);
-    }
     std::memcpy(submit + prefix_size, solution, solution_size);
     send_result(nonce, m_nonce_bytes, nullptr, nullptr, 32, nullptr, nullptr,
                 submit, solution_size + prefix_size);

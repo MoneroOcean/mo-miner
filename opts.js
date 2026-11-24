@@ -63,6 +63,7 @@ module.exports.pool_create = function(url, port, is_tls, login, pass) {
     logged_in:         false,
     last_connect_time: 0,
     last_job:          null,
+    job_state:         {},
     good_shares:       0,
     bad_shares:        0,
   };
@@ -130,6 +131,7 @@ module.exports.opt_help = {
       _logged_in:         [ false, "pool login completed" ],
       _last_connect_time: [ 0, "last connect time for throttling purposes" ],
       _last_job:          [ null, "last job object" ],
+      _job_state:         [ {}, "negotiated job controls" ],
       _good_shares:       [ 0, "number of accepted shares" ],
       _bad_shares:        [ 0, "number of invalid shares" ],
     },
@@ -530,32 +532,6 @@ function validateDefaultMsrOption(arg, parsed, value) {
 }
 
 /** @param {string} arg @param {UnknownRecord} parsed @param {UnknownRecord} value */
-function validateAlgoPerf(arg, parsed, value) {
-  if (value["perf"] === null) {
-    return value;
-  }
-  const perf = numberValue(value["perf"]);
-  value["perf"] = perf;
-  if (!Number.isFinite(perf) || perf < 0) {
-    return optionError(arg, "has invalid perf value: " + parsed["perf"]);
-  }
-  return value;
-}
-
-/** @param {string} arg @param {UnknownRecord} parsed @param {UnknownRecord} value */
-function validateGpuBackend(arg, parsed, value) {
-  if (typeof value["backend"] !== "string") {
-    return optionError(arg, "has invalid backend value: " + parsed["backend"]);
-  }
-  const backend = value["backend"].toLowerCase();
-  value["backend"] = backend;
-  if (!compilerPolicy.validBackends.has(backend)) {
-    return optionError(arg, "has invalid backend value: " + parsed["backend"]);
-  }
-  return value;
-}
-
-/** @param {string} arg @param {UnknownRecord} parsed @param {UnknownRecord} value */
 function validateAlgoParamOption(arg, parsed, value) {
   const algo = mapNameFromOption(arg, "algo_param");
   try {
@@ -566,7 +542,15 @@ function validateAlgoParamOption(arg, parsed, value) {
     const message = errorMessage(error);
     return optionError(arg, "has invalid GPU tuning: " + message);
   }
-  return validateGpuBackend(arg, parsed, validateAlgoPerf(arg, parsed, value));
+  if (value["perf"] !== null) {
+    const perf = numberValue(value["perf"]);
+    if (!Number.isFinite(perf) || perf < 0) {
+      return optionError(arg, "has invalid perf value: " + parsed["perf"]);
+    }
+    value["perf"] = perf;
+  }
+  value["backend"] = parseBackend(arg, value["backend"]);
+  return value;
 }
 
 /**
@@ -701,7 +685,7 @@ function isDefaultPool(value) {
     typeof value["tls_fingerprint"] === "string" &&
     (value["pearlhash_target_format"] === "base" || value["pearlhash_target_format"] === "jackpot") &&
     typeof value["worker"] === "string" && value["socket"] === null && value["keepalive"] === null &&
-    value["last_job"] === null && typeof value["last_connect_time"] === "number" &&
+    value["last_job"] === null && isPlainObject(value["job_state"]) && typeof value["last_connect_time"] === "number" &&
     typeof value["pending_subscribe"] === "boolean" &&
     typeof value["pending_authorize"] === "boolean" &&
     typeof value["pending_submit_count"] === "number" &&
@@ -1181,7 +1165,7 @@ function applyInternalTemplateValues(item, template) {
   for (const [key, val] of Object.entries(template)) {
     if (key.startsWith("_")) {
       if (!Array.isArray(val)) {throw new Error(`Invalid internal option field: ${key}`);}
-      item[key.substring(1)] = val[0];
+      item[key.substring(1)] = cloneDefault(val[0]);
     }
   }
 }

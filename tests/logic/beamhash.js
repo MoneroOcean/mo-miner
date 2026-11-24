@@ -60,7 +60,7 @@ test("BeamHash III pools build jobs from login nonceprefix and job push", async 
     ));
 
     assert.ok(jobMessage);
-    assert.equal(poolConfig.beam_nonceprefix, "a1b2");
+    assert.equal(poolConfig.job_state.beam_nonceprefix, "a1b2");
     assert.equal(jobMessage.algo, "beamhash3");
     assert.equal(jobMessage.job_id, "17");
     assert.equal(jobMessage.header_hash, input);
@@ -82,7 +82,7 @@ test("BeamHash III rejects malformed login nonceprefix values", async () => {
         id: "login", method: "result", code: 0, nonceprefix,
       }) + "\n"));
       assert.equal(poolConfig.logged_in, false);
-      assert.equal(poolConfig.beam_nonceprefix, undefined);
+      assert.equal(poolConfig.job_state.beam_nonceprefix, undefined);
     });
   }
 });
@@ -98,7 +98,7 @@ test("BeamHash III accepts an omitted zero-byte login nonceprefix", async () => 
       id: "login", method: "result", code: 0,
     }) + "\n"));
     assert.equal(poolConfig.logged_in, true);
-    assert.equal(poolConfig.beam_nonceprefix, undefined);
+    assert.equal(poolConfig.job_state.beam_nonceprefix, undefined);
   });
 });
 
@@ -112,16 +112,16 @@ test("BeamHash III clears the login nonce prefix when a socket reconnects", asyn
     socket.emit("data", Buffer.from(JSON.stringify({
       id: "login", method: "result", code: 0, nonceprefix: "a1b2",
     }) + "\n"));
-    assert.equal(poolConfig.beam_nonceprefix, "a1b2");
+    assert.equal(poolConfig.job_state.beam_nonceprefix, "a1b2");
     socket.emit("error", new Error("reconnect"));
-    assert.equal(poolConfig.beam_nonceprefix, undefined);
+    assert.equal(poolConfig.job_state.beam_nonceprefix, undefined);
   });
 });
 
 test("BeamHash III job construction rejects malformed prefixes", async () => {
   const miner = await loadMinerWithStubs();
   const poolConfig = miner.global.opt.pools[0];
-  poolConfig.beam_nonceprefix = "00112233445566";
+  poolConfig.job_state.beam_nonceprefix = "00112233445566";
   assert.throws(() => miner.getSetJob()({
     algo: "beamhash3", header_hash: "00".repeat(32), difficulty: 1, job_id: "job",
   }), /Invalid Beam nonce prefix/);
@@ -167,7 +167,7 @@ test("BeamHash III snapshots each accepted prefix and resumes only current-job p
     }, async ({socket, poolConfig}) => {
       miner.global.opt.pools[0] = poolConfig;
       pool.connect_pool_throttle(0, (job) => {
-        assert.equal(job.xn, poolConfig.beam_nonceprefix ?? "");
+        assert.equal(job.xn, poolConfig.job_state.beam_nonceprefix ?? "");
         return setJob(job);
       });
       socket.emit("connect");
@@ -190,7 +190,7 @@ test("BeamHash III snapshots each accepted prefix and resumes only current-job p
       progress(prefix ? "ff00000000000000" : "0000000000000000");
       assert.equal(previous.nonce, saved);
       notify({id: "login", method: "result", code: 0, nonceprefix: "ccdd"});
-      assert.equal(poolConfig.beam_nonceprefix, "ccdd");
+      assert.equal(poolConfig.job_state.beam_nonceprefix, "ccdd");
       assert.equal(previous.xn, prefix);
       miner.global.opt.pool_ids.active = 0;
       const resumed = setJob(previous);
@@ -210,7 +210,7 @@ test("BeamHash III snapshots each accepted prefix and resumes only current-job p
       assert.equal(next.nonce, "ccdd020000000000");
       socket.emit("error", new Error("reconnect"));
       assert.equal(poolConfig.last_job, null);
-      assert.equal(poolConfig.beam_nonceprefix, undefined);
+      assert.equal(poolConfig.job_state.beam_nonceprefix, undefined);
       progress("ccdd030000000000", next["job_token"]);
       assert.equal(poolConfig.last_job, null);
     });

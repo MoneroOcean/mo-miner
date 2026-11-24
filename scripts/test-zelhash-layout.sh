@@ -34,7 +34,9 @@ printf ';\n' >> "$out/zelhash_state.inc"
 extract_cpp zelhash_entry_guard.inc sycl/zelhash/zelhash.cpp '  if (!input || !solution_out'
 extract_cpp usm_ptr.inc sycl/lib-internal.h 'class UsmPtr {'
 printf ';\n' >> "$out/usm_ptr.inc"
-extract_cpp usm_alloc.inc sycl/lib-internal.h 'UsmPtr<T> mom_usm_alloc(' 'inline uint64_t mom_now_ms('
+extract_cpp usm_alloc.inc sycl/lib-internal.h 'UsmPtr<T> mom_usm_alloc(' 'inline uint64_t mom_now_ms(' \
+  'class MomSyclRateWindow {'
+printf ';\n' >> "$out/usm_alloc.inc"
 cat "$out/usm_alloc.inc" >> "$out/usm_ptr.inc"
 extract_cpp ulong_parser.inc sycl/lib-internal.h 'inline bool mom_parse_env_ulong('
 

@@ -1,9 +1,31 @@
 "use strict";
 
+const {isPositiveNumber, isSafeIntegerAtLeast} = require("./validate");
+
 // Keep proof admission and worker framing on the same raw-byte budget.
 const MAX_PEARL_PROOF_BYTES = 8 * 1024 * 1024;
 const MAX_PEARL_PROOF_BASE64 = Math.ceil(MAX_PEARL_PROOF_BYTES / 3) * 4;
 const MAX_PROOF_EVENT_OVERHEAD = 64 * 1024;
+const MAX_WORKER_ID_CHARS = 4096;
+
+const jobIntegerMinimums = Object.entries({
+  extra_nonce2_size: 0, height: 0, nonce1_len: 0, nonceoffset: 0, thread_id: 0,
+  intensity: 1, noncebytes: 1, pearlhash_k: 1, pearlhash_n: 1,
+  pearlhash_rank: 1, proofsize: 1, thread_num: 1,
+});
+
+// Pool jobs and native worker jobs share these numeric fields. Every field is optional here.
+/** @param {Record<string, unknown>} job */
+function hasValidJobNumbers(job) {
+  for (const [field, minimum] of jobIntegerMinimums) {
+    const value = job[field];
+    if (value !== undefined && !isSafeIntegerAtLeast(value, minimum)) {return false;}
+  }
+  const difficulty = job["difficulty"];
+  const certVersion = job["pearlhash_cert_version"];
+  return (difficulty === undefined || isPositiveNumber(difficulty)) &&
+    (certVersion === undefined || certVersion === 3);
+}
 
 // Pool, worker, and native job identifiers are opaque strings or safe integers.
 /** @param {unknown} value @returns {value is string | number} */
@@ -26,10 +48,10 @@ function isNonceHex(value) {
 // Jobs may also carry a resumable nonce as a non-negative safe integer.
 /** @param {unknown} value @returns {value is string | number} */
 function isJobNonce(value) {
-  return isNonceHex(value) || (typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
+  return isNonceHex(value) || isSafeIntegerAtLeast(value, 0);
 }
 
 module.exports = {
-  MAX_PEARL_PROOF_BYTES, MAX_PEARL_PROOF_BASE64, MAX_PROOF_EVENT_OVERHEAD,
-  isIdentifier, isJobId, isNonceHex, isJobNonce,
+  MAX_PEARL_PROOF_BYTES, MAX_PEARL_PROOF_BASE64, MAX_PROOF_EVENT_OVERHEAD, MAX_WORKER_ID_CHARS,
+  hasValidJobNumbers, isIdentifier, isJobId, isNonceHex, isJobNonce,
 };

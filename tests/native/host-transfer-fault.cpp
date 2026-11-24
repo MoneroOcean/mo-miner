@@ -245,7 +245,11 @@ struct MatrixState {
 #endif
 };
 template <typename T>
+#if MOM_MATRIX_HOO
+static void mom_hoohash_make_matrix(const uint8_t* input, T* matrix) {
+#else
 static void make_matrix(const uint8_t* input, T* matrix) {
+#endif
   ++preparations;
   for (unsigned i = 0; i < 4096; ++i)
     matrix[i] = static_cast<T>(input[0]);

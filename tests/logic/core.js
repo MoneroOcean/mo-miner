@@ -414,12 +414,13 @@ describe("Automatic mining device selection and primary handshake", () => {
 });
 
 describe("CLI lifecycle and runtime boundaries", () => {
-  test("shared help identifies MoM and retains its application copyright", () => {
-    const result = spawnSync(process.execPath, ["-e", "require('./opts').print_help()"], {
+  test("--help identifies MoM and retains its application copyright", () => {
+    const result = spawnSync(process.execPath, ["mom.js", "--help"], {
       cwd: repoRoot, env: {...process.env, MOM_COMMAND: "./mom"}, encoding: "utf8", timeout: 5000,
     });
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, "");
     const banner = result.stdout.split("\n").slice(0, 4).join("\n");
     assert.match(banner, /^# MoM CPU\/GPU miner v/m);
     assert.match(banner, /Copyright \(c\) 2023-2026 MoneroOcean\. GNU GPLv3\./);
@@ -1062,6 +1063,16 @@ describe("Configuration and numeric input validation", () => {
     );
   });
 
+  test("internal pool defaults give each pool its own fresh job state", () => {
+    const first = opts.pool_create("primary.example", 1, false, "wallet", ""),
+      second = opts.pool_create("backup.example", 2, false, "wallet", "");
+    first.job_state.extra_nonce = "1234";
+    opts.set_internal_opts({pools: [first, second]}, {pool: opts.opt_help.pool});
+    assert.deepEqual(first.job_state, {});
+    first.job_state.extra_nonce = "abcd";
+    assert.deepEqual(second.job_state, {});
+  });
+
   test("unparsed CLI options fail before runtime startup", () => {
     const result = spawnSync(process.execPath, [
       "mom.js",
@@ -1503,12 +1514,23 @@ describe("Bounded options, devices, and pool endpoints", () => {
     });
 
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /invalid backend value: unknown/);
+    assert.match(result.stderr, /Invalid GPU backend: unknown/);
     assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
   });
 });
 
 describe("Algorithm parameters and GPU tuning", () => {
+  test("algorithm and job options share backend normalization", () => {
+    for (const [backend, expected] of [[null, "auto"], ["", "auto"], ["SYCL-OPENCL", "sycl-opencl"]]) {
+      const opt = opts.create_default_opts();
+      const job = JSON.stringify({backend});
+      assert.equal(opts.parse_opt(opt, opts.opt_help, "--job", job, ""), true);
+      assert.equal(opts.parse_opt(opt, opts.opt_help, "--new.algo_param.fishhash", job, ""), true);
+      assert.equal(opt.job.backend, expected);
+      assert.equal(opt.algo_params["fishhash"]?.backend, expected);
+    }
+  });
+
   test("CLI algo-param aliases use canonical map keys and tuning", () => {
   /** @type {Array<[string, string, Record<string, number>]>} */
     const cases = [

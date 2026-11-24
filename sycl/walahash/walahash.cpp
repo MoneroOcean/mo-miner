@@ -51,11 +51,7 @@ namespace mom_walahash {
 
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void walahash_cleanup_states() noexcept {
-  try {
-    registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "walahash: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<State>("walahash");
 }
 
 #include "search.inc"
@@ -71,7 +67,7 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
     throw std::string("walahash requires an 80-byte header and nonzero intensity");
   if (!mom::job_boundary::padded_u32_range_fits(intensity, 256))
     throw std::string("WalaHash intensity is too large");
-  State& state = state_for(dev);
+  State& state = persistentDeviceState<State>(dev);
   std::lock_guard<std::mutex> lock(state.mutex);
   MomSyclHostTransferGuard host_transfers(state.queue, "walahash host transfers");
   state.queue.memcpy(state.input, input, 72);
@@ -87,7 +83,7 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
     native = false;
 #endif
 #ifdef WALAHASH_ESIMD
-  const bool intel_fast = use_esimd(state.device);
+  const bool intel_fast = native && supportsEsimd(state.device);
   if (intel_fast)
     state.ensure(intensity);
 #endif
@@ -158,7 +154,7 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
   if (!dispatched && amd_fast) {
     // WMMA consumes complete 64-sample tiles. Finalize only the real item count, but prehash and
     // mix this batch's padded tiles; capacity can exceed it after a larger earlier batch.
-    const unsigned matrix_count = (intensity + 63u) & ~63u;
+    const unsigned matrix_count = mom_round_up_size(intensity, 64);
     prehash_amd(state, *pnonce, matrix_count);
     walahash_amd_mix(
         state.queue, state.amd_wmma, reinterpret_cast<int8_t*>(state.matrix.get()), state.hashes,

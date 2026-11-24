@@ -70,35 +70,35 @@ struct GpuAlgo {
   FN fn;
 };
 static const std::map<std::string, GpuAlgo> gpu_algos = {
-  { "cn/gpu",        { DEV::GPU,               { .gpu_cn = cn_gpu } } },
-  { "c29",           { DEV::C29_GPU,           { .gpu_c29 = c29 } } },
-  { "c30",           { DEV::C30_GPU,           { .gpu_c29 = c30 } } },
-  { "kawpow",        { DEV::KAWPOW_GPU,        { .gpu_kawpow = kawpow } } },
-  { "firopow",       { DEV::KAWPOW_GPU,        { .gpu_kawpow = firopow } } },
-  { "evrprogpow",    { DEV::KAWPOW_GPU,        { .gpu_kawpow = evrprogpow } } },
-  { "meowpow",       { DEV::KAWPOW_GPU,        { .gpu_kawpow = meowpow } } },
-  { "etchash",       { DEV::ETCHASH_GPU,       { .gpu_etchash = etchash } } },
-  { "octopus",       { DEV::ETCHASH_GPU,       { .gpu_etchash = octopus } } },
-  { "autolykos2",    { DEV::AUTOLYKOS2_GPU,    { .gpu_autolykos2 = autolykos2 } } },
-  { "pearlhash",     { DEV::PEARLHASH_GPU,     { .gpu_pearlhash = pearlhash } } },
-  { "fishhash",      { DEV::FISHHASH_GPU,      { .gpu_fishhash = fishhash } } },
-  { "karlsenhashv2", { DEV::KARLSENHASHV2_GPU, { .gpu_karlsenhashv2 = karlsenhashv2 } } },
-  { "hoohash",       { DEV::MISC_GPU,          { .gpu_misc = hoohash } } },
-  { "walahash",      { DEV::MISC_GPU,          { .gpu_misc = walahash } } },
-  { "xelishashv3",   { DEV::MISC_GPU,          { .gpu_misc = xelishashv3 } } },
-  { "nexapow",       { DEV::MISC_GPU,          { .gpu_misc = nexapow } } },
-  { "verthash",      { DEV::VERTHASH_GPU,      { .gpu_verthash = verthash } } },
-  { "equihash192_7", { DEV::ZELHASH_GPU,       { .gpu_zelhash = equihash192_7 } } },
-  { "zelhash",       { DEV::ZELHASH_GPU,       { .gpu_zelhash = zelhash } } },
-  { "zhash",         { DEV::ZELHASH_GPU,       { .gpu_zelhash = zhash } } },
-  { "beamhash3",     { DEV::BEAMHASH3_GPU,     { .gpu_beamhash3 = beamhash3 } } },
+  { "cn/gpu",       { DEV::CN_GPU,             { .gpu_cn = cn_gpu } } },
+  { "c29",          { DEV::C29_GPU,            { .gpu_cuckaroo = c29 } } },
+  { "c30",          { DEV::C30_GPU,            { .gpu_cuckaroo = c30 } } },
+  { "kawpow",       { DEV::PROGPOW_GPU,        { .gpu_progpow = kawpow } } },
+  { "firopow",      { DEV::PROGPOW_GPU,        { .gpu_progpow = firopow } } },
+  { "evrprogpow",   { DEV::PROGPOW_GPU,        { .gpu_progpow = evrprogpow } } },
+  { "meowpow",      { DEV::PROGPOW_GPU,        { .gpu_progpow = meowpow } } },
+  { "etchash",      { DEV::ETHASH_FAMILY_GPU,  { .gpu_hash = etchash } } },
+  { "octopus",      { DEV::ETHASH_FAMILY_GPU,  { .gpu_hash = octopus } } },
+  { "autolykos2",   { DEV::AUTOLYKOS2_GPU,     { .gpu_autolykos2 = autolykos2 } } },
+  { "pearlhash",    { DEV::PEARLHASH_GPU,      { .gpu_pearlhash = pearlhash } } },
+  { "fishhash",     { DEV::FISHHASH_GPU,       { .gpu_hash = fishhash } } },
+  { "karlsenhashv2", { DEV::KARLSENHASHV2_GPU,  { .gpu_hash = karlsenhashv2 } } },
+  { "hoohash",      { DEV::MISC_GPU,           { .gpu_hash = hoohash } } },
+  { "walahash",     { DEV::MISC_GPU,           { .gpu_hash = walahash } } },
+  { "xelishashv3",  { DEV::MISC_GPU,           { .gpu_hash = xelishashv3 } } },
+  { "nexapow",      { DEV::MISC_GPU,           { .gpu_hash = nexapow } } },
+  { "verthash",     { DEV::VERTHASH_GPU,       { .gpu_hash = verthash } } },
+  { "equihash192_7", { DEV::ZCASH_EQUIHASH_GPU, { .gpu_equihash = equihash192_7 } } },
+  { "zelhash",      { DEV::ZCASH_EQUIHASH_GPU, { .gpu_equihash = zelhash } } },
+  { "zhash",        { DEV::ZCASH_EQUIHASH_GPU, { .gpu_equihash = zhash } } },
+  { "beamhash3",    { DEV::BEAMHASH3_GPU,      { .gpu_equihash = beamhash3 } } },
 };
 
-// Names of the GPU algorithms dispatched through one FN slot, as sycl/lib.h algo_params() takes.
-template <typename Fn> static std::set<std::string> gpu_algos_with(Fn FN::* const slot) {
+// Tuning follows the dispatch kind even when multiple kinds use the same function signature.
+static std::set<std::string> gpu_algos_with(std::initializer_list<DEV> kinds) {
   std::set<std::string> result;
   for (const auto& [name, algo] : gpu_algos) {
-    if (algo.fn.*slot)
+    if (std::find(kinds.begin(), kinds.end(), algo.dev) != kinds.end())
       result.insert(name);
   }
   return result;

@@ -52,7 +52,6 @@ struct State {
   UsmPtr<uint32_t> table;
   UsmPtr<uint32_t> bhashes;
   MomBufferAllocation<AutolykosPortableResult> portable_results;
-  uint32_t portable_result_cap = 0;
   UsmPtr<PowHits<>> result;
   UsmPtr<uint32_t> table_mismatches;
   uint32_t table_height = UINT32_MAX;
@@ -120,7 +119,7 @@ struct State {
   // Accept an env override only if it is one of the supported workgroup sizes.
   static unsigned env_workgroup(const sycl::device& dev, const char* name, const unsigned fallback) {
     uint32_t parsed = 0;
-    if (env_u32(name, parsed) && (parsed == 32 || parsed == 64 || parsed == 128 || parsed == 256) &&
+    if (mom_parse_env_u32(name, parsed) && (parsed == 32 || parsed == 64 || parsed == 128 || parsed == 256) &&
         sycl_workgroup_fits(dev, static_cast<unsigned>(parsed)))
       return parsed;
     return fallback;
@@ -132,14 +131,14 @@ struct State {
   static uint32_t autolykos_table_chunk_rows() {
     constexpr uint32_t fallback = 32U * 1024U * 1024U;
     uint32_t parsed = 0;
-    return env_u32("MOM_AUTOLYKOS2_TABLE_CHUNK", parsed) ? parsed : fallback;
+    return mom_parse_env_u32("MOM_AUTOLYKOS2_TABLE_CHUNK", parsed) ? parsed : fallback;
   }
 
   // 0 disables the post-build row check, 1 (default) cross-checks a strided sample of rows
   // against autolykos_prehash_digest_dev, 2 recomputes every row (slow, for debugging).
   static unsigned autolykos_table_verify_mode() {
     uint32_t parsed = 0;
-    return env_u32("MOM_AUTOLYKOS2_VERIFY_TABLE", parsed) && parsed <= 2 ? parsed : 1;
+    return mom_parse_env_u32("MOM_AUTOLYKOS2_VERIFY_TABLE", parsed) && parsed <= 2 ? parsed : 1;
   }
 
   // Keep split search enabled unless a diagnostic override starts with zero.
@@ -179,11 +178,10 @@ struct State {
   void ensure_portable_results(const uint32_t count) {
     if constexpr (!mom_sycl_portable_opencl)
       return;
-    if (portable_result_cap >= count)
+    if (portable_results.capacity() >= count)
       return;
     queue.wait_and_throw();
     portable_results.allocate(count);
-    portable_result_cap = count;
   }
 
   // Grow split-search intermediate storage only after its queued users finish.
@@ -353,10 +351,3 @@ struct State {
     }
   }
 };
-
-// Program build options for sycl_set_compile_options(): none by default ("-O3" is process-global,
-// PearlHash's ESIMD image rejects it, and it measured as a no-op here: 36.44 vs 36.41 MH/s on B580);
-// MOM_AUTOLYKOS2_COMPILE_OPTIONS overrides.
-const char* autolykos2_compile_options() {
-  return std::getenv("MOM_AUTOLYKOS2_COMPILE_OPTIONS");
-}

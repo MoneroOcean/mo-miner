@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <initializer_list>
 #include <limits>
 #include <stdexcept>
@@ -44,6 +45,10 @@ struct handler {
 static std::string trace;
 static unsigned fail_wait = 0;
 struct Queue {
+  sycl::event memcpy(void* destination, const void* source, size_t bytes) {
+    std::memcpy(destination, source, bytes);
+    return {};
+  }
   template <typename Submit> sycl::event submit(Submit submit) {
     trace += 'S';
     sycl::handler handler;
@@ -55,6 +60,11 @@ namespace sycl {
 using queue = Queue;
 }
 
+// Upload lifetime is exercised separately with the production guard and fault injection.
+struct MomSyclHostTransferGuard {
+  MomSyclHostTransferGuard(Queue&, const char*) {}
+};
+
 #define MOM_SYCL_KERNEL_ARGS_RESTRICT
 struct FastModData {
   uint32_t divisor;
@@ -63,9 +73,7 @@ static FastModData make_fast_mod_data(const uint32_t divisor) { return {divisor}
 static uint32_t fast_mod_dev(const uint32_t value, const FastModData data) {
   return value % data.divisor;
 }
-static size_t mom_round_up_size(const uint64_t value, const uint64_t step) {
-  return static_cast<size_t>((value + step - 1) / step * step);
-}
+#include "round-up-size.inc"
 static void sycl_wait_and_throw(sycl::event, const sycl::device&) {
   trace += 'W';
   if (fail_wait && std::count(trace.begin(), trace.end(), 'W') == fail_wait)
@@ -76,7 +84,7 @@ static unsigned sycl_default_workgroup(const sycl::device&, std::initializer_lis
   return preferred;
 }
 static bool sycl_workgroup_fits(const sycl::device&, const unsigned size) { return size <= 256; }
-#include "mom_parse_env_ulong.inc"
+#include "unsigned-env.inc"
 struct ethash_h256_t {
   uint8_t bytes[32];
 };
@@ -118,6 +126,20 @@ static std::vector<uint32_t> generate(const uint32_t total, const uint32_t chunk
   return dag;
 }
 
+static std::vector<uint32_t> generate_slice(const uint32_t total, const uint32_t start,
+                                            const uint32_t count) {
+  std::vector<uint32_t> light(7 * fixture::ETHASH_DAG_NODE_WORDS);
+  for (size_t i = 0; i < light.size(); ++i)
+    light[i] = static_cast<uint32_t>(i * 2654435761u);
+  std::vector<uint32_t> dag(total * fixture::ETHASH_DAG_NODE_WORDS, 0xa5a5a5a5u);
+  Queue queue;
+  trace.clear();
+  const sycl::event event = fixture::submit_ethash_dag_chunk<8, size_t>(
+      queue, light.data(), make_fast_mod_data(7), dag.data(), start, count, 4);
+  sycl_wait_and_throw(event, sycl::device{});
+  return dag;
+}
+
 static void set(const char* const name, const char* const value) {
   if (value)
     setenv(name, value, 1);
@@ -126,11 +148,36 @@ static void set(const char* const name, const char* const value) {
 }
 
 int main() {
+  const size_t maximum_range = std::numeric_limits<size_t>::max();
+  assert(mom_round_up_size(maximum_range, maximum_range) == maximum_range);
+  assert(mom_round_up_size(maximum_range - 1, 2) == maximum_range - 1);
+  assert(mom_round_up_size(maximum_range - 2, 2) == maximum_range - 1);
+  for (uint64_t step : {0, 2}) {
+    try {
+      mom_round_up_size(maximum_range, step);
+      assert(false);
+    } catch (const std::string& error) {
+      assert(error == "SYCL range is too large");
+    }
+  }
+
   const std::vector<uint32_t> whole = generate(10, 0);
   assert(trace == "SW");
   assert(generate(10, 3) == whole && trace == "SWSWSWSW");
   assert(generate(10, 10) == whole && trace == "SW");
   assert(generate(10, 64) == whole && trace == "SW");
+  assert(generate(0, 0).empty() && trace.empty());
+  assert(generate(0, 3).empty() && trace.empty());
+
+  // Octopus uses the same node transform but needs size_t output offsets for its largest DAGs.
+  const std::vector<uint32_t> slice = generate_slice(10, 3, 4);
+  assert(trace == "SW");
+  for (uint32_t node = 0; node < 10; ++node) {
+    for (unsigned word = 0; word < fixture::ETHASH_DAG_NODE_WORDS; ++word) {
+      const size_t index = static_cast<size_t>(node) * fixture::ETHASH_DAG_NODE_WORDS + word;
+      assert(slice[index] == ((node >= 3 && node < 7) ? whole[index] : 0xa5a5a5a5u));
+    }
+  }
 
   // A submitted chunk fault propagates and no later chunk is recorded.
   fail_wait = 2;

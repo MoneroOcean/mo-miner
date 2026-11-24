@@ -28,7 +28,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -79,7 +78,7 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
     throw std::string(
       "zelhash requires input, output, a mining target, a 140-byte header, and intensity 1");
   }
-  State& state = state_for(dev_str);
+  State& state = persistentDeviceState<State>(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_io();
 
@@ -318,80 +317,39 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
       mom_equihash::pow::canonicalize_leaves<K>(leaves.data());
       std::array<uint8_t, 52> sol{};
       compress_indices(leaves, sol.data());
-      bool dup = false;
-      for (const auto& s : seen)
-        if (s == sol) {
-          dup = true;
-          break;
-        }
-      if (dup)
-        continue;
       seen.push_back(sol);
     }
 
+    // Candidate collection order is nondeterministic. Sorting before filtering keeps the
+    // offline proof buffer deterministic while counting each distinct solution once.
+    std::sort(seen.begin(), seen.end());
+    seen.erase(std::unique(seen.begin(), seen.end()), seen.end());
     distinct_count = seen.size();
-    // Mining submits only distinct proofs whose Flux block hash meets the PoW target. The is_test
-    // SOLVE path keeps every distinct solution so the checker can assert the known block-400000
-    // solution is present regardless of the target.
-    std::vector<std::array<uint8_t, 52>> emit;
-    emit.reserve(seen.size());
-    for (const auto& sol : seen) {
-      if (!filter_target) {
-        if (is_test)
-          emit.push_back(sol); // SOLVE-test: emit every distinct solution
-        continue;              // benchmark: count proofs without touching a target
-      }
-      // Flux PoW: dSHA256(header || compactSize(52) || solution), read little-endian, <= target.
-      if (mom_equihash::pow::meets_target(input, HEADER_LEN, sol.data(), sol.size(), target))
-        emit.push_back(sol);
+    // Test mode emits all proofs that fit. Benchmarks count distinct proofs without hashing
+    // their share targets or writing a payload.
+    if (is_test || filter_target) {
+      n_solutions = static_cast<int>(mom_equihash::pow::pack_solutions(
+          seen, 52, SMALL_BLOB_SOL_LEN, false, solution_out, [&](const auto& proof) -> const uint8_t* {
+        return !filter_target ||
+            mom_equihash::pow::meets_target(input, HEADER_LEN, proof.data(), proof.size(), target)
+            ? proof.data() : nullptr;
+      }));
     }
-
-    // Sort the kept solutions lexicographically so the out-of-band buffer is deterministic regardless
-    // of the non-deterministic candidate-collection order (atomic fetch_add). This makes the offline
-    // vector's full-buffer comparison stable; the pool is indifferent to ordering.
-    std::sort(emit.begin(), emit.end());
-
-    // Hand the kept solutions back: solution_out is the 5120-byte small-blob buffer. Layout:
-    // [0] = solution count (u8, capped), then count * 52 bytes.
-    const unsigned cap = (SMALL_BLOB_SOL_LEN - 1) / 52; // up to 98 solutions
-    n_solutions = (int)std::min<size_t>(emit.size(), cap);
-    solution_out[0] = (uint8_t)n_solutions;
-    for (int i = 0; i < n_solutions; ++i)
-      std::memcpy(solution_out + 1 + (size_t)i * 52, emit[i].data(), 52);
     if (log) {
       std::fprintf(stderr, "zelhash %s solutions=%d (of %zu distinct):\n",
                    is_test ? "distinct" : "target-passing", n_solutions, seen.size());
-      for (int i = 0; i < n_solutions; ++i) {
-        std::fprintf(stderr, "  ");
-        for (int b = 0; b < 52; ++b)
-          std::fprintf(stderr, "%02x", emit[i][b]);
-        std::fprintf(stderr, "\n");
-      }
-      std::fflush(stderr);
+      mom_equihash::pow::log_solutions(solution_out, 52);
     }
-  } else {
-    solution_out[0] = 0;
   }
 
-  // MOM_ZELHASH_PERF: Sol/s logger (mirrors MOM_FISHHASH_PERF). Accumulates the number of distinct
-  // valid proofs found (not nonces, and BEFORE the target filter so bench/zero-target still measures
-  // throughput) over a >=2s window; the solver averages ~1.88 solutions per nonce.
+  // Count distinct proofs before the target filter so a zero-target benchmark still measures Sol/s.
   static const bool perf_log = std::getenv("MOM_ZELHASH_PERF") != nullptr;
   if (perf_log && !is_test) {
-    static uint64_t acc_sols = 0;
-    static uint64_t acc_solves = 0;
-    static auto t0 = std::chrono::steady_clock::now();
-    acc_sols += (uint64_t)distinct_count;
-    ++acc_solves;
-    const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    if (sec >= 2.0) {
-      std::fprintf(stderr, "[zelhash] %.2f Sol/s, %.2f solve/s (%s)\n", (double)acc_sols / sec,
-                   (double)acc_solves / sec, dev_str.c_str());
+    state.solutionRate.record(distinct_count, [&](double solutionsPerSecond, double solvesPerSecond) {
+      std::fprintf(stderr, "[zelhash] %.2f Sol/s, %.2f solve/s (%s)\n", solutionsPerSecond,
+                   solvesPerSecond, dev_str.c_str());
       std::fflush(stderr);
-      acc_sols = 0;
-      acc_solves = 0;
-      t0 = std::chrono::steady_clock::now();
-    }
+    });
   }
 
   if (prof) {

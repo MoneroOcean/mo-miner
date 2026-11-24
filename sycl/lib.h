@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 
 // Engineering addons use the DLL ABI; the native executable binds the same functions directly.
 #if defined(_WIN32) && defined(MOM_NATIVE_RUNTIME)
@@ -23,16 +24,16 @@ MOM_SYCL_API std::map<std::string, std::string> algo_params(
   const std::map<std::string, unsigned>& algo2mem,
   const std::set<std::string>& cpu_algos,
   const std::set<std::string>& gpu_cn_algos,
-  const std::set<std::string>& gpu_c29_algos,
-  const std::set<std::string>& gpu_kawpow_algos,
-  const std::set<std::string>& gpu_etchash_algos,
+  const std::set<std::string>& gpu_cuckaroo_algos,
+  const std::set<std::string>& gpu_progpow_algos,
+  const std::set<std::string>& gpu_ethash_family_algos,
   const std::set<std::string>& gpu_autolykos2_algos,
   const std::set<std::string>& gpu_pearlhash_algos,
   const std::set<std::string>& gpu_fishhash_algos,
   const std::set<std::string>& gpu_karlsenhashv2_algos,
   const std::set<std::string>& gpu_misc_algos,
   const std::set<std::string>& gpu_verthash_algos,
-  const std::set<std::string>& gpu_zelhash_algos,
+  const std::set<std::string>& gpu_zcash_equihash_algos,
   const std::set<std::string>& gpu_beamhash3_algos
 );
 
@@ -67,7 +68,7 @@ MOM_SYCL_API int kawpow(
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
-// FiroPow / EvrProgPow: ProgPoW-0.9.4 variants of KawPoW. Same gpu_kawpow_hash_fun ABI; each bakes
+// FiroPow / EvrProgPow: ProgPoW-0.9.4 variants of KawPoW. Same gpu_progpow_hash_fun ABI; each bakes
 // its own epoch/period divisors + keccak seal (FiroPow: padding-constant seal; EvrProgPow: KawPoW
 // seal with the EVRMORE-PROGPOW magic).
 MOM_SYCL_API int firopow(
@@ -224,13 +225,17 @@ MOM_SYCL_API uint64_t pearlhash_attempt_hashes(
 // on the loop thread before the worker's compute thread starts: it may write the environment.
 MOM_SYCL_API void sycl_set_compile_options(const std::string& algo, const std::string& dev_str);
 
-// The algorithms sycl_set_compile_options() can publish options for; keep both lists in step. Inline
-// so callers skip the call for every other job: on Windows the call delay-loads the optional
-// sycl.dll, which costs a full runtime start and is absent from CPU-only Engineering builds, so a
-// job that validation is about to reject must not reach it.
-inline bool sycl_has_compile_options(const std::string& algo) {
-  return algo == "etchash" || algo == "kawpow" || algo == "firopow" || algo == "evrprogpow" ||
-         algo == "meowpow" || algo == "autolykos2" || algo == "cn/gpu" || algo == "nexapow";
+enum class SyclCompileOptions { none, etchash, progpow, autolykos2, cnGpu, nexapow };
+
+// Keep the route available to Core before the call can delay-load the optional Windows SYCL DLL.
+inline constexpr SyclCompileOptions sycl_compile_options_for(std::string_view algo) {
+  if (algo == "etchash") return SyclCompileOptions::etchash;
+  if (algo == "kawpow" || algo == "firopow" || algo == "evrprogpow" || algo == "meowpow")
+    return SyclCompileOptions::progpow;
+  if (algo == "autolykos2") return SyclCompileOptions::autolykos2;
+  if (algo == "cn/gpu") return SyclCompileOptions::cnGpu;
+  if (algo == "nexapow") return SyclCompileOptions::nexapow;
+  return SyclCompileOptions::none;
 }
 
 // Release process-scoped SYCL state that requires ordered teardown while the Node environment and

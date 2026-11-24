@@ -215,14 +215,10 @@ struct State {
     release();
   }
 };
-// Keep the registry heap-owned to avoid unsafe runtime destruction at process exit.
-DeviceStateRegistry<State>& pearlhash_registry() {
-  static auto* const registry = new DeviceStateRegistry<State>;
-  return *registry;
-}
+
 // Reuse one queue/buffer owner per device; its mutex serializes profile changes and searches.
 State& state_for(const std::string& dev_str) {
-  return pearlhash_registry().get(dev_str, [&] {
+  return persistentDeviceStates<State>().get(dev_str, [&] {
     return std::make_unique<State>(dev_str);
   });
 }

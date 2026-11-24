@@ -614,8 +614,8 @@ describe("Subscription authorization and early jobs", () => {
       assert.ok(jobMessage);
       assert.equal(writes[1].method, "mining.authorize");
       assert.deepEqual(writes[1].params, ["RVNwallet.rig01", "x"]);
-      assert.equal(poolConfig.extra_nonce, "0a1fa6c0");
-      assert.equal(poolConfig["raven_target"], shareTarget);
+      assert.equal(poolConfig.job_state.extra_nonce, "0a1fa6c0");
+      assert.equal(poolConfig.job_state["raven_target"], shareTarget);
       assert.equal(jobMessage.job_id, "203d");
       assert.equal(jobMessage.target, shareTarget);
       assert.equal(jobMessage.blob, "00".repeat(32) + "00000000c0a61f0a");
@@ -680,18 +680,18 @@ describe("Subscription authorization and early jobs", () => {
         socket.emit("data", Buffer.from(JSON.stringify(scenario.control) + "\n"));
         socket.emit("data", Buffer.from(JSON.stringify(scenario.job("old-job")) + "\n"));
         socket.emit("data", Buffer.from(JSON.stringify(scenario.job("latest-job")) + "\n"));
-        assert.equal(poolConfig[scenario.controlField], scenario.control.params[0]);
+        assert.equal(poolConfig.job_state[/** @type {keyof PoolJobState} */ (scenario.controlField)], scenario.control.params[0]);
         assert.equal(poolConfig.logged_in, false);
         assert.equal(poolConfig.bad_shares, 0);
         assert.equal(jobs.length, 0);
-        assert.ok(poolConfig.pending_job);
+        assert.ok(poolConfig.job_state.pending_job);
 
         socket.emit("data", Buffer.from(JSON.stringify({
           jsonrpc: "2.0", id: 2, error: null, result: true,
         }) + "\n"));
         assert.equal(poolConfig.logged_in, true);
         assert.equal(poolConfig.bad_shares, 0);
-        assert.equal(poolConfig.pending_job, undefined);
+        assert.equal(poolConfig.job_state.pending_job, undefined);
         assert.equal(jobs.length, 1);
         assert.ok(jobs[0]);
         assert.equal(jobs[0].job_id, "latest-job");
@@ -713,14 +713,14 @@ describe("Subscription authorization and early jobs", () => {
             header: "00".repeat(76), job_id: "early", difficulty: 20000,
           }};
           socket.emit("data", Buffer.from(JSON.stringify(notify) + "\n"));
-          assert.ok(poolConfig.pending_job);
+          assert.ok(poolConfig.job_state.pending_job);
           if (disconnected) {
             socket.emit("error", new Error("reconnect"));
           } else {
             socket.emit("data", Buffer.from(JSON.stringify({id: 2, error: null, result: false}) + "\n"));
             socket.emit("data", Buffer.from(JSON.stringify(notify) + "\n"));
           }
-          assert.equal(poolConfig.pending_job, undefined);
+          assert.equal(poolConfig.job_state.pending_job, undefined);
           assert.equal(poolConfig.logged_in, false);
           assert.equal(poolConfig.bad_shares, 0);
           assert.equal(jobs, 0);
@@ -748,12 +748,12 @@ describe("Subscription authorization and early jobs", () => {
         params: ["queued-job", "22".repeat(32), "", "", [], "01000000", "ffff001d", "12345678", true],
       }) + "\n"));
       assert.equal(jobs, 0);
-      assert.ok(poolConfig.pending_job);
+      assert.ok(poolConfig.job_state.pending_job);
 
       socket.emit("data", Buffer.from(JSON.stringify({
         jsonrpc: "2.0", id: 2, error: {message: "authorization rejected"}, result: false,
       }) + "\n"));
-      assert.equal(poolConfig.pending_job, undefined);
+      assert.equal(poolConfig.job_state.pending_job, undefined);
       assert.equal(poolConfig.logged_in, false);
       assert.equal(jobs, 0);
     });
@@ -779,9 +779,9 @@ describe("Subscription authorization and early jobs", () => {
         params: ["queued-job", "00".repeat(32), "11".repeat(32), "", true, 1],
         algo: "evrprogpow",
       }) + "\n"));
-      assert.ok(poolConfig.pending_job);
+      assert.ok(poolConfig.job_state.pending_job);
       socket.emit("error", new Error("reconnect"));
-      assert.equal(poolConfig.pending_job, undefined);
+      assert.equal(poolConfig.job_state.pending_job, undefined);
       assert.equal(poolConfig.logged_in, false);
       assert.equal(jobs, 0);
     });
@@ -813,7 +813,7 @@ describe("Subscription authorization and early jobs", () => {
         method: "mining.notify",
         params: ["ordered-job", "22".repeat(32), "", "", [], "01000000", "ffff001d", "12345678", true],
       }) + "\n"));
-      assert.equal(poolConfig.pending_job, undefined);
+      assert.equal(poolConfig.job_state.pending_job, undefined);
       assert.equal(jobs, 1);
     });
   });
@@ -849,8 +849,8 @@ describe("Protocol inference and difficulty targets", () => {
       assert.ok(jobMessage);
       assert.equal(writes[1].method, "mining.authorize");
       assert.deepEqual(writes[1].params, ["0xwallet.worker", "x"]);
-      assert.equal(poolConfig.extra_nonce, "080c");
-      assert.equal(poolConfig["eth_difficulty"], 1);
+      assert.equal(poolConfig.job_state.extra_nonce, "080c");
+      assert.equal(poolConfig.job_state["eth_difficulty"], 1);
       assert.equal(jobMessage.algo, "etchash");
       assert.equal(jobMessage.job_id, "203d");
       assert.equal(jobMessage.seed_hash, seedHash);
@@ -888,7 +888,7 @@ describe("Protocol inference and difficulty targets", () => {
 
       assert.ok(jobMessage);
       assert.equal(poolConfig.inferred_protocol, "eth");
-      assert.equal(poolConfig["eth_difficulty"], 100);
+      assert.equal(poolConfig.job_state["eth_difficulty"], 100);
       assert.equal(jobMessage.target, helper.ethDiff2Target(100));
       assert.equal(jobMessage.algo, "etchash");
     });
@@ -908,6 +908,23 @@ describe("Protocol inference and difficulty targets", () => {
         assert.equal(poolConfig.logged_in, true);
         assert.equal(poolConfig.inferred_protocol, "xelis");
       });
+    }
+  });
+
+  test("password markers use canonical pool algorithm names in field order", async () => {
+    for (const {pass, protocol} of [
+      {pass: "x;ALGO=KAWPOW1,etchash", protocol: "raven"},
+      {pass: "algo=kawpow1extra;octopus", protocol: "conflux"},
+      {pass: "x,algo=c30ctx", protocol: "cortex"},
+      {pass: "beamhash3", protocol: "beam"},
+    ]) {
+      await withMockPool({pool: {pass, use_subscribe: false}, opt: {job: {}}},
+        async ({socket, poolConfig}) => {
+          pool.connect_pool_throttle(0, unexpectedPoolJob);
+          socket.emit("data", Buffer.from('{"id":1,"error":null,"result":{"id":"worker"}}\n'));
+          assert.equal(poolConfig.logged_in, true);
+          assert.equal(poolConfig.inferred_protocol, protocol);
+        });
     }
   });
 
@@ -938,8 +955,8 @@ describe("Protocol inference and difficulty targets", () => {
 
       assert.ok(jobMessage);
       assert.equal(poolConfig.inferred_protocol, "eth");
-      assert.equal(poolConfig.stratum_target, "1234");
-      assert.equal(poolConfig["eth_target"], undefined);
+      assert.equal(poolConfig.job_state.stratum_target, "1234");
+      assert.equal(poolConfig.job_state["eth_target"], undefined);
       assert.equal(jobMessage.target, expectedTarget);
       assert.equal(jobMessage.algo, "etchash");
     });
@@ -1270,8 +1287,8 @@ describe("Keepalive and fixed protocol selection", () => {
       assert.ok(jobMessage);
       assert.equal(writes[1].method, "mining.authorize");
       assert.deepEqual(writes[1].params, ["9ergwallet.worker", "x"]);
-      assert.equal(poolConfig.extra_nonce, "080c");
-      assert.equal(poolConfig.extra_nonce2_size, 6);
+      assert.equal(poolConfig.job_state.extra_nonce, "080c");
+      assert.equal(poolConfig.job_state.extra_nonce2_size, 6);
       assert.equal(jobMessage.algo, "autolykos2");
       assert.equal(jobMessage.job_id, "203d");
       assert.equal(jobMessage.header_hash, headerHash);
@@ -1402,10 +1419,10 @@ describe("Connection deadlines and TLS policy", () => {
         params: ["queued-job", "22".repeat(32), "", "", [], "01000000", "ffff001d", "12345678", true],
       }) + "\n"));
       assert.equal(poolConfig.logged_in, false);
-      assert.ok(poolConfig.pending_job);
+      assert.ok(poolConfig.job_state.pending_job);
       await new Promise((resolve) => setTimeout(resolve, 15));
       assert.equal(socket.destroyed, true);
-      assert.equal(poolConfig.pending_job, undefined);
+      assert.equal(poolConfig.job_state.pending_job, undefined);
     });
   });
 
@@ -1508,7 +1525,7 @@ describe("Extranonce and malformed job validation", () => {
         socket.emit("data", Buffer.from(JSON.stringify({
           method: "mining.set_extranonce", params: ["aabb", size],
         }) + "\n"));
-        assert.equal(poolConfig.extra_nonce2_size, size);
+        assert.equal(poolConfig.job_state.extra_nonce2_size, size);
         assert.equal(socket.destroyed, undefined);
       });
     }
@@ -1669,24 +1686,19 @@ describe("Login authorization and reconnect state", () => {
         assert.equal(jobs, 0);
         assert.equal(poolConfig.logged_in, false);
         assert.equal(poolConfig.worker_id, undefined);
-        assert.equal(poolConfig.extra_nonce, undefined);
+        assert.equal(poolConfig.job_state.extra_nonce, undefined);
       });
     }
   });
 
   test("pool reconnect clears transient protocol state and submit metadata", async () => {
     const transientFields = [
-      "beam_difficulty", "beam_nonceprefix", "cortex_nonce", "eth_difficulty", "eth_target", "extra_nonce",
-      "extra_nonce2_size", "inferred_protocol", "ironfish_target", "ironfish_xn",
-      "kaspa_difficulty", "kaspa_target", "nexa_difficulty", "nexa_target",
-      "negotiated_keepalive", "negotiated_nicehash", "pearlhash_difficulty",
-      "pending_cortex_submit_ids", "raven_target", "stratum_target",
-      "verthash_difficulty", "worker_id",
-      "xelis_difficulty", "xelis_extra_nonce", "xelis_public_key", "zelhash_target",
+      "inferred_protocol", "negotiated_keepalive", "negotiated_nicehash", "pending_cortex_submit_ids", "worker_id",
     ];
     await withMockPool({pool: {protocol: "eth"}}, async ({socket, poolConfig, switched}) => {
       pool.connect_pool_throttle(0, unexpectedPoolJob);
       for (const field of transientFields) {poolConfig[field] = "transient";}
+      poolConfig.job_state = {eth_target: "1234", extra_nonce: "beef", pearlhash_proof_encodings: ["gzip"]};
       poolConfig.last_job = {job_id: "old-job", submit_mode: "eth"};
       poolConfig.last_connect_time = 12345;
       poolConfig.good_shares = 7;
@@ -1703,6 +1715,7 @@ describe("Login authorization and reconnect state", () => {
       socket.emit("error", new Error("reconnect"));
 
       for (const field of transientFields) {assert.equal(poolConfig[field], undefined, field);}
+      assert.deepEqual(poolConfig.job_state, {});
       assert.equal(poolConfig.last_job, null);
       assert.deepEqual({
         last_connect_time: poolConfig.last_connect_time,
@@ -1972,6 +1985,25 @@ describe("Input limits and notification metadata", () => {
     });
   });
 
+  test("oversized generic pool worker IDs close the pool", async () => {
+    await withMockPool({
+      pool: {logged_in: true},
+      pool_time: {first_job_wait: 0.001},
+    }, async ({socket, switched}) => {
+      pool.connect_pool_throttle(0, unexpectedPoolJob);
+      socket.emit("data", Buffer.from(JSON.stringify({
+        method: "job",
+        params: {
+          algo: "cn/0", blob: "00", job_id: "job", target: "01",
+          id: "x".repeat(4097),
+        },
+      }) + "\n"));
+      assert.equal(socket.destroyed, true);
+      assert.equal(switched(), true);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  });
+
   test("pool line limit counts UTF-8 bytes instead of JavaScript characters", async () => {
     await withMockPool({
       pool_time: {first_job_wait: 0.001},
@@ -2003,7 +2035,7 @@ describe("Input limits and notification metadata", () => {
       ));
       assert.ok(jobMessage);
       assert.equal(poolConfig.worker_id, "5122080");
-      assert.equal(poolConfig.extra_nonce, "ff81");
+      assert.equal(poolConfig.job_state.extra_nonce, "ff81");
       assert.equal(jobMessage.job_id, "203d");
       assert.equal(jobMessage.blob, "00".repeat(32) + "00000000000081ff");
       assert.equal(jobMessage.nonce, "ff81000000000000");

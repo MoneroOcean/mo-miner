@@ -47,10 +47,6 @@ public:
   uint64_t light_cache_words = 0;
   uint64_t dag_words = 0;
   uint32_t epoch = UINT32_MAX;
-  // Tracks the DAG byte size the current DAG was built with. KawPoW and FiroPow use different dataset
-  // sizing (classic vs chfast), so the same epoch can map to different DAG sizes; the DAG is rebuilt
-  // when this changes, not just when the epoch changes.
-  uint64_t dag_bytes = 0;
   uint64_t period = UINT64_MAX;
   KawpowProgram program{};
   unsigned workgroup;
@@ -129,15 +125,6 @@ public:
     sycl_cleanup_noexcept("kawpow release", [&] { release(); });
   }
 
-  // Parse env var `name` as a u32, leaving the caller's fallback intact on invalid input.
-  static bool parse_env_u32(const char* name, uint32_t& out) {
-    unsigned long parsed = 0;
-    if (!mom_parse_env_ulong(name, parsed) || parsed > std::numeric_limits<uint32_t>::max())
-      return false;
-    out = static_cast<uint32_t>(parsed);
-    return true;
-  }
-
   // Pick a work-group size: honor `name` if set to one of `allowed`, else `sycl_default_workgroup`.
   // Accept only supported device-fitting workgroup overrides.
   static unsigned select_workgroup(const char* name, const sycl::device& dev,
@@ -150,7 +137,7 @@ public:
         dev, allowed, preferred, fixed_local_bytes, local_bytes_per_item,
         local_bytes_per_team, team_size);
     uint32_t parsed;
-    if (!parse_env_u32(name, parsed))
+    if (!mom_parse_env_u32(name, parsed))
       return fallback;
     for (const unsigned candidate : allowed)
       if (candidate == parsed && sycl_workgroup_fits(
@@ -183,7 +170,7 @@ public:
   // DAG nodes per dispatch, or 0 for one dispatch; MOM_KAWPOW_DAG_CHUNK_NODES overrides.
   static uint32_t kawpow_dag_chunk_nodes(const sycl::device& dev) {
     uint32_t parsed;
-    if (parse_env_u32("MOM_KAWPOW_DAG_CHUNK_NODES", parsed))
+    if (mom_parse_env_u32("MOM_KAWPOW_DAG_CHUNK_NODES", parsed))
       return parsed;
     // Integrated GPUs also serve the desktop and need short, completed command lists between
     // dispatches. Limit each launch to 256 KiB; this only affects one-time DAG construction.
@@ -213,7 +200,6 @@ public:
     light_cache_words = 0;
     dag_words = 0;
     epoch = UINT32_MAX;
-    dag_bytes = 0;
     period = UINT64_MAX;
   }
 
@@ -231,15 +217,10 @@ public:
     input_cap = input_size;
   }
 
-  // new_epoch is the REAL epoch (the seed/period-bundle key); new_cache_bytes/new_dag_bytes are the
-  // (possibly MeowPow-scaled) sizes; seed_epoch is the epoch the keccak seedhash derives from (== epoch
-  // except MeowPow >= dag-change). The cache key includes dag_bytes so a size change forces a rebuild.
-  // Validate dimensions and publish the DAG key only after rebuilding completes.
+  // Variants may change buffer sizes at the same epoch. Even when MeowPow scales the sizes,
+  // the seed uses the unscaled epoch.
   void ensure_epoch(const uint32_t new_epoch, const uint64_t new_cache_bytes,
-                    const uint64_t new_dag_bytes, const uint32_t seed_epoch,
-                    const bool should_log) {
-    if (epoch == new_epoch && dag_bytes == new_dag_bytes && light_cache && dag)
-      return;
+                    const uint64_t new_dag_bytes, const bool should_log) {
     if (new_epoch >= 2048 || !new_cache_bytes || !new_dag_bytes ||
         new_cache_bytes % (NODE_WORDS * sizeof(uint32_t)) != 0 ||
         new_dag_bytes % (NODE_WORDS * sizeof(uint32_t)) != 0) {
@@ -250,37 +231,23 @@ public:
     const uint64_t new_dag_words = new_dag_bytes / sizeof(uint32_t);
     if (!ethash_dag_words_addressable(new_dag_words))
       throw std::string("KawPow DAG exceeds 32-bit word addressing");
+    if (epoch == new_epoch && light_cache_words == new_light_cache_words &&
+        dag_words == new_dag_words && light_cache && dag)
+      return;
 
     std::vector<uint32_t> host_cache;
     const uint64_t start_ms = mom_now_ms();
-    compute_light_cache(host_cache, new_cache_bytes, seed_epoch,
+    compute_light_cache(host_cache, new_cache_bytes, new_epoch,
                         "Can't calculate kawpow light cache");
 
     queue.wait_and_throw();
     // Invalidate the old key before an in-place rebuild can fail; it must not remain reusable.
     epoch = UINT32_MAX;
-    dag_bytes = 0;
     constexpr const char* failure = "Can't allocate kawpow DAG buffers";
-    if (new_light_cache_words != light_cache_words || !light_cache) {
-      light_cache.reset();
-      light_cache_words = 0;
-      light_cache = mom_usm_alloc<uint32_t>(queue, new_light_cache_words, shared_dag, failure);
-      light_cache_words = new_light_cache_words;
-    }
-    if (new_dag_words != dag_words || !dag) {
-      dag.reset();
-      dag_words = 0;
-      dag = mom_usm_alloc<uint32_t>(queue, new_dag_words, shared_dag, failure);
-      dag_words = new_dag_words;
-    }
+    mom_resize_usm(queue, light_cache, light_cache_words, new_light_cache_words, shared_dag, failure);
+    mom_resize_usm(queue, dag, dag_words, new_dag_words, shared_dag, failure);
 
-    MomSyclHostTransferGuard host_cache_transfers(queue, "kawpow cache upload");
-    if (shared_dag)
-      std::memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t));
-    else
-      sycl_wait_and_throw(
-          queue.memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t)),
-          device);
+    upload_ethash_light_cache(queue, device, light_cache, host_cache, shared_dag, "kawpow cache upload");
 
     const uint32_t light_nodes = static_cast<uint32_t>(new_light_cache_words / NODE_WORDS);
     generate_ethash_dag<KAWPOW_DATASET_PARENTS>(
@@ -289,7 +256,6 @@ public:
         ethash_dag_workgroup(device, "MOM_KAWPOW_DAG_WORKGROUP"), kawpow_dag_chunk_nodes(device));
 
     epoch = new_epoch;
-    dag_bytes = new_dag_bytes;
     if (should_log) {
       char elapsed[32];
       mom_format_duration_ms(elapsed, sizeof(elapsed), mom_now_ms() - start_ms);
@@ -488,10 +454,3 @@ public:
     });
   }
 };
-
-// Program build options for sycl_set_compile_options(): none by default ("-O3" is process-global,
-// PearlHash's ESIMD image rejects it, and it does not help ProgPoW); MOM_KAWPOW_COMPILE_OPTIONS
-// overrides.
-const char* kawpow_compile_options() {
-  return std::getenv("MOM_KAWPOW_COMPILE_OPTIONS");
-}

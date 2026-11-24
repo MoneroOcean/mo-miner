@@ -44,9 +44,17 @@ if (workerMode) {
     }
   } else if (failureMode === "unexpected-exit") {
     setImmediate(() => process.exit(0));
-  } else if (failureMode === "oversized") {
-    process.stdout.write("x".repeat(1024 * 1024 + 1));
-  } else if (failureMode !== "unwritable") {
+  } else if (failureMode === "oversized" || failureMode === "oversized-terminated") {
+    process.stdout.write("x".repeat(1024 * 1024 + 1) + (failureMode === "oversized" ? "" : "\n"));
+  } else if (failureMode === "oversized-utf8" || failureMode === "oversized-utf8-proof" ||
+      failureMode === "bounded-proof") {
+    const note = "é".repeat(failureMode === "oversized-utf8" ? 540000 :
+      failureMode === "oversized-utf8-proof" ? 34000 : 1);
+    const value = failureMode === "oversized-utf8" ? {note} :
+      {note, plain_proof: "A".repeat(1024 * 1024)};
+    const event = {type: "result", thread_id: Number(process.env["thread_id"]), value};
+    process.stdout.write("MOM_WORKER_MESSAGE " + JSON.stringify(event) + "\n");
+  } else if (failureMode !== "unwritable" && failureMode !== "read-error") {
     process.stdout.write("MOM_WORKER_MESSAGE {malformed\n");
   }
   if (!normalCloseMode) {setInterval(() => process.stdout.write(""), 1000);}
@@ -130,12 +138,19 @@ if (workerMode) {
 
   /** @param {WorkerEvent} msg */
   function handleMessage(msg) {
+    const mode = process.env["MOM_WORKER_FAILURE_MODE"];
+    if (mode === "bounded-proof" && msg.type === "result") {
+      const worker = subprocessWorker(helper.closeWorkers(0)[0]);
+      if (!worker || String(msg.value["plain_proof"]).length !== 1024 * 1024 ||
+          msg.value["note"] !== "é") {return finish(1, "bounded proof was not delivered intact");}
+      return finishAfterWorkerExit(worker, 0);
+    }
     if (msg.type !== "error") {return;}
     errorCount++;
     const message = String(msg.value["message"] || "");
-    const mode = process.env["MOM_WORKER_FAILURE_MODE"];
-    const expected = mode === "oversized" ? "worker output line limit" :
-      mode === "unexpected-exit" ? "exited unexpectedly" : "malformed worker output";
+    const expected = mode?.startsWith("oversized") ? "worker output line limit" :
+      mode === "read-error" ? "IPC error: simulated read error" :
+        mode === "unexpected-exit" ? "exited unexpectedly" : "malformed worker output";
     if (errorCount !== 1 || !message.includes(expected) ||
         message.includes("MOM_WORKER_MESSAGE") || message.includes("{malformed") ||
         msg.value["fatal"] !== true) {
@@ -154,6 +169,10 @@ if (workerMode) {
   }
 
   helper.recreate_threads("cpu", handleMessage);
+  if (failureMode === "read-error") {
+    const worker = subprocessWorker(helper.messageWorkers({type: "pause"})[0]);
+    if (worker) {worker.stdout.emit("error", new Error("simulated read error"));}
+  }
   if (process.env["MOM_WORKER_FAILURE_MODE"] === "unwritable") {
     setTimeout(() => {
       const active = helper.messageWorkers({type: "pause"});

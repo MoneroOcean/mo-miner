@@ -245,31 +245,30 @@ static void add_gpu_pearlhash_algo_dev(std::string& result_dev) {
 sycl::device get_dev(const std::string& dev_str) {
   if (str2dev.empty())
     update_str2dev();
-  if (!str2dev.contains(dev_str)) {
+  const auto device = str2dev.find(dev_str);
+  if (device == str2dev.end()) {
     throw std::string("Unknown compute platform " + dev_str +
                       ". Available compute platforms: " + available_dev_str());
   }
-  return str2dev.at(dev_str);
+  return device->second;
 }
 
 // Publish the program build options of the algorithm a worker is about to run. DPC++ reads them
 // once, at the process's first program build, so the worker's first job decides. The native core
 // calls this on the loop thread before the compute thread starts; compute threads never write the
-// environment. A device the job cannot use is left for the job itself to report. Callers filter with
-// sycl_has_compile_options() (lib.h), which must list every algorithm handled here.
+// environment. A device the job cannot use is left for the job itself to report.
 void sycl_set_compile_options(const std::string& algo, const std::string& dev_str) {
   try {
     const char* options = nullptr;
-    if (algo == "etchash")
-      options = mom_etchash::etchash_compile_options();
-    else if (algo == "kawpow" || algo == "firopow" || algo == "evrprogpow" || algo == "meowpow")
-      options = mom_kawpow::kawpow_compile_options();
-    else if (algo == "autolykos2")
-      options = mom_autolykos2::autolykos2_compile_options();
-    else if (algo == "cn/gpu")
-      options = cn_gpu_compile_options(get_dev(dev_str));
-    else if (algo == "nexapow")
-      options = mom_nexapow::nexapow_compile_options(get_dev(dev_str));
+    // Keep default JIT flags unset for these overrides. Process-wide -O3 can break ESIMD images.
+    switch (sycl_compile_options_for(algo)) {
+    case SyclCompileOptions::etchash: options = std::getenv("MOM_ETCHASH_COMPILE_OPTIONS"); break;
+    case SyclCompileOptions::progpow: options = std::getenv("MOM_KAWPOW_COMPILE_OPTIONS"); break;
+    case SyclCompileOptions::autolykos2: options = std::getenv("MOM_AUTOLYKOS2_COMPILE_OPTIONS"); break;
+    case SyclCompileOptions::cnGpu: options = cn_gpu_compile_options(get_dev(dev_str)); break;
+    case SyclCompileOptions::nexapow: options = mom_nexapow::nexapow_compile_options(get_dev(dev_str)); break;
+    case SyclCompileOptions::none: return;
+    }
     mom_set_compile_options_env(options);
   } catch (...) {
   }
@@ -280,19 +279,19 @@ std::map<std::string, std::string> algo_params(
     const unsigned max_cpu_batch, const unsigned cpu_sockets, const unsigned cpu_threads,
     const unsigned cpu_l3cache, const std::map<std::string, unsigned>& algo2mem,
     const std::set<std::string>& cpu_algos, const std::set<std::string>& gpu_cn_algos,
-    const std::set<std::string>& gpu_c29_algos, const std::set<std::string>& gpu_kawpow_algos,
-    const std::set<std::string>& gpu_etchash_algos,
+    const std::set<std::string>& gpu_cuckaroo_algos, const std::set<std::string>& gpu_progpow_algos,
+    const std::set<std::string>& gpu_ethash_family_algos,
     const std::set<std::string>& gpu_autolykos2_algos,
     const std::set<std::string>& gpu_pearlhash_algos,
     const std::set<std::string>& gpu_fishhash_algos,
     const std::set<std::string>& gpu_karlsenhashv2_algos,
     const std::set<std::string>& gpu_misc_algos, const std::set<std::string>& gpu_verthash_algos,
-    const std::set<std::string>& gpu_zelhash_algos,
+    const std::set<std::string>& gpu_zcash_equihash_algos,
     const std::set<std::string>& gpu_beamhash3_algos) {
   const auto gpu_algo_sets = {
-      &gpu_cn_algos, &gpu_c29_algos, &gpu_kawpow_algos, &gpu_etchash_algos,
+      &gpu_cn_algos, &gpu_cuckaroo_algos, &gpu_progpow_algos, &gpu_ethash_family_algos,
       &gpu_autolykos2_algos, &gpu_pearlhash_algos, &gpu_fishhash_algos, &gpu_karlsenhashv2_algos,
-      &gpu_misc_algos, &gpu_verthash_algos, &gpu_zelhash_algos, &gpu_beamhash3_algos};
+      &gpu_misc_algos, &gpu_verthash_algos, &gpu_zcash_equihash_algos, &gpu_beamhash3_algos};
   const bool need_sycl_devices = std::any_of(
       gpu_algo_sets.begin(), gpu_algo_sets.end(), [](const auto* algos) { return !algos->empty(); });
   if (need_sycl_devices && str2dev.empty())
@@ -312,18 +311,18 @@ std::map<std::string, std::string> algo_params(
       add_gpu_cn_algo_dev(result_dev, algo, algo2mem, backend_hint);
       if (!backend_hint.empty())
         result["@backend:" + algo] = backend_hint;
-    } else if (gpu_c29_algos.contains(algo)) {
+    } else if (gpu_cuckaroo_algos.contains(algo)) {
       if (algo == "c30")
         add_gpu_dataset_algo_dev(
             result_dev, 6240 * MiB, 11 * GiB, [](const sycl::device&) { return 1u; },
             "intensity", GpuUsm::both, 512, c30_minimum_local_memory);
       else
         add_gpu_c29_algo_dev(result_dev);
-    } else if (gpu_kawpow_algos.contains(algo))
+    } else if (gpu_progpow_algos.contains(algo))
       add_gpu_dataset_algo_dev(result_dev, 5 * GiB, 6 * GiB,
                                algo == "firopow" ? firopow_intensity : kawpow_intensity,
                                "intensity", GpuUsm::shared, 64, 20 * KiB, true);
-    else if (gpu_etchash_algos.contains(algo)) {
+    else if (gpu_ethash_family_algos.contains(algo)) {
       if (algo == "octopus")
         add_gpu_dataset_algo_dev(result_dev, 4300 * MiB, 6 * GiB, octopus_intensity,
                                  "intensity", GpuUsm::both, 128);
@@ -336,45 +335,30 @@ std::map<std::string, std::string> algo_params(
           mom_sycl_portable_opencl ? GpuUsm::none : GpuUsm::both, 32);
     else if (gpu_pearlhash_algos.contains(algo))
       add_gpu_pearlhash_algo_dev(result_dev);
-    else if (gpu_fishhash_algos.contains(algo)) {
-      // 4.6 GiB DAG + 72 MiB light cache.
-      add_gpu_dataset_algo_dev(result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity,
-                               "intensity", GpuUsm::both, 128, 6 * KiB, true);
-    } else if (gpu_karlsenhashv2_algos.contains(algo)) {
-      // FishHashPlus uses the same DAG and intensity as FishHash.
+    else if (gpu_fishhash_algos.contains(algo) || gpu_karlsenhashv2_algos.contains(algo)) {
+      // Both share the DAG and can use the 128-lane scalar kernel when cooperative search is unavailable.
       add_gpu_dataset_algo_dev(
           result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity, "intensity", GpuUsm::both, 128);
     } else if (gpu_misc_algos.contains(algo)) {
+      // These algorithms return a zero intensity when their device requirements are unmet.
+      unsigned (*intensity)(const sycl::device&) = nullptr;
       if (algo == "hoohash")
-        for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
-          if (hoohash_supported(dev))
-            add_result_dev(result_dev,
-                           gpu_tuning_entry(dev_str, "intensity", hoohash_intensity(dev)));
-        });
+        intensity = hoohash_intensity;
       else if (algo == "walahash")
-        for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
-          if (walahash_supported(dev))
-            add_result_dev(result_dev,
-                           gpu_tuning_entry(dev_str, "intensity", walahash_intensity(dev)));
-        });
+        intensity = walahash_intensity;
       else if (algo == "xelishashv3")
-        for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
-          if (!xelishashv3_supported(dev))
-            return;
-          const unsigned intensity = xelishashv3_intensity(dev);
-          if (intensity)
-            add_result_dev(result_dev, gpu_tuning_entry(dev_str, "intensity", intensity));
-        });
+        intensity = xelishashv3_intensity;
       else if (algo == "nexapow")
+        intensity = nexapow_intensity;
+      if (intensity)
         for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
-          if (mom_has_usm_device(dev))
-            add_result_dev(result_dev,
-                           gpu_tuning_entry(dev_str, "intensity", nexapow_intensity(dev)));
+          if (const unsigned value = intensity(dev))
+            add_result_dev(result_dev, gpu_tuning_entry(dev_str, "intensity", value));
         });
     } else if (gpu_verthash_algos.contains(algo))
       add_gpu_dataset_algo_dev(result_dev, 1224 * MiB, 2 * GiB, verthash_intensity,
                                "intensity", GpuUsm::both, 64, 8 * KiB);
-    else if (gpu_zelhash_algos.contains(algo)) {
+    else if (gpu_zcash_equihash_algos.contains(algo)) {
       // These solvers' admissions reuse the session layouts' local-memory requirement.
       if (algo == "equihash192_7")
         add_gpu_dataset_algo_dev(

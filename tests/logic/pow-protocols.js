@@ -297,7 +297,7 @@ describe("PearlHash proof negotiation and claims", () => {
         const expected = version === undefined ? 3 : Number(version);
         assert.deepEqual(jobs.map((job) => job.pearlhash_cert_version),
           expected === 3 ? [3] : []);
-        assert.deepEqual(poolConfig["pearlhash_proof_encodings"],
+        assert.deepEqual(poolConfig.job_state["pearlhash_proof_encodings"],
           expected === 3 ? ["none", "gzip"] : undefined);
       });
     }
@@ -406,7 +406,7 @@ describe("PearlHash proof negotiation and claims", () => {
     };
 
     const mo = await loadMinerWithStubs();
-    mo.global.opt.pools[0]["pearlhash_proof_encodings"] = ["none", "gzip"];
+    mo.global.opt.pools[0].job_state["pearlhash_proof_encodings"] = ["none", "gzip"];
     mo.global.opt.pools[0].last_job = {
       job_id: "job1", job_token: "token", submit_mode: "pearlhash",
     };
@@ -421,7 +421,7 @@ describe("PearlHash proof negotiation and claims", () => {
     assert.equal(zlib.gunzipSync(Buffer.from(compressedProof, "base64")).toString("base64"), proof);
 
     const external = await loadMinerWithStubs();
-    external.global.opt.pools[0]["pearlhash_proof_encodings"] = ["none"];
+    external.global.opt.pools[0].job_state["pearlhash_proof_encodings"] = ["none"];
     external.global.opt.pools[0].last_job = {
       job_id: "job1", job_token: "token", submit_mode: "pearlhash",
     };
@@ -576,8 +576,8 @@ describe("Ergo submission metadata and targets", () => {
     ]) {
       const miner = await loadMinerWithStubs();
       await withMockPool({
-        pool: {protocol: "erg", logged_in: true, extra_nonce: extraNonce,
-          ...(size === undefined ? {} : {extra_nonce2_size: size})},
+        pool: {protocol: "erg", logged_in: true, job_state: {extra_nonce: extraNonce,
+          ...(size === undefined ? {} : {extra_nonce2_size: size})}},
         opt: {job: {algo: "autolykos2"}},
       }, async ({socket, poolConfig}) => {
         miner.global.opt.pools[0] = poolConfig;

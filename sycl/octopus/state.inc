@@ -154,26 +154,17 @@ public:
     return max_alloc >= bytes && memory >= bytes + cache_size(epoch) + reserve;
   }
 
-  // Rebuild the host-derived cache on an epoch change and upload it to the owning queue.
-  void ensure_cache(const uint32_t next_epoch) {
+  // The epoch transition has already released the old cache and invalidated its key.
+  void build_cache(const uint32_t next_epoch) {
     const uint64_t bytes = cache_size(next_epoch);
     const uint32_t nodes = static_cast<uint32_t>(bytes / (CACHE_NODE_WORDS * sizeof(uint32_t)));
-    if (cache && cache_nodes == nodes)
-      return;
-    std::vector<uint32_t> host_cache(static_cast<size_t>(bytes / sizeof(uint32_t)));
-    const ethash_h256_t seed = ethash_get_seedhash(next_epoch);
-    if (!ethash_compute_cache_nodes(host_cache.data(), bytes, &seed))
-      throw std::string("Can't calculate octopus light cache");
+    std::vector<uint32_t> host_cache;
+    compute_light_cache(host_cache, bytes, next_epoch, "Can't calculate octopus light cache");
     queue.wait_and_throw();
-    free_ptr(cache);
     cache = allocate<uint32_t>(host_cache.size());
     if (!cache)
       throw std::string("Can't allocate octopus light cache");
-    MomSyclHostTransferGuard host_cache_transfers(queue, "octopus cache upload");
-    if (shared_io)
-      std::memcpy(cache, host_cache.data(), bytes);
-    else
-      sycl_wait_and_throw(queue.memcpy(cache, host_cache.data(), bytes), device);
+    upload_ethash_light_cache(queue, device, cache, host_cache, shared_io, "octopus cache upload");
     cache_nodes = nodes;
   }
 
@@ -231,21 +222,10 @@ public:
       dag_attempted = false;
       dag_nodes = 0;
       cache_nodes = 0;
-      ensure_cache(next_epoch);
+      build_cache(next_epoch);
       epoch = next_epoch;
     }
     if (!test || std::getenv("MOM_OCTOPUS_TEST_FULL_DAG"))
       ensure_dag(log);
   }
 };
-
-// Keep device owners heap-registered so explicit shutdown controls SYCL destruction order.
-static DeviceStateRegistry<State>& registry() {
-  static auto* const value = new DeviceStateRegistry<State>;
-  return *value;
-}
-
-// Reuse one serialized epoch/cache owner for the selected device.
-static State& state_for(const std::string& dev) {
-  return registry().get(dev, [&] { return std::make_unique<State>(dev); });
-}

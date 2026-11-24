@@ -45,8 +45,8 @@ test("ZelHash-family pools build the 140-byte header from the ZIP-301 notify", a
       assert.ok(jobMessage);
       assert.equal(writes[1].method, "mining.authorize");
       assert.deepEqual(writes[1].params, ["t1fluxwallet.worker", "x"]);
-      assert.equal(poolConfig.extra_nonce, "0a1b");
-      assert.equal(poolConfig.zelhash_target, target);
+      assert.equal(poolConfig.job_state.extra_nonce, "0a1b");
+      assert.equal(poolConfig.job_state.zelhash_target, target);
       assert.equal(jobMessage.algo, algo);
       assert.equal(jobMessage.job_id, "job1");
       assert.equal(jobMessage.target, target);
@@ -67,7 +67,7 @@ test("ZelHash-family pools build the 140-byte header from the ZIP-301 notify", a
       socket.emit("data", Buffer.from(JSON.stringify({
         method: "mining.set_extranonce", params: ["abcd1234"],
       }) + "\n"));
-      assert.equal(poolConfig.extra_nonce, "abcd1234");
+      assert.equal(poolConfig.job_state.extra_nonce, "abcd1234");
       assert.equal(jobMessage.nonce1_len, 2);
       assert.equal(jobMessage.ntime, ntime);
       assert.equal(jobMessage.blob.slice(216), "0a1b" + "0".repeat(60));
@@ -81,7 +81,7 @@ test("ZelHash submit uses stored ZIP-301 metadata for its current job", async ()
   miner.global.opt.pools[0].inferred_protocol = "echelon";
   miner.global.opt.pools[0].login = "t1fluxwallet.worker";
   miner.global.opt.pools[0].last_job = {
-    job_id: "job1", job_token: "token", submit_mode: "zelhash",
+    job_id: "job1", job_token: "token", submit_mode: "zelhash", algo: "zelhash",
     ntime: "90e44f5d",
     nonce1_len: 2,
     // 280-hex header; only the 32-byte nonce (last 64 hex) is read here = nonce1 "0a1b" || zero nonce2.
@@ -118,10 +118,11 @@ test("ZelHash submit uses stored ZIP-301 metadata for its current job", async ()
 });
 
 test("ZelHash counter serialization preserves padding, byte order, and the job tail", async () => {
-  const {zelhashSubmitParams} = require("../../miner/submission");
+  const {equihashSubmitParams} = require("../../miner/submission");
   const miner = await loadMinerWithStubs();
   const poolConfig = miner.global.opt.pools[0];
   assert.ok(poolConfig);
+  const solution = "34" + "ab".repeat(52);
   const cases = [
     ["7", "0700000000000000"],
     ["0", "0000000000000000"],
@@ -131,18 +132,18 @@ test("ZelHash counter serialization preserves padding, byte order, and the job t
   for (const prefixBytes of [0, 2, 24]) {
     const tail = "ab".repeat(24 - prefixBytes);
     const job = {
-      job_id: "counter-job", ntime: "01020304", nonce1_len: prefixBytes,
+      job_id: "counter-job", ntime: "01020304", nonce1_len: prefixBytes, algo: "zelhash",
       blob: "00".repeat(108) + "cd".repeat(prefixBytes) + "77".repeat(8) + tail,
     };
     const original = {...job};
     for (const [nonce, wire] of cases) {
       assert.ok(nonce && wire);
-      assert.deepEqual(zelhashSubmitParams(poolConfig, job, {nonce, job_id: job.job_id}, "34abcd"),
-        [poolConfig.login, "counter-job", "01020304", wire + tail, "34abcd"]);
+      assert.deepEqual(equihashSubmitParams(poolConfig, job, {nonce, solution}),
+        [poolConfig.login, "counter-job", "01020304", wire + tail, solution]);
     }
     for (const nonce of ["", "gg", "f".repeat(17), "0x"]) {
-      assert.throws(() => zelhashSubmitParams(poolConfig, job,
-        {nonce, job_id: job.job_id}, "34abcd"), /Invalid nonce/);
+      assert.throws(() => equihashSubmitParams(poolConfig, job,
+        {nonce, solution}), /Invalid nonce/);
     }
     assert.deepEqual(job, original);
   }
@@ -160,10 +161,15 @@ test("ZHash variants submit their full CompactSize-prefixed proofs", async () =>
       job_id: "job1", job_token: "token", submit_mode: "zelhash", ntime: "90e44f5d", nonce1_len: 2, algo,
       blob: "0".repeat(216) + "0a1b" + "0".repeat(60),
     };
-    miner.messageHandler({thread_id: 0, type: "result", value: {
+    const result = {
       pool_id: "0", worker_id: "worker", job_id: "job1", job_token: "token", nonce: "0000000000000007",
       hash: "00".repeat(32), solution,
-    }});
+    };
+    for (const invalid of [solution.slice(0, -2), "00" + solution.slice(2)]) {
+      miner.messageHandler({thread_id: 0, type: "result", value: {...result, solution: invalid}});
+    }
+    assert.equal(miner.poolWrites.length, 0);
+    miner.messageHandler({thread_id: 0, type: "result", value: result});
     const write = miner.poolWrites[0];
     assert.ok(write);
     assert.deepEqual(write.json.params, [

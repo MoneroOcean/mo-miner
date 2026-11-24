@@ -178,12 +178,6 @@ private:
   }
 };
 
-// Keep the registry shell alive across static teardown; ordered cleanup releases its values.
-static DeviceStateRegistry<State>& registry() {
-  static auto* const value = new DeviceStateRegistry<State>;
-  return *value;
-}
-
 // Keep compact correctness fixtures separate from the official dataset registry key.
 static State& state_for(const std::string& dev_str, const bool is_test,
                         const bool is_benchmark) {
@@ -194,16 +188,13 @@ static State& state_for(const std::string& dev_str, const bool is_test,
   const bool compact = requested &&
                        mom_compact_correctness_test(is_test, is_benchmark, get_dev(dev_str));
   const std::string key = dev_str + (compact ? "\x1f" "compact-test" : "\x1f" "full");
-  return registry().get(key, [&] { return std::make_unique<State>(dev_str, compact); });
+  return persistentDeviceStates<State>().get(key,
+      [&] { return std::make_unique<State>(dev_str, compact); });
 }
 
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void verthash_cleanup_states() noexcept {
-  try {
-    registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "verthash: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<State>("verthash");
 }
 
 // Sequence seed generation and four-lane dependent dataset mixing for the nonce range.

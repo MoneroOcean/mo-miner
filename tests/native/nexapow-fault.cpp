@@ -306,7 +306,8 @@ struct State {
   ~State() { portable.release(queue); }
 };
 static std::unique_ptr<State> state;
-static State& state_for(const std::string&) { return *state; }
+template <typename StateType>
+static StateType& persistentDeviceState(const std::string&) { return *state; }
 static bool env_enabled(const char* name) {
   return (std::strcmp(name, "MOM_NEXAPOW_STAGED_TEST") == 0 && staged_test_enabled) ||
       (std::strcmp(name, "MOM_NEXAPOW_STAGED_REQUIRE") == 0 && staged_require_enabled) ||

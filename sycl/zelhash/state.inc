@@ -80,6 +80,7 @@ public:
 #endif
   static constexpr uint32_t CAND_CAP = 4096;
   bool arenas_built = false;
+  MomSyclRateWindow solutionRate;
   std::mutex mutex;
 
   // Select backend record layout and capacity before creating persistent ordered solver state.
@@ -186,21 +187,7 @@ public:
   }
 };
 
-// Keep runtime-owned state under explicit shutdown control instead of static destructor order.
-static DeviceStateRegistry<State>& registry() {
-  static auto* const registry = new DeviceStateRegistry<State>;
-  return *registry;
-}
-
-static State& state_for(const std::string& dev_str) {
-  return registry().get(dev_str, [&] { return std::make_unique<State>(dev_str); });
-}
-
 // Drain persistent device states during ordered shutdown without propagating cleanup errors.
 void zelhash_cleanup_states() noexcept {
-  try {
-    registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "zelhash: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<State>("zelhash");
 }

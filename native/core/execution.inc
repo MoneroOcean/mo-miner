@@ -91,12 +91,12 @@ static void loop_stats_report(LoopStats& ls, const uint64_t now) {
 }
 
 // Embed the prepared start of the next single-blob batch in the header and prepare the one after
-// it. An exhausted range stops the function: KawPoW and Etchash report "Nonce overflow", the
-// others report the final nonce so the controller can resume the job elsewhere.
+// it. The Ethash DAG routes report "Nonce overflow" at exhaustion. Other routes report the
+// final nonce so the controller can resume the job elsewhere.
 void Core::advance_blob_nonce() {
   if (m_nonce_exhausted) {
     clear_fn();
-    if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU)
+    if (is_ethash_dag_gpu_dev(m_dev))
       send_error("Nonce overflow");
     else
       send_last_nonce(last_nonce(), m_nonce_bytes, m_pool_id, m_job_id, m_job_token);
@@ -126,7 +126,7 @@ void Core::finish_lane_batch(UInt& nonce, const int dev_sols, const uint64_t dev
     }
   } else if (dev_sols == 1 && m_target && result_word() < m_target) {
     send_result(dev_nonce, sizeof(UInt), m_output, static_cast<uint32_t*>(m_spads),
-                m_c29_proof_size);
+                m_cuckaroo_proof_size);
   }
 
   if (m_nonce_exhausted) {
@@ -279,7 +279,7 @@ void Core::Execute() try {
           case DEV::CPU:
             m_fn.cpu(m_input, m_input_len, m_output, m_ctx, m_height);
             break;
-          case DEV::GPU:
+          case DEV::CN_GPU:
             m_fn.gpu_cn(m_input, m_input_len, m_output, m_batch, m_dev_str, m_backend);
             break;
           case DEV::C29_GPU:
@@ -292,8 +292,8 @@ void Core::Execute() try {
             } else {
               dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), true);
             }
-            dev_sols = m_fn.gpu_c29(
-              dispatch_job_ref, m_c29_proof_size, m_input, m_input_len, m_output,
+            dev_sols = m_fn.gpu_cuckaroo(
+              dispatch_job_ref, m_cuckaroo_proof_size, m_input, m_input_len, m_output,
               static_cast<uint32_t*>(m_spads), &dev_nonce, m_dev_str
             );
             if (loop_stats) {
@@ -302,24 +302,16 @@ void Core::Execute() try {
             break;
           case DEV::C30_GPU:
             dev_nonce = m_nonce64;
-            dev_sols = m_fn.gpu_c29(
-              dispatch_job_ref, m_c29_proof_size, m_input, m_input_len, m_output,
+            dev_sols = m_fn.gpu_cuckaroo(
+              dispatch_job_ref, m_cuckaroo_proof_size, m_input, m_input_len, m_output,
               static_cast<uint32_t*>(m_spads), &dev_nonce, m_dev_str
             );
             break;
-          case DEV::KAWPOW_GPU:
+          case DEV::PROGPOW_GPU:
             hit_nonces[0] = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
-            dev_sols = m_fn.gpu_kawpow(
+            dev_sols = m_fn.gpu_progpow(
               dispatch_job_ref, m_height, m_input, m_input_len, m_output,
               static_cast<uint8_t*>(m_spads), hit_nonces, m_target,
-              m_batch, is_test, is_benchmark, m_dev_str
-            );
-            break;
-          case DEV::ETCHASH_GPU:
-            hit_nonces[0] = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
-            dev_sols = m_fn.gpu_etchash(
-              dispatch_job_ref, m_height, m_input, m_input_len, m_output,
-              static_cast<uint8_t*>(m_spads), hit_nonces, m_target_bin, m_seed,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
@@ -341,59 +333,30 @@ void Core::Execute() try {
               m_pearlhash_has_base_target ? m_pearlhash_base_target_bin : nullptr
             );
             break;
+          case DEV::ETHASH_FAMILY_GPU:
           case DEV::FISHHASH_GPU:
-            hit_nonces[0] = mom::job_boundary::load_nonce<uint64_t>(
-              nonce_address(), mom::job_boundary::nonce_big_endian(m_algo_str, m_input_len));
-            dev_sols = m_fn.gpu_fishhash(
-              dispatch_job_ref, m_height, m_input, m_input_len, m_output,
-              static_cast<uint8_t*>(m_spads), hit_nonces, m_target_bin, m_seed,
-              m_batch, is_test, is_benchmark, m_dev_str
-            );
-            break;
           case DEV::KARLSENHASHV2_GPU:
-            hit_nonces[0] = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
-            dev_sols = m_fn.gpu_karlsenhashv2(
-              dispatch_job_ref, m_height, m_input, m_input_len, m_output,
-              static_cast<uint8_t*>(m_spads), hit_nonces, m_target_bin, m_seed,
-              m_batch, is_test, is_benchmark, m_dev_str
-            );
-            break;
           case DEV::MISC_GPU:
-            hit_nonces[0] = mom::job_boundary::load_nonce<uint64_t>(
-              nonce_address(), mom::job_boundary::nonce_big_endian(m_algo_str, m_input_len));
-            dev_sols = m_fn.gpu_misc(
-              dispatch_job_ref, m_height, m_input, m_input_len, m_output,
-              nullptr, hit_nonces, m_target_bin, m_seed,
-              m_batch, is_test, is_benchmark, m_dev_str
-            );
-            break;
           case DEV::VERTHASH_GPU: {
-            hit_nonces[0] = mom::job_boundary::load_nonce<uint32_t>(nonce_address(), false);
-            dev_sols = m_fn.gpu_verthash(
+            const bool big_endian = mom::job_boundary::nonce_big_endian(m_algo_str, m_input_len);
+            hit_nonces[0] = m_dev == DEV::VERTHASH_GPU
+              ? mom::job_boundary::load_nonce<uint32_t>(nonce_address(), big_endian)
+              : mom::job_boundary::load_nonce<uint64_t>(nonce_address(), big_endian);
+            auto* const mix = m_dev == DEV::MISC_GPU || m_dev == DEV::VERTHASH_GPU
+              ? nullptr : static_cast<uint8_t*>(m_spads);
+            dev_sols = m_fn.gpu_hash(
               dispatch_job_ref, m_height, m_input, m_input_len, m_output,
-              nullptr, hit_nonces, m_target_bin, m_seed,
+              mix, hit_nonces, m_target_bin, m_seed,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           }
-          case DEV::ZELHASH_GPU:
-            // The 32-byte nonce starts at offset 108; the counter follows any pool prefix. Solvers
-            // write compact proofs (or test rows) out-of-band into m_spads.
-            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
-            dev_sols = m_fn.gpu_zelhash(
-              dispatch_job_ref, m_height, m_input, m_input_len,
-              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin,
-              m_batch, is_test, is_benchmark, m_dev_str
-            );
-            break;
+          case DEV::ZCASH_EQUIHASH_GPU:
           case DEV::BEAMHASH3_GPU:
-            // c29-like: input is the prework||nonce||extranonce blob; the 8-byte Beam nonce is at
-            // offset 32. The solver writes the 104-byte solution(s) out-of-band into m_spads (or, in
-            // is_test, the gen-validation rows).
-            // Keep the numeric value matching a native little-endian read: Beam submissions reverse
-            // this display value back to the physical nonce bytes sent in the solved header.
+            // Both solvers return proofs or test rows through m_spads. Read the Beam counter
+            // little-endian here so submission can reverse it back to the solved header bytes.
             dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
-            dev_sols = m_fn.gpu_beamhash3(
+            dev_sols = m_fn.gpu_equihash(
               dispatch_job_ref, m_height, m_input, m_input_len,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin,
               m_batch, is_test, is_benchmark, m_dev_str
@@ -425,7 +388,7 @@ void Core::Execute() try {
 
       if (is_test) {
         m_input_len = 0; // do not produce any more test jobs for async GPU code like in c29
-        if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
+        if (is_ethash_dag_gpu_dev(m_dev)) {
           if (dev_sols > 0) {
             std::string result = bin2hex(m_output, HASH_LEN);
             if (m_algo_str != "octopus") {
@@ -460,7 +423,7 @@ void Core::Execute() try {
           clear_fn();
           continue;
         }
-        if (m_dev == DEV::ZELHASH_GPU || m_dev == DEV::BEAMHASH3_GPU) {
+        if (is_equihash_gpu_dev(m_dev)) {
           // The test path dumped generation rows (or solutions) into m_spads; emit the whole buffer
           // so the test can compare it with the reference oracle.
           if (dev_sols == 1) {
@@ -507,17 +470,15 @@ void Core::Execute() try {
         completed = pearlhash_attempt_hashes(
           m_batch, m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank
         );
-      } else if ((m_dev == DEV::ZELHASH_GPU && m_algo_str != "equihash192_7") ||
+      } else if ((m_dev == DEV::ZCASH_EQUIHASH_GPU && m_algo_str != "equihash192_7") ||
                  m_dev == DEV::BEAMHASH3_GPU) {
         completed = static_cast<uint64_t>(dev_sols < 0 ? 0 : dev_sols);
       }
       m_hash_count.fetch_add(completed, std::memory_order_relaxed);
-      if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU || m_dev == DEV::AUTOLYKOS2_GPU ||
-          m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::MISC_GPU ||
-          m_dev == DEV::VERTHASH_GPU) {
-        // Only the KawPoW and Etchash entry points return mix hashes (Octopus has none).
-        const bool has_mix_hash = (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) &&
-                                  m_algo_str != "octopus";
+      if (is_nonce_at_32_gpu_dev(m_dev) || m_dev == DEV::KARLSENHASHV2_GPU ||
+          m_dev == DEV::MISC_GPU || m_dev == DEV::VERTHASH_GPU) {
+        // ProgPoW and Etchash attach a mix hash. Octopus returns only the final hash.
+        const bool has_mix_hash = is_ethash_dag_gpu_dev(m_dev) && m_algo_str != "octopus";
         if (!send_gpu_hits(dev_sols, hit_nonces, m_nonce_bytes,
                            has_mix_hash ? static_cast<const uint8_t*>(m_spads) : nullptr)) {
           clear_fn();

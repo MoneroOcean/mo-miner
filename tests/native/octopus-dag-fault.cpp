@@ -138,7 +138,7 @@ public:
       inject();
     return mode != 1;
   }
-  void ensure_cache(uint32_t) { cache_nodes = 1; }
+  void build_cache(uint32_t) { cache_nodes = 1; }
   bool ensure_points(const uint8_t*) {
     ++counts.points;
     return true;
@@ -147,7 +147,8 @@ public:
 };
 
 static State* active_state;
-static State& state_for(const std::string&) { return *active_state; }
+template <typename StateType>
+static StateType& persistentDeviceState(const std::string&) { return *active_state; }
 template <bool Full, typename... Args> static sycl::event search(Args&&...) {
   if (Full)
     ++counts.full;

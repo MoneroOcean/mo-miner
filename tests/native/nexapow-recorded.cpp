@@ -38,8 +38,8 @@ int main() {
     byte = 0xff;
   uint8_t output[32]{};
   uint64_t found = 0;
-  if (mom_nexapow::nexapow(0, 0, input, sizeof(input), output, nullptr, &found, target, nullptr, 1,
-                           true, false, "") != 1 ||
+  if (nexapow(0, 0, input, sizeof(input), output, nullptr, &found, target, nullptr, 1,
+              true, false, "") != 1 ||
       found != nonce)
     return 1;
 
@@ -51,8 +51,8 @@ int main() {
   uint8_t short_input[40]{};
   uint8_t short_output[32]{};
   uint64_t short_nonce = 0;
-  if (mom_nexapow::nexapow(0, 0, short_input, sizeof(short_input), short_output, nullptr,
-                           &short_nonce, target, nullptr, 1, true, false, "") != 1 ||
+  if (nexapow(0, 0, short_input, sizeof(short_input), short_output, nullptr,
+              &short_nonce, target, nullptr, 1, true, false, "") != 1 ||
       short_nonce != 0 ||
       !mom_nexapow::np_equal(short_output, short_expected, sizeof(short_output)))
     return 1;
@@ -81,8 +81,8 @@ int main() {
   for (unsigned i = 0; i < 8; ++i)
     serialized_ok = serialized_ok && prefixed_serialized[37u + i] ==
         static_cast<uint8_t>(prefixed_nonce >> (8u * (7u - i)));
-  if (mom_nexapow::nexapow(0, 0, prefixed_input, sizeof(prefixed_input), prefixed_output,
-                           nullptr, &prefixed_nonce, target, nullptr, 1, true, false, "") != 1 ||
+  if (nexapow(0, 0, prefixed_input, sizeof(prefixed_input), prefixed_output,
+              nullptr, &prefixed_nonce, target, nullptr, 1, true, false, "") != 1 ||
       prefixed_nonce != 0x0102030405060708ULL || !serialized_ok ||
       !mom_nexapow::np_equal(prefixed_output, prefixed_expected_hash, sizeof(prefixed_output)))
     return 1;
@@ -91,12 +91,21 @@ int main() {
   uint64_t batch_nonces[GPU_MAX_HITS] = {500};
   uint8_t batch_output[GPU_MAX_HITS * 32]{};
   uint8_t second_hash[32];
-  if (mom_nexapow::nexapow(0, 0, short_input, sizeof(short_input), batch_output, nullptr,
-                           batch_nonces, target, nullptr, 2, false, false, "") != 2 ||
+  if (nexapow(0, 0, short_input, sizeof(short_input), batch_output, nullptr,
+              batch_nonces, target, nullptr, 2, false, false, "") != 2 ||
       batch_nonces[0] != 500 || batch_nonces[1] != 501 ||
       !mom_nexapow::np_hash_one(short_input, short_input + 32, 501, second_hash, 0) ||
       !mom_nexapow::np_equal(batch_output + 32, second_hash, sizeof(second_hash)))
     return 2;
+
+  try {
+    nexapow(0, 0, short_input, sizeof(short_input), batch_output, nullptr, batch_nonces,
+            nullptr, nullptr, 1, false, false, "");
+    return 5;
+  } catch (const std::string& error) {
+    if (error != "nexapow received null work pointers")
+      return 6;
+  }
 
   // Staged GPU candidates that fail host re-verification or leave the batch are dropped rather
   // than stopping the job; verified ones are kept.

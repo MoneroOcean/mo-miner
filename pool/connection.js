@@ -3,7 +3,7 @@
 const {StringDecoder} = require("node:string_decoder");
 const {normalizeAlgoName} = require("../miner/algorithms");
 const {normalizeFingerprint} = require("./tls");
-const {isObject, isPositiveNumber} = require("../helper/validate");
+const {isObject, isPositiveNumber, parseUint64Decimal} = require("../helper/validate");
 
 /**
  * @param {{
@@ -138,11 +138,11 @@ module.exports = ({
     const exact = JSON.parse(message, preserveJsonNumber);
     if (!isObject(exact) || !Array.isArray(exact["params"]) ||
       !Array.isArray(exact["params"][1])) {return;}
-    const words = exact["params"][1].map((word) => exactUint64Decimal(word));
+    const words = exact["params"][1].map((word) => parseUint64Decimal(word).toString());
     if (words.length < 4) {return;}
     // Store as exact decimal strings (NOT BigInt) so the debug logger's JSON.stringify(json) still works.
     json.__kaspa_words = words.slice(0, 4);
-    json.__kaspa_timestamp = exactUint64Decimal(exact["params"][2]);
+    json.__kaspa_timestamp = parseUint64Decimal(exact["params"][2]).toString();
   }
 
   /**
@@ -153,38 +153,6 @@ module.exports = ({
    */
   function preserveJsonNumber(_key, value, context = {}) {
     return typeof value === "number" && typeof context.source === "string" ? context.source : value;
-  }
-
-  /** @param {unknown} value @returns {string} */
-  function exactUint64Decimal(value) {
-    const text = typeof value === "string" ? value :
-      typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? String(value) : "";
-    if (!/^(0|[1-9]\d*)$/.test(text) || text.length > 20) {
-      throw new Error("Invalid uint64 decimal");
-    }
-    if (BigInt(text) > 0xffffffffffffffffn) {
-      throw new Error("uint64 decimal is out of range");
-    }
-    return text;
-  }
-
-  /**
-   * @param {number} pool_id
-   * @param {PoolMessage} json
-   * @param {(job: PoolJob) => MiningJob} setJob
-   * @param {(message: string) => unknown} failPool
-   * @returns {boolean}
-   */
-  function processPoolJson(pool_id, json, setJob, failPool) {
-    pool_log_json(pool_id, 2, "Got from the pool: ", json);
-    try {
-      pool_message(pool_id, json, setJob);
-    } catch (error) {
-      failPool(pool_log_str(pool_id, "Can't process message from the pool") +
-        poolErrorText(pool_id, error));
-      return true;
-    }
-    return false;
   }
 
   // Process complete lines in order; returns true when the socket was failed or replaced, so the
@@ -209,7 +177,14 @@ module.exports = ({
         ));
         return true;
       }
-      if (processPoolJson(pool_id, json, setJob, failPool)) {return true;}
+      pool_log_json(pool_id, 2, "Got from the pool: ", json);
+      try {
+        pool_message(pool_id, json, setJob);
+      } catch (error) {
+        failPool(pool_log_str(pool_id, "Can't process message from the pool") +
+          poolErrorText(pool_id, error));
+        return true;
+      }
     }
     return !isCurrentPoolSocket(pool_id, socket);
   }
@@ -309,29 +284,6 @@ module.exports = ({
     return poolWrite(pool_id, request);
   }
 
-  /** @param {string} buffered @returns {{messages: string[], incompleteLine: string}} */
-  function splitPoolMessages(buffered) {
-    const messages = buffered.split("\n");
-    const incompleteLine = buffered.endsWith("\n") ? "" : messages.pop() ?? "";
-    return {messages, incompleteLine};
-  }
-
-  /**
-   * @param {number} pool_id
-   * @param {PoolSocket} socket
-   * @param {string} buffered
-   * @param {string} data
-   * @param {(message: string) => unknown} failPool
-   * @returns {string | null}
-   */
-  function readPoolData(pool_id, socket, buffered, data, failPool) {
-    if (!isCurrentPoolSocket(pool_id, socket)) {return null;}
-    const nextBuffer = buffered + data;
-    if (Buffer.byteLength(nextBuffer) <= max_pool_data_buffer) {return nextBuffer;}
-    failPool(pool_log_str(pool_id, "Pool message buffer limit exceeded"));
-    return null;
-  }
-
   // Accumulate socket data into lines, bounded by max_pool_data_buffer.
   /**
    * @param {number} pool_id
@@ -344,19 +296,17 @@ module.exports = ({
     let buffered = "";
     const decoder = new StringDecoder("utf8");
     return function(data) {
-      const decoded = typeof data === "string" ? data : decoder.write(data);
-      const nextBuffer = readPoolData(
-        pool_id, socket, buffered, decoded, failPool
-      );
-      if (nextBuffer === null) {return;}
-      buffered = nextBuffer;
-      if (!buffered.includes("\n")) {return;}
-      const {messages, incompleteLine} = splitPoolMessages(buffered);
-      if (handlePoolLines(pool_id, socket, messages, setJob, failPool)) {
+      if (!isCurrentPoolSocket(pool_id, socket)) {return;}
+      buffered += typeof data === "string" ? data : decoder.write(data);
+      if (Buffer.byteLength(buffered) > max_pool_data_buffer) {
         buffered = "";
+        failPool(pool_log_str(pool_id, "Pool message buffer limit exceeded"));
         return;
       }
-      buffered = incompleteLine;
+      if (!buffered.includes("\n")) {return;}
+      const messages = buffered.split("\n");
+      buffered = messages.pop() ?? "";
+      if (handlePoolLines(pool_id, socket, messages, setJob, failPool)) {buffered = "";}
     };
   }
 

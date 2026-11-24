@@ -4,7 +4,7 @@ static sycl::event submit_fishhash_dag_gen(sycl::queue& q, const uint64_t* __res
                                            uint64_t* __restrict d_dag, uint32_t start,
                                            uint32_t count) {
   constexpr unsigned WG = 64;
-  const size_t global = (static_cast<size_t>(count) + WG - 1) / WG * WG;
+  const size_t global = mom_round_up_size(count, WG);
   return q.submit([&](sycl::handler& h) {
     h.parallel_for<FishDagKernel>(sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)),
                                   [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {

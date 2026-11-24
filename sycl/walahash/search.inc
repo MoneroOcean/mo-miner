@@ -2,7 +2,7 @@
 template <bool Native, bool FixedHashes>
 static sycl::event search(State& s, uint64_t first, unsigned count, bool is_test,
                           const unsigned work_group) {
-  const size_t global = (static_cast<size_t>(count) + work_group - 1) / work_group * work_group;
+  const size_t global = mom_round_up_size(count, work_group);
   const uint8_t* matrix = s.matrix;
   const uint8_t* input = s.input;
 #if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
@@ -81,11 +81,10 @@ static sycl::event search(State& s, uint64_t first, unsigned count, bool is_test
 }
 
 #ifdef WALAHASH_ESIMD
-// Select only Intel matrix-capable non-OpenCL GPUs unless native execution is explicitly disabled.
-static bool use_esimd(const sycl::device& d) {
-  const char* configured = std::getenv("MOM_WALAHASH_SYCL_NATIVE");
-  return (!configured || std::strcmp(configured, "0")) && d.is_gpu() &&
-         d.has(sycl::aspect::ext_intel_matrix) && d.get_backend() != sycl::backend::opencl;
+// The ESIMD matrix kernels need Intel matrix support and a non-OpenCL device.
+static bool supportsEsimd(const sycl::device& d) {
+  return d.is_gpu() && d.has(sycl::aspect::ext_intel_matrix) &&
+         d.get_backend() != sycl::backend::opencl;
 }
 // Hash each nonce and pack its nibble vector into 16-nonce DPAS tiles.
 static sycl::event prehash(State& s, uint64_t first, unsigned count) {
@@ -120,7 +119,7 @@ template <unsigned Width> static sycl::event multiply_esimd(State& s, unsigned c
   const unsigned stride = s.capacity;
   return s.queue.submit([&](sycl::handler& h) {
     h.parallel_for(
-        sycl::range<1>((count + 15) / 16),
+        sycl::range<1>(mom_round_up_size(count, 16) / 16),
         [=](sycl::id<1> id) SYCL_ESIMD_KERNEL MOM_SYCL_KERNEL_ARGS_RESTRICT {
       const size_t tile = id[0];
       for (unsigned band = 0; band < 8; ++band) {
@@ -160,20 +159,10 @@ static sycl::event finalize(State& s, uint64_t first, unsigned count, bool is_te
       for (unsigned i = 0; i < 32; ++i)
         reinterpret_cast<uint8_t*>(block)[i] = mixed[(size_t)i * stride + gid];
       b3_32(pow, block);
-      bool hit = true;
-      for (int i = 31; i >= 0; --i) {
-        const uint8_t byte = pow[i >> 2] >> (8 * (i & 3));
-        if (byte != target[i]) {
-          hit = byte < target[i];
-          break;
-        }
-      }
-      if ((is_test && gid == 0) || hit) {
-        uint8_t hash[32];
-        for (unsigned i = 0; i < 32; ++i)
-          hash[i] = pow[i >> 2] >> (8 * (i & 3));
+      // ESIMD runs only on little-endian Intel GPUs, matching the packed block view above.
+      const uint8_t* const hash = reinterpret_cast<const uint8_t*>(pow);
+      if ((is_test && gid == 0) || mom_meets_target_le(hash, target))
         mom_store_pow_hit(result, first + gid, hash);
-      }
     });
   });
 }

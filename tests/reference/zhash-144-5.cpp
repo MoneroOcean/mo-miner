@@ -282,5 +282,27 @@ int main() {
     }
     if (mom_equihash::pow::meets_target(header.data(), header.size(), solution.data(),
                                        solution.size(), target)) return 4;
+
+    struct Canonical {
+        std::array<std::uint8_t, SOLUTION_LENGTH> encoded;
+    };
+    const std::array<Canonical, 2> verified = {{{solution}, {negative}}};
+    std::array<std::uint8_t, 2 * SOLUTION_LENGTH + 1> output{};
+    if (mom_equihash::pow::write_solutions(verified, solution.size(), output.size(), true,
+          header.data(), header.size(), nullptr, output.data()) != 1 ||
+        output[0] != 1 || !std::equal(solution.begin(), solution.end(), output.begin() + 1) ||
+        output[1 + solution.size()] != 0) return 5;
+    const std::array prefiltered = {negative, solution};
+    const auto bytes = [](const auto& proof) { return proof.data(); };
+    if (mom_equihash::pow::pack_solutions(prefiltered, solution.size(), 1 + solution.size(),
+          false, output.data(), bytes) != 1 || output[0] != 1 ||
+        !std::equal(negative.begin(), negative.end(), output.begin() + 1) ||
+        output[1 + solution.size()] != 0) return 6;
+    if (mom_equihash::pow::pack_solutions(prefiltered, solution.size(), 1, false, output.data(), bytes) != 0 ||
+        output[0] != 0) return 7;
+    if (mom_equihash::pow::pack_solutions(prefiltered, solution.size(), output.size(), true,
+          output.data(), [&](const auto& proof) { return proof == negative ? nullptr : proof.data(); }) != 1 ||
+        output[0] != 1 || !std::equal(solution.begin(), solution.end(), output.begin() + 1))
+        return 8;
     return 0;
 }

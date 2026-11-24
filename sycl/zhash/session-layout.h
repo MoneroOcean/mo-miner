@@ -61,7 +61,7 @@ struct ZHashArenaLayout : ZHashBucketLayout<InitialBucketBits, SlotsPerBucket> {
 #else
   using Round4Record = mom_equihash::CollisionRoundRecord<ZHashSpec, 4>;
 #endif
-  using RootRecord = mom_equihash::ZHashRootRecord<ZHashSpec>;
+  using RootRecord = mom_equihash::EquihashRootRecord<ZHashSpec>;
 
   static constexpr std::size_t level0_bytes = InitialLayout::slot_count * sizeof(Level0Record);
   static constexpr std::size_t round1_bytes = InitialLayout::slot_count * sizeof(Round1Record);

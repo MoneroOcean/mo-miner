@@ -1,5 +1,5 @@
 // CPU-only Equihash(192,7) acceptance oracle for Zclassic block 3209920.
-// Compile/run: c++ -std=c++17 -O2 -Wall -Wextra -pedantic tests/reference/equihash-192-7-zclassic.cpp -o /tmp/equihash_192_7_zclassic && /tmp/equihash_192_7_zclassic
+// Compile/run: c++ -std=c++17 -O2 -Wall -Wextra -pedantic tests/reference/equihash192-7-zclassic.cpp -o /tmp/equihash_192_7_zclassic && /tmp/equihash_192_7_zclassic
 
 #include <array>
 #include <cstddef>

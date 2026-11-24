@@ -35,7 +35,6 @@ bool compact_available(const sycl::device&) noexcept;
 
 namespace mom_autolykos2 {
 void autolykos2_cleanup_states() noexcept;
-const char* autolykos2_compile_options();
 }
 namespace mom_beamhash3 {
 void beamhash3_cleanup_states() noexcept;
@@ -47,14 +46,12 @@ unsigned zelhash_slot_capacity(const sycl::device&);
 } // namespace mom_zelhash
 namespace mom_etchash {
 void etchash_cleanup_states() noexcept;
-const char* etchash_compile_options();
 }
 namespace mom_fishhash {
 void fishhash_cleanup_states() noexcept;
 }
 namespace mom_kawpow {
 void kawpow_cleanup_states() noexcept;
-const char* kawpow_compile_options();
 }
 namespace mom_hoohash {
 void hoohash_cleanup_states() noexcept;
@@ -157,8 +154,7 @@ static std::string selected_gpu_backend() {
 }
 
 // Convert the launcher's zero-based index only for backends whose public numbering we control.
-static unsigned selected_stable_gpu_number() {
-  const std::string backend = selected_gpu_backend();
+static unsigned selected_stable_gpu_number(const std::string& backend) {
   if (backend != "intel" && backend != "intel_igpu" && backend != "opencl")
     return 0;
   unsigned long index = 0;
@@ -203,14 +199,13 @@ static void update_str2dev(const bool verbose = false) try {
     const std::string& platform_name = platform.get_info<sycl::info::platform::name>();
     for (auto device : platform.get_devices()) {
       if (device.is_cpu()) {
-        str2dev[std::string("cpu") + std::to_string(++cpu_num)] = device;
+        str2dev.emplace("cpu" + std::to_string(++cpu_num), device);
       } else if (device.is_gpu()) {
         ++platform_gpu_num;
         const std::string identity_key = gpu_identity_key(device, platform_gpu_num);
-        if (!gpu2base.contains(identity_key)) {
-          gpu2base[identity_key] = std::string("gpu") + std::to_string(++next_gpu_num);
-        }
-        const std::string& gpuN = gpu2base.at(identity_key);
+        const auto [identity, inserted] = gpu2base.try_emplace(identity_key);
+        if (inserted)
+          identity->second = "gpu" + std::to_string(++next_gpu_num);
         const bool supported = mom_is_cuda(device) || mom_is_hip(device) || mom_is_opencl(device) ||
                                sycl_is_level_zero_gpu(device);
         if (!supported) {
@@ -223,8 +218,9 @@ static void update_str2dev(const bool verbose = false) try {
         // The process selects one execution API before loading this addon. Keep the public device
         // identity API-neutral; if a caller exposes duplicate APIs anyway, prefer Level Zero over
         // OpenCL for the canonical entry.
-        if (!str2dev.contains(gpuN) || sycl_is_level_zero_gpu(device))
-          str2dev[gpuN] = device;
+        const auto [entry, added] = str2dev.try_emplace(identity->second, device);
+        if (!added && sycl_is_level_zero_gpu(device))
+          entry->second = device;
       }
     }
   }
@@ -262,7 +258,7 @@ static void update_str2dev(const bool verbose = false) try {
   }
   // A multi-vendor runtime does not promise stable device order. Sort first, then apply
   // MOM_GPU_INDEX to mom's stable physical gpuN names.
-  const unsigned selected_gpu = selected_stable_gpu_number();
+  const unsigned selected_gpu = selected_stable_gpu_number(backend);
   if (selected_gpu) {
     const std::string selected_name = "gpu" + std::to_string(selected_gpu);
     if (!str2dev.contains(selected_name)) {

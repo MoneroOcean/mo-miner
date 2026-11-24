@@ -211,21 +211,7 @@ public:
   }
 };
 
-// Retain device ownership until explicit cleanup rather than late static SYCL destruction.
-static DeviceStateRegistry<State>& registry() {
-  static auto* const registry = new DeviceStateRegistry<State>;
-  return *registry;
-}
-
-static State& state_for(const std::string& dev_str) {
-  return registry().get(dev_str, [&] { return std::make_unique<State>(dev_str); });
-}
-
 // Release persistent solver states without allowing teardown failures to escape shutdown.
 void beamhash3_cleanup_states() noexcept {
-  try {
-    registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "beamhash3: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<State>("beamhash3");
 }

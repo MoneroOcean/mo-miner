@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstdio>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -48,3 +49,29 @@ public:
     }
   }
 };
+
+// Each miner's ordered cleanup releases the device states before its SYCL runtime unloads.
+// Keep the registry itself alive across static teardown, with one instance per state type and TU.
+template <typename State>
+static DeviceStateRegistry<State>& persistentDeviceStates() {
+  static auto* const registry = new DeviceStateRegistry<State>;
+  return *registry;
+}
+
+// Standard miners use the same device name as the cache key and constructor argument.
+template <typename State>
+static State& persistentDeviceState(const std::string& device_key) {
+  return persistentDeviceStates<State>().get(device_key, [&] {
+    return std::make_unique<State>(device_key);
+  });
+}
+
+// Called after workers stop. A failure in one miner must allow the next miner to release its state.
+template <typename State>
+static void clearPersistentDeviceStates(const char* algorithm) noexcept {
+  try {
+    persistentDeviceStates<State>().clear();
+  } catch (...) {
+    std::fprintf(stderr, "%s: ordered SYCL cleanup failed\n", algorithm);
+  }
+}

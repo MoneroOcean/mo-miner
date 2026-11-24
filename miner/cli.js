@@ -119,6 +119,7 @@ module.exports = ({o, opt, normalizeAlgoName}) => {
   return function parseArgs(argv, test) {
     const args = argv.slice(2);
     const directive = args.shift();
+    if (directive === "--help") {return o.print_help();}
     if (directive === undefined) {return o.print_help("No directive specified");}
     /** @type {Record<string, (args: string[]) => unknown>} */
     const parsers = {

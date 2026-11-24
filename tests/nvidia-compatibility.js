@@ -10,8 +10,6 @@ const helper = require("../helper");
 const opts = require("../opts");
 const gpuTuning = require("../gpu-tuning");
 const createJobApi = require("../miner/jobs");
-const {normalizeAlgoName} = require("../miner/algorithms");
-const {hexWithoutPrefix} = require("../miner/submission");
 const {windowsCmdArgs} = require("../scripts/windows-command");
 
 /** @typedef {typeof import("../compiler-policy")} CompilerPolicy */
@@ -225,7 +223,6 @@ void* mock_dlsym(void*,const char*);
     Object.defineProperty(mockProcess, "platform", {value: platform});
     const api = createJobApi({
       h: helper, opt, process: mockProcess, compilerPolicy: policy, gpuTuning,
-      normalizeAlgoName, hexWithoutPrefix,
       messageHandler: () => undefined,
       isExiting: () => false,
       getComputeCore: () => null,

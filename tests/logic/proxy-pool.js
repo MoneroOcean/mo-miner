@@ -341,7 +341,7 @@ describe("Native family switching and controls", () => {
     await withMockPool({
       pool: {use_subscribe: false, login: "wallet", pass: "x"},
       opt: {job: {algo: "rx/0"}, algo_params: algoParams},
-    }, async ({socket, writes}) => {
+    }, async ({socket, writes, poolConfig}) => {
       pool.connect_pool_throttle(0, (job) => {
         jobs.push(job);
         return completeMiningJob(job);
@@ -357,10 +357,13 @@ describe("Native family switching and controls", () => {
         method: "job",
         params: {algo: "rx/0", job_id: "rx", blob_hex: "00".repeat(43), difficulty: 1},
       });
+      assert.equal(jobs.length, 1);
+      poolConfig.job_state.extra_nonce = "a1b2";
       emitPoolMessage(socket, {
         method: "mining.notify", algo: "kawpow1",
         params: ["raven", HEADER, SEED, TARGET, true, 100],
       });
+      assert.equal(poolConfig.job_state.extra_nonce, undefined);
       emitPoolMessage(socket, {
         method: "mining.notify", algo: "etchash",
         params: ["eth", SEED, HEADER, true],
@@ -442,11 +445,11 @@ describe("Native family switching and controls", () => {
       assert.equal(jobs[1]?.difficulty, undefined);
       assert.equal(jobs[1]?.nonce, "0304000000000000");
       assert.equal(jobs[1]?.nicehash_mask, "ffff000000000000");
-      assert.equal(poolConfig["eth_target"], newTarget);
-      assert.equal(poolConfig["eth_difficulty"], 4);
-      assert.equal(poolConfig["extra_nonce"], "0304");
-      assert.equal(poolConfig["extra_nonce2_size"], 6);
-      assert.equal(poolConfig["raven_target"], undefined);
+      assert.equal(poolConfig.job_state["eth_target"], newTarget);
+      assert.equal(poolConfig.job_state["eth_difficulty"], 4);
+      assert.equal(poolConfig.job_state["extra_nonce"], "0304");
+      assert.equal(poolConfig.job_state["extra_nonce2_size"], 6);
+      assert.equal(poolConfig.job_state["raven_target"], undefined);
     });
   });
 
@@ -737,10 +740,10 @@ describe("Reconnect, algorithm aliases, and invalid markers", () => {
       for (const key of [
         "extensions", "requested_extensions", "requested_algos", "job_algo", "pending_controls",
         "inferred_protocol", "negotiated_keepalive", "negotiated_nicehash", "worker_id",
-        "extra_nonce", "extra_nonce2_size", "raven_target",
       ]) {
         assert.equal(poolConfig[key], undefined, key);
       }
+      assert.deepEqual(poolConfig.job_state, {});
       assert.equal(poolConfig.last_job, null);
       assert.equal(poolConfig.logged_in, false);
     });

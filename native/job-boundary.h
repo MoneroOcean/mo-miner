@@ -260,9 +260,11 @@ inline bool hex_digit(const char character, unsigned& value) {
   return true;
 }
 
-// Decode an even-length hex string into hex.size() / 2 bytes; false on any non-hex digit.
+// Decode into hex.size() / 2 bytes. Reject a partial byte before writing to the output.
 inline bool decode_hex(std::string_view hex, std::uint8_t* out) {
-  for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
+  if (hex.size() % 2 != 0)
+    return false;
+  for (std::size_t i = 0; i < hex.size(); i += 2) {
     unsigned high = 0;
     unsigned low = 0;
     if (!hex_digit(hex[i], high) || !hex_digit(hex[i + 1], low))
@@ -275,6 +277,18 @@ inline bool decode_hex(std::string_view hex, std::uint8_t* out) {
 inline std::string_view strip_hex_prefix(std::string_view hex) {
   const bool prefixed = hex.size() >= 2 && hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X');
   return prefixed ? hex.substr(2) : hex;
+}
+
+// Equihash proof lengths fit the one- or three-byte form of Bitcoin CompactSize.
+inline unsigned write_compact_size16(const std::uint16_t size, std::uint8_t* out) {
+  if (size < 253) {
+    out[0] = static_cast<std::uint8_t>(size);
+    return 1;
+  }
+  out[0] = 253;
+  out[1] = static_cast<std::uint8_t>(size);
+  out[2] = static_cast<std::uint8_t>(size >> 8);
+  return 3;
 }
 
 // Parse a nonzero 256-bit big-endian target of 2..64 hex digits (even length, no prefix),
@@ -321,10 +335,8 @@ inline bool parse_share_target(std::string_view algo, std::string_view hex, Shar
     target.word = 1;
     return true;
   }
-  if (hex.empty() || hex.size() > 64 || (hex.size() & 1))
-    return false;
   std::uint8_t bytes[32]{};
-  if (!decode_hex(hex, bytes))
+  if (hex.empty() || hex.size() > 64 || !decode_hex(hex, bytes))
     return false;
   const bool high_word = algo == "kawpow" || hex.size() > 16;
   const std::uint64_t value = load_nonce<std::uint64_t>(bytes, high_word);

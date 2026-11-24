@@ -50,7 +50,7 @@ public:
 #else
         16;
 #endif
-    const unsigned next_capacity = (count + alignment - 1) & ~(alignment - 1);
+    const unsigned next_capacity = mom_round_up_size(count, alignment);
     queue.wait_and_throw();
     capacity = 0;
     const char* const failure = "Can't allocate accelerated walahash buffers";
@@ -68,12 +68,3 @@ public:
   }
 #endif
 };
-// Keep device owners heap-registered so explicit shutdown controls SYCL destruction order.
-static DeviceStateRegistry<State>& registry() {
-  static auto* const value = new DeviceStateRegistry<State>;
-  return *value;
-}
-// Reuse one mutex-serialized work/matrix owner for the selected device.
-static State& state_for(const std::string& dev) {
-  return registry().get(dev, [&] { return std::make_unique<State>(dev); });
-}

@@ -253,23 +253,14 @@ struct C29State {
   }
 };
 
-// Retain the registry until explicit ordered cleanup; avoid static SYCL teardown after runtime unload.
-static DeviceStateRegistry<C29State>& c29_registry() {
-  static auto* const registry = new DeviceStateRegistry<C29State>;
-  return *registry;
-}
-
 static C29State& c29_state(const std::string& dev_str) {
-  return c29_registry().get(dev_str, [&] { return std::make_unique<C29State>(dev_str); });
+  return persistentDeviceStates<C29State>().get(dev_str,
+      [&] { return std::make_unique<C29State>(dev_str); });
 }
 
 // Destroy persistent device states through the ordered cleanup path without throwing at shutdown.
 void c29_cleanup_states() noexcept {
-  try {
-    c29_registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "c29: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<C29State>("c29");
 }
 
 template <typename T>

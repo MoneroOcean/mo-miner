@@ -666,7 +666,7 @@ static sycl::event native_finish(sycl::queue& queue, const uint8_t* const header
                       polynomial[polynomial_base + (access + step) * NativeFinishSubgroup +
                                  hash_lane];
                   uint32_t page =
-                      fast_mod_dev(fnv32(initial[parallel] ^ (access + step) ^ polynomial_value,
+                      fast_mod_dev(fnv_dev(initial[parallel] ^ (access + step) ^ polynomial_value,
                                          mix[parallel][step]),
                                    page_mod);
                   page = mom_select_from_group(subgroup, page, address_lane);
@@ -674,21 +674,21 @@ static sycl::event native_finish(sycl::queue& queue, const uint8_t* const header
                       static_cast<size_t>(page) * PAGE_WORDS + static_cast<size_t>(team_lane) * 4;
 #pragma unroll
                   for (unsigned word = 0; word < 4; ++word)
-                    mix[parallel][word] = fnv32(mix[parallel][word], dag[dag_offset + word]);
+                    mix[parallel][word] = fnv_dev(mix[parallel][word], dag[dag_offset + word]);
                 }
               }
             }
 
 #pragma unroll
             for (unsigned parallel = 0; parallel < NativeParallel; ++parallel) {
-              uint32_t reduced = fnv32(mix[parallel][0], mix[parallel][1]);
-              reduced = fnv32(reduced, mix[parallel][2]);
-              reduced = fnv32(reduced, mix[parallel][3]);
+              uint32_t reduced = fnv_dev(mix[parallel][0], mix[parallel][1]);
+              reduced = fnv_dev(reduced, mix[parallel][2]);
+              reduced = fnv_dev(reduced, mix[parallel][3]);
               const unsigned hash_lane = team_base + first + parallel;
 #pragma unroll
               for (unsigned word = 0; word < 8; ++word) {
                 const uint32_t compressed =
-                    fnv32(mom_select_from_group(subgroup, reduced, team_base + word),
+                    fnv_dev(mom_select_from_group(subgroup, reduced, team_base + word),
                           mom_select_from_group(subgroup, reduced, team_base + 8 + word));
                 if (lane == hash_lane)
                   final_mix[word] = compressed;
@@ -722,7 +722,7 @@ static sycl::event native_finish(sycl::queue& queue, const uint8_t* const header
               if (team_lane == 0) {
                 const uint32_t polynomial_value =
                     polynomial[polynomial_base + access * NativeFinishSubgroup + source];
-                page = fast_mod_dev(fnv32(initial ^ access ^ polynomial_value, address_mix),
+                page = fast_mod_dev(fnv_dev(initial ^ access ^ polynomial_value, address_mix),
                                     page_mod);
               }
               page = mom_select_from_group(subgroup, page, team_base);
@@ -737,19 +737,19 @@ static sycl::event native_finish(sycl::queue& queue, const uint8_t* const header
                 octopus_cuda_load4(values, dag + dag_offset + first_word);
 #pragma unroll
                 for (unsigned word = 0; word < 4; ++word)
-                  mix[first_word + word] = fnv32(mix[first_word + word], values[word]);
+                  mix[first_word + word] = fnv_dev(mix[first_word + word], values[word]);
               }
 #else
 #pragma unroll
               for (unsigned word = 0; word < MixWordsPerLane; ++word)
-                mix[word] = fnv32(mix[word], dag[dag_offset + word]);
+                mix[word] = fnv_dev(mix[word], dag[dag_offset + word]);
 #endif
             }
 
             uint32_t reduced[MixWordsPerLane / 4];
 #pragma unroll
             for (unsigned word = 0; word < MixWordsPerLane / 4; ++word)
-              reduced[word] = fnv32(fnv32(fnv32(mix[word * 4], mix[word * 4 + 1]),
+              reduced[word] = fnv_dev(fnv_dev(fnv_dev(mix[word * 4], mix[word * 4 + 1]),
                                           mix[word * 4 + 2]),
                                     mix[word * 4 + 3]);
 #pragma unroll
@@ -762,7 +762,7 @@ static sycl::event native_finish(sycl::queue& queue, const uint8_t* const header
               if (team_lane < 2) {
                 const unsigned compressed_word = half * (MixWordsPerLane / 4) + word;
                 polynomial[polynomial_base + compressed_word * NativeFinishSubgroup + source] =
-                    fnv32(left, right);
+                    fnv_dev(left, right);
               }
             }
           }

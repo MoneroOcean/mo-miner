@@ -43,38 +43,11 @@ static uint64_t now_us() {
       .count();
 }
 
-// Parse env var `name` as a u32, leaving the caller's fallback intact on invalid input.
-static bool env_u32(const char* name, uint32_t& out) {
-  unsigned long parsed = 0;
-  if (!mom_parse_env_ulong(name, parsed) || parsed > std::numeric_limits<uint32_t>::max())
-    return false;
-  out = static_cast<uint32_t>(parsed);
-  return true;
-}
-
 #include "state.inc"
-
-// sycl_cleanup() clears device-owning values before the compiler runtime unloads. Keep the
-// registry shell heap-owned so C++ static destruction cannot race runtime DLL teardown.
-static DeviceStateRegistry<State>& registry() {
-  static auto* const registry = new DeviceStateRegistry<State>;
-  return *registry;
-}
-
-// Reuse one mutex-serialized table owner for the selected device.
-static State& state_for(const std::string& dev_str) {
-  return registry().get(dev_str, [&] {
-    return std::make_unique<State>(dev_str);
-  });
-}
 
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void autolykos2_cleanup_states() noexcept {
-  try {
-    registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "autolykos2: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<State>("autolykos2");
 }
 
 // Free one-shot diagnostic USM after draining the in-order queue, whose kernels may still use it
@@ -101,7 +74,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
   if (!input || !output || !pnonce || !target || input_size < 40 || !intensity)
     throw std::string("Autolykos2 requires input, output, target, nonce, and nonzero intensity");
 
-  State& state = state_for(dev_str);
+  State& state = persistentDeviceState<State>(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
   state.ensure_result();
   const uint32_t n_len = calc_n(height);
@@ -289,6 +262,8 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
 #pragma unroll
                          for (unsigned k = 0; k < K_LEN; ++k) {
                            const unsigned word_index = k >> 2;
+                           // Keep this decode inline: the shared helper costs the B580 3.6%
+                           // (38.29 vs 39.73 MH/s) on this path.
                            uint32_t idx;
                            switch (k & 3U) {
                            case 0:
@@ -344,6 +319,8 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
                 words[i] = hash_words[i];
               words[8] = words[0];
               uint32_t expected[8] = {};
+              // Keep this overlapping-byte decode independent so debug mode also catches index
+              // window mismatches, not just subgroup-sum errors.
 #pragma unroll
               for (unsigned k = 0; k < K_LEN; ++k) {
                 const unsigned wi = k >> 2;
@@ -363,7 +340,9 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
                   break;
                 }
                 idx = mod_u32(idx, n_len, n_len_M);
-                add_limbs_dev(expected, d_table + static_cast<uint64_t>(idx) * 8U);
+                add_limbs_dev(expected,
+                              d_table + static_cast<uint64_t>(idx) *
+                                            (TABLE_ENTRY_BYTES / sizeof(uint32_t)));
               }
               bool differs = false;
 #pragma unroll

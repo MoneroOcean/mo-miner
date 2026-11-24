@@ -249,13 +249,13 @@ static void send_result(std::uint64_t nonce, unsigned, const std::uint8_t* hash,
           "successful Core result changed");
   ++results;
 }
-enum class DEV { C29_GPU, C30_GPU, PEARLHASH_GPU, ZELHASH_GPU, BEAMHASH3_GPU };
+enum class DEV { C29_GPU, C30_GPU, PEARLHASH_GPU, ZCASH_EQUIHASH_GPU, BEAMHASH3_GPU };
 static std::uint64_t pearlhash_attempt_hashes(unsigned, unsigned, unsigned, unsigned) { return 0; }
 static std::atomic<std::uint64_t> m_hash_count{0};
 static std::uint64_t m_nonce64 = 71;
 static void compute_owner(std::uint8_t* output, std::uint32_t* edges) {
   const DEV m_dev = DEV::C30_GPU;
-  const unsigned dispatch_job_ref = 9, m_c29_proof_size = 42, m_batch = 1;
+  const unsigned dispatch_job_ref = 9, m_cuckaroo_proof_size = 42, m_batch = 1;
   std::uint8_t input[32]{};
   const auto m_input = input;
   const unsigned m_input_len = sizeof(input);
@@ -264,7 +264,7 @@ static void compute_owner(std::uint8_t* output, std::uint32_t* edges) {
   const std::string m_dev_str = "fixture", m_algo_str = "c30";
   const unsigned m_pearlhash_n = 1, m_pearlhash_k = 1, m_pearlhash_rank = 1;
   const std::uint64_t m_target = 1, m_nonce_step = 1, m_nicehash_mask = 0;
-  struct { decltype(&call) gpu_c29 = call; } m_fn;
+  struct { decltype(&call) gpu_cuckaroo = call; } m_fn;
   const int m_pool_id = 1, m_job_id = 2, m_job_token = 3;
   std::uint8_t target[32];
   std::memset(target, 255, sizeof(target));

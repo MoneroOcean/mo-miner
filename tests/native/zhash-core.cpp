@@ -297,7 +297,7 @@ int test_complete_synthetic_tree() {
   using Round2 = mom_equihash::CollisionRoundRecord<Spec, 2>;
   using Round3 = mom_equihash::CollisionRoundRecord<Spec, 3>;
   using Round4 = mom_equihash::CollisionRoundRecord<Spec, 4>;
-  using Root = mom_equihash::ZHashRootRecord<Spec>;
+  using Root = mom_equihash::EquihashRootRecord<Spec>;
   constexpr unsigned arena_size = SyntheticTree::bucket_slot_capacity;
   static_assert(sizeof(Root) == 12 && Spec::solution_length == 100);
 

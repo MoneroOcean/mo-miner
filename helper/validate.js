@@ -21,4 +21,27 @@ function isPositiveNumber(value) {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
-module.exports = {isObject, errorMessage, isPositiveNumber};
+/** @param {unknown} value @param {number} minimum @returns {value is number} */
+function isSafeIntegerAtLeast(value, minimum) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
+}
+
+/** Parse a canonical unsigned decimal without rounding large values through Number.
+ * @param {unknown} value @param {bigint} maximum @param {string} label */
+function parseUnsignedDecimal(value, maximum, label) {
+  const text = isSafeIntegerAtLeast(value, 0) ? String(value) : value;
+  if (typeof text !== "string" || !/^(0|[1-9]\d*)$/.test(text)) {throw new Error(`Invalid ${label}`);}
+  if (text.length > maximum.toString().length) {throw new Error(`${label} is out of range`);}
+  const parsed = BigInt(text);
+  if (parsed > maximum) {throw new Error(`${label} is out of range`);}
+  return parsed;
+}
+
+/** @param {unknown} value */
+function parseUint64Decimal(value) {
+  return parseUnsignedDecimal(value, 0xffffffffffffffffn, "uint64 decimal");
+}
+
+module.exports = {
+  isObject, errorMessage, isPositiveNumber, isSafeIntegerAtLeast, parseUnsignedDecimal, parseUint64Decimal,
+};

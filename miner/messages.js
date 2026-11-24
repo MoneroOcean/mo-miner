@@ -4,11 +4,10 @@ const zlib = require("node:zlib");
 const gpuTuning = require("../gpu-tuning");
 
 const {
-  MAX_PEARL_PROOF_BYTES, MAX_PEARL_PROOF_BASE64, isJobId, isNonceHex,
+  MAX_PEARL_PROOF_BYTES, MAX_PEARL_PROOF_BASE64, MAX_WORKER_ID_CHARS, isJobId, isNonceHex,
 } = require("../helper/worker-protocol");
 const {isObject} = require("../helper/validate");
 const MAX_JOB_TOKEN_CHARS = 256;
-const MAX_WORKER_ID_CHARS = 4096;
 const MAX_HEADER_HASH_HEX_CHARS = 256 * 2;
 // CompactSize plus the largest supported Equihash proof: (192,7) at 403 bytes.
 const MAX_SOLUTION_HEX_CHARS = 403 * 2;
@@ -168,7 +167,7 @@ module.exports = ({
           typeof v.adjustment_factor !== "string") {return invalidWorkerMessage();}
       const rawProof = decodePearlProof(v.plain_proof);
       if (rawProof === null) {return invalidWorkerMessage();}
-      const gzip = pool.pearlhash_proof_encodings?.includes("gzip") === true;
+      const gzip = pool.job_state.pearlhash_proof_encodings?.includes("gzip") === true;
       let plainProof = v.plain_proof;
       if (gzip) {
         try {
@@ -177,19 +176,19 @@ module.exports = ({
           return invalidWorkerMessage();
         }
       }
-      return send({method: "mining.submit", params: {
+      return submit({
         job_id: jobId,
         plain_proof: plainProof,
         ...(gzip ? {proof_encoding: "gzip"} : {}),
         jackpot: v.jackpot,
         adjustment_factor: Number(v.adjustment_factor),
-      }});
+      });
     }
     if (submitMode === "erg") {
       return submit(submission.ergSubmitParams(pool, job, v));
     }
     if (submitMode === "verthash") {
-      return submit(submission.verthashSubmitParams(pool, job, v));
+      return submit([pool.login, jobId, job.extranonce2, job.ntime, v.nonce]);
     }
     if (submitMode === "echelon") {
       return submit(submission.nexaSubmitParams(pool, job, v));
@@ -197,8 +196,7 @@ module.exports = ({
     // ZIP-301 Equihash: mining.submit [worker, job_id, time, nonce2, compactSize-prefixed solution].
     // Rebuild nonce2 from the native search counter and the job's fixed nonce prefix/tail.
     if (submitMode === "zelhash") {
-      if (typeof v.solution !== "string") {return invalidWorkerMessage();}
-      return submit(submission.zelhashSubmitParams(pool, job, v, v.solution));
+      return submit(submission.equihashSubmitParams(pool, job, v));
     }
     // Iron Fish custom OBJECT Stratum v3: submit {miningRequestId, randomness (8-byte BE nonce)}.
     if (submitMode === "ironfish") {
@@ -212,22 +210,20 @@ module.exports = ({
     // The native returns the winning 8-byte nonce as 16-hex big-endian (nonce_to_hex %016PRIx64); the
     // pool parses it big-endian with the extranonce as the leading bytes, which is exactly this layout.
     if (submitMode === "kaspa") {
-      return send({method: "mining.submit", params: [pool.login, jobId, "0x" + v.nonce]});
+      return submit([pool.login, jobId, "0x" + v.nonce]);
     }
     if (submitMode === "hoosat") {
       if (typeof v.hash !== "string") {return invalidWorkerMessage();}
-      return send({method: "mining.submit", params: [pool.login, jobId, "0x" + v.nonce, v.hash]});
+      return submit([pool.login, jobId, "0x" + v.nonce, v.hash]);
     }
     if (submitMode === "xelis") {
       // Preserve an opaque numeric pool ID; the worker string is used only to match the current job.
-      return send({method: "mining.submit", params: [submission.xelisWorkerName(pool), jobId, v.nonce]});
+      return submit([submission.xelisWorkerName(pool), jobId, v.nonce]);
     }
     if (submitMode === "conflux") {
       const headerHash = resultHeaderHash(v, job);
       if (!headerHash) {return invalidWorkerMessage();}
-      return send({method: "mining.submit", params: [pool.login, jobId,
-        "0x" + v.nonce,
-        "0x" + headerHash]});
+      return submit([pool.login, jobId, "0x" + v.nonce, "0x" + headerHash]);
     }
     if (submitMode === "cortex") {
       const headerHash = resultHeaderHash(v, job);
@@ -265,18 +261,15 @@ module.exports = ({
       });
     }
 
-    /** @type {SubmitParams} */
-    const params = {job_id: jobId, nonce: v.nonce};
-    params.id = v.worker_id;
-    if (v.hash !== undefined) {params.result = v.hash;}
     if (submitMode === "raven" || submitMode === "eth") {
       if (typeof v.mix_hash !== "string") {return invalidWorkerMessage();}
       const headerHash = resultHeaderHash(v, job);
       if (!headerHash) {return invalidWorkerMessage();}
-      return send({method: "mining.submit",
-        params: [pool.login, jobId, "0x" + v.nonce, "0x" + headerHash,
-          "0x" + v.mix_hash]});
+      return submit([pool.login, jobId, "0x" + v.nonce, "0x" + headerHash, "0x" + v.mix_hash]);
     }
+    /** @type {SubmitParams} */
+    const params = {job_id: jobId, nonce: v.nonce, id: v.worker_id};
+    if (v.hash !== undefined) {params.result = v.hash;}
     if (v.mix_hash) {
       const headerHash = resultHeaderHash(v, job);
       params.mixhash = v.mix_hash;

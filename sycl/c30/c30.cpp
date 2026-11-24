@@ -318,9 +318,7 @@ struct Solver {
     unsigned input_index = 0;
     unsigned output_index = 1;
     sycl::event trim_event;
-    std::array<std::uint32_t, 2> fixed_strides = {kSeedBucketStride, kTrimBucketStride};
-    if (memory.low_memory)
-      fixed_strides = {kLowMemoryTrimBucketStride, kLowMemoryTrimBucketStride};
+    constexpr std::array<std::uint32_t, 2> fixed_strides = {kSeedBucketStride, kTrimBucketStride};
     for (unsigned round = 0; round < trim_rounds; ++round) {
       queue.fill(memory.bucket_counts[output_index], 0u, C30_BUCKET_COUNT);
       const bool sparse = round >= sparse_trim_start;
@@ -456,14 +454,9 @@ struct C30State {
   }
 };
 
-// Keep device state alive until ordered cleanup instead of relying on static runtime destruction.
-DeviceStateRegistry<C30State>& c30_registry() {
-  static auto* const registry = new DeviceStateRegistry<C30State>;
-  return *registry;
-}
-
 C30State& c30_state(const std::string& dev_str) {
-  return c30_registry().get(dev_str, [&] { return std::make_unique<C30State>(dev_str); });
+  return persistentDeviceStates<C30State>().get(dev_str,
+      [&] { return std::make_unique<C30State>(dev_str); });
 }
 
 // Check four block-boundary endpoints on device without allocating the full C30 graph.
@@ -500,11 +493,7 @@ int c30_portable_test(const mom_c30::Job& job, std::uint8_t* output, const std::
 
 // Release cached solvers at ordered shutdown; errors must not escape the cleanup ABI.
 void c30_cleanup_states() noexcept {
-  try {
-    c30_registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "c30: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<C30State>("c30");
 }
 
 // Solve one Cortex header/nonce synchronously; the 40-byte test form supplies its own nonce.

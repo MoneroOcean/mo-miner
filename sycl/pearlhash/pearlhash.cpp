@@ -171,11 +171,11 @@ void pearlhash_cleanup_states() noexcept {
     // is deliberately heap-owned and has no process-exit destructor, so retain only CPU states and
     // let process teardown reclaim them. Discrete GPU states still require ordered cleanup (notably
     // AdaptiveCpp/CUDA, which otherwise reports cudaErrorCudartUnloading) and are erased normally.
-    pearlhash_registry().clear([](const auto& entry) {
+    persistentDeviceStates<State>().clear([](const auto& entry) {
       return !entry.second->queue.get_device().is_cpu();
     });
 #else
-    pearlhash_registry().clear();
+    persistentDeviceStates<State>().clear();
 #endif
   } catch (...) {
     std::fprintf(stderr, "pearlhash: ordered SYCL cleanup failed\n");

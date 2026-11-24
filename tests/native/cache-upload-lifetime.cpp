@@ -92,11 +92,8 @@ static std::exception_ptr make_primary(const int kind) {
 }
 
 static std::array<std::uint8_t, 4096> wala_matrix;
-static std::array<std::uint32_t, 32> etchash_light_cache;
-static std::array<std::uint32_t, 32> kawpow_light_cache;
 static std::array<std::uint64_t, 32> fishhash_cache;
 static std::array<std::uint32_t, 32> octopus_points;
-static std::array<std::uint32_t, 32> octopus_cache;
 
 struct WalaState {
   sycl::queue& queue;
@@ -120,7 +117,6 @@ static void run_scope(sycl::queue& queue, const bool shared) {
   sycl::device device;
   active_queue = &queue;
 
-  [[maybe_unused]] bool shared_dag = shared;
   [[maybe_unused]] bool shared_io = shared;
   [[maybe_unused]] bool cpu_data = shared;
   [[maybe_unused]] bool points_ready = true;
@@ -134,12 +130,9 @@ static void run_scope(sycl::queue& queue, const bool shared) {
   [[maybe_unused]] void* data = fishhash_cache.data();
   [[maybe_unused]] std::array<std::uint32_t, 16> host_points{};
   [[maybe_unused]] const std::size_t bytes = host_cache.size() * sizeof(std::uint32_t);
-  [[maybe_unused]] std::uint32_t* light_cache = etchash_light_cache.data();
-  [[maybe_unused]] std::uint32_t* kawpow_cache = kawpow_light_cache.data();
+  [[maybe_unused]] const char* scope = "ethash cache upload";
   [[maybe_unused]] void* cache = fishhash_cache.data();
   [[maybe_unused]] std::uint32_t* points = octopus_points.data();
-  (void)kawpow_cache;
-  (void)octopus_cache;
   [[maybe_unused]] WalaState state{queue, device, wala_matrix.data()};
 
   // Route setup is supplied by compiler-policy.js; only the following source-derived transfer

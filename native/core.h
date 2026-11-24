@@ -17,18 +17,20 @@ typedef void (*gpu_cn_hash_fun)(
   const uint8_t* input, unsigned input_size, uint8_t* output,
   unsigned batch, const std::string& dev_str, const std::string& backend
 );
-typedef int (*gpu_c29_hash_fun)(
-  unsigned job_ref, unsigned c29_proof_size,
+typedef int (*gpu_cuckaroo_solve_fun)(
+  unsigned job_ref, unsigned proof_size,
   const uint8_t* input, unsigned input_size, uint8_t* output,
   uint32_t* output_edges, uint64_t* pnonce, const std::string& dev_str
 );
-typedef int (*gpu_kawpow_hash_fun)(
+typedef int (*gpu_progpow_hash_fun)(
   unsigned job_ref, uint32_t height,
   const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, uint64_t target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
-typedef int (*gpu_etchash_hash_fun)(
+// Etchash returns a mix hash and accepts an epoch seed. Other algorithms sharing this call
+// shape can leave either buffer unused.
+typedef int (*gpu_hash_with_mix_and_seed_fun)(
   unsigned job_ref, uint32_t height,
   const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
@@ -50,53 +52,39 @@ typedef int (*gpu_pearlhash_hash_fun)(
   const std::string& backend, unsigned n, unsigned k, unsigned rank, unsigned cert_version,
   const uint8_t* base_target
 );
-// FishHash variants share the etchash call shape; each implementation owns its
-// target byte order and header layout. seed_hash is unused.
-typedef gpu_etchash_hash_fun gpu_fishhash_hash_fun;
-typedef gpu_etchash_hash_fun gpu_karlsenhashv2_hash_fun;
-typedef gpu_etchash_hash_fun gpu_verthash_hash_fun;
-// Equihash 125,4/144,5/192,7 solver. The 32-byte nonce lives at header offset 108; 52/100/400-byte
-// proofs are returned out-of-band. pnonce carries its current 8-byte counter.
-typedef int (*gpu_zelhash_hash_fun)(
+// Zcash-family and Beam Equihash solvers share this call shape. Each solver owns its header
+// layout, uses pnonce as the current counter, and writes proofs into solution_out.
+typedef int (*gpu_equihash_solve_fun)(
   unsigned job_ref, uint32_t height,
   const uint8_t* input, unsigned input_size, uint8_t* solution_out,
   uint64_t* pnonce, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
-// BeamHash III (Beam): Wagner k=5 bucket-collision solver. Same c29-like ABI as zelhash -- the
-// input is the prework(32)||nonce(8)||extranonce(4) blob; the solver returns a solution COUNT and writes
-// the 104-byte solution(s) out-of-band into solution_out. is_test runs the M1 gen-validation path.
-typedef gpu_zelhash_hash_fun gpu_beamhash3_hash_fun;
 struct FN {
   xmrig::cn_hash_fun cpu{};
   gpu_cn_hash_fun gpu_cn{};
-  gpu_c29_hash_fun gpu_c29{};
-  gpu_kawpow_hash_fun gpu_kawpow{};
-  gpu_etchash_hash_fun gpu_etchash{};
+  gpu_cuckaroo_solve_fun gpu_cuckaroo{};
+  gpu_progpow_hash_fun gpu_progpow{};
+  gpu_hash_with_mix_and_seed_fun gpu_hash{};
   gpu_autolykos2_hash_fun gpu_autolykos2{};
   gpu_pearlhash_hash_fun gpu_pearlhash{};
-  gpu_fishhash_hash_fun gpu_fishhash{};
-  gpu_karlsenhashv2_hash_fun gpu_karlsenhashv2{};
-  gpu_etchash_hash_fun gpu_misc{};
-  gpu_verthash_hash_fun gpu_verthash{};
-  gpu_zelhash_hash_fun gpu_zelhash{};
-  gpu_beamhash3_hash_fun gpu_beamhash3{};
+  gpu_equihash_solve_fun gpu_equihash{};
 };
 enum DEV {
   CPU,
   RX_CPU,
-  GPU,
+  CN_GPU,
   C29_GPU,
   C30_GPU,
-  KAWPOW_GPU,
-  ETCHASH_GPU,
+  PROGPOW_GPU,
+  ETHASH_FAMILY_GPU,
   AUTOLYKOS2_GPU,
   PEARLHASH_GPU,
   FISHHASH_GPU,
   KARLSENHASHV2_GPU,
   MISC_GPU,
   VERTHASH_GPU,
-  ZELHASH_GPU,
+  ZCASH_EQUIHASH_GPU,
   BEAMHASH3_GPU,
 };
 
@@ -114,12 +102,16 @@ struct RandomXVmDeleter {
   }
 };
 
+// These routes use the Ethash DAG construction and 32-byte header hash followed by the nonce.
+inline bool is_ethash_dag_gpu_dev(const DEV dev) {
+  return dev == DEV::PROGPOW_GPU || dev == DEV::ETHASH_FAMILY_GPU;
+}
 inline bool is_nonce_at_32_gpu_dev(const DEV dev) {
-  return dev == DEV::KAWPOW_GPU || dev == DEV::ETCHASH_GPU || dev == DEV::AUTOLYKOS2_GPU || dev == DEV::FISHHASH_GPU;
+  return is_ethash_dag_gpu_dev(dev) || dev == DEV::AUTOLYKOS2_GPU || dev == DEV::FISHHASH_GPU;
 }
 // Equihash solvers return proofs out-of-band instead of running a conventional hash loop.
 inline bool is_equihash_gpu_dev(const DEV dev) {
-  return dev == DEV::ZELHASH_GPU || dev == DEV::BEAMHASH3_GPU;
+  return dev == DEV::ZCASH_EQUIHASH_GPU || dev == DEV::BEAMHASH3_GPU;
 }
 // GPU pow devices that allocate a single small input blob + small output (not a per-batch buffer).
 // KarlsenHashV2 is small-blob (80-byte header) but its nonce is at offset 72, not 32.
@@ -144,7 +136,7 @@ class Core: public AsyncWorker {
   std::atomic<unsigned> m_job_ref;
   unsigned m_height, m_batch, m_mem_size, m_input_len, m_nonce_step,
            m_nonce_bytes, m_nonce_offset, m_thread_id, m_thread_num,
-           m_pearlhash_seed_stride, m_c29_proof_size,
+           m_pearlhash_seed_stride, m_cuckaroo_proof_size,
            m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank, m_pearlhash_cert_version;
   // The next batch start, or the final nonce of the prepared batch once exhausted.
   uint32_t m_nonce32;
@@ -216,7 +208,7 @@ class Core: public AsyncWorker {
   void send_error(const std::string& str);
   void send_result(
     uint64_t nonce, unsigned noncebytes, const uint8_t* output,
-    const uint32_t* edges = nullptr, unsigned c29_proof_size = 32,
+    const uint32_t* edges = nullptr, unsigned cuckaroo_proof_size = 32,
     const uint8_t* commitment = nullptr, const uint8_t* mix_hash = nullptr,
     const uint8_t* solution = nullptr, unsigned solution_len = 0
   );
@@ -265,7 +257,7 @@ class Core: public AsyncWorker {
       m_height(0), m_batch(0), m_mem_size(0), m_input_len(0),
       m_nonce_step(1), m_nonce_bytes(4), m_nonce_offset(39), m_thread_id(0),
       m_thread_num(1), m_pearlhash_seed_stride(1),
-      m_c29_proof_size(32),
+      m_cuckaroo_proof_size(32),
       m_pearlhash_n(131072), m_pearlhash_k(4096), m_pearlhash_rank(256),
       m_pearlhash_cert_version(3),
       m_nonce32(0), m_pearlhash_seed_start(0), m_nonce64(0), m_nicehash_mask(0),

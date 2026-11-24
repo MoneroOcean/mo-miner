@@ -12,8 +12,10 @@ public:
   unsigned coop_workgroup;
   bool cache_built = false;
   bool dag_built = false;
-  int fishhash_cooperative = -1; // search policy per algorithm: -1 unset, 0 scalar, 1 cooperative
-  int karlsen_cooperative = -1;
+  // A cached choice is unset (-1), scalar (0), or cooperative (1).
+  int fishhashCooperative = -1;
+  int karlsenhashv2Cooperative = -1;
+  MomSyclRateWindow fishhashRate, karlsenhashv2Rate;
   std::mutex mutex;
   // Bind the fixed dataset and job buffers to a device with required USM support.
   explicit State(const std::string& dev_str)
@@ -24,8 +26,16 @@ public:
     if (!mom_has_usm_shared(device) || (!device.is_cpu() && !mom_has_usm_device(device)))
       throw std::string("fishhash SYCL device does not support required allocations");
   }
-  // Cooperative search workgroup; a MOM_FISHHASH_WORKGROUP override must be supported and fit.
+  // Zero keeps scalar search available when cooperative geometry cannot fit the device.
   static unsigned cooperative_workgroup(const sycl::device& dev) {
+    if constexpr (mom_sycl_portable_opencl)
+      return 0;
+    const std::initializer_list<unsigned> allowed = {64, 128, 256, 512};
+    const auto fits = [&](unsigned size) {
+      return sycl_workgroup_fits(dev, size, 0, 0, FISH_STAGE_BYTES, FISH_TEAM);
+    };
+    if (!dev.is_gpu() || !sycl_reqd_subgroup_16_supported(dev) || !fits(*allowed.begin()))
+      return 0;
     // Both CUDA compiler paths peak at 512 on the RTX 5060 Ti (3.2% over 128 for AdaptiveCpp and
     // 5.1% for DPC++); wide pre-sm80 CUDA peaks at 256 (V100S: +2.7%). Intel and AMD are
     // flat-to-slower above 128. Clamp against the device limit.
@@ -34,18 +44,29 @@ public:
     if (mom_is_cuda(dev) && dev.get_info<sycl::info::device::max_compute_units>() >= 64)
       preferred = 256;
 #endif
-    const unsigned fallback = sycl_default_workgroup(dev, {64, 128, 256, 512}, preferred);
+    const unsigned fallback = sycl_default_workgroup(dev, allowed, preferred,
+                                                     0, 0, FISH_STAGE_BYTES, FISH_TEAM);
     unsigned long parsed = 0;
     if (!mom_parse_env_ulong("MOM_FISHHASH_WORKGROUP", parsed))
       return fallback;
-    for (const unsigned candidate : {64u, 128u, 256u, 512u})
-      if (parsed == candidate && sycl_workgroup_fits(dev, candidate))
+    for (const unsigned candidate : allowed)
+      if (parsed == candidate && fits(candidate))
         return candidate;
     return fallback;
   }
   // Drain kernels before releasing cache, DAG, and job buffers.
   ~State() {
     sycl_cleanup_noexcept("fishhash wait", [&] { queue.wait_and_throw(); });
+  }
+  // Only offline vectors may use the light cache. Full-test mode exercises the mining DAG.
+  bool prepareJob(unsigned inputSize, bool isTest, bool isBenchmark) {
+    ensure_io(inputSize);
+    const bool lightTest = isTest && std::getenv("MOM_FISHHASH_FULL_TEST") == nullptr;
+    if (lightTest)
+      ensure_cache(!isBenchmark);
+    else
+      ensure_dag(!isBenchmark);
+    return lightTest;
   }
   // Grow header buffers after queue completion, retaining production-header capacity.
   void ensure_io(unsigned in_sz) {
@@ -120,95 +141,62 @@ public:
   }
 };
 
-// Keep the registry shell alive across static teardown; ordered cleanup releases its values.
-static DeviceStateRegistry<State>& registry() {
-  static auto* const value = new DeviceStateRegistry<State>;
-  return *value;
-}
-
-static State& state_for(const std::string& dev_str) {
-  return registry().get(dev_str, [&] { return std::make_unique<State>(dev_str); });
-}
-
-// Cache one algorithm's search policy in `choice`. CUDA and HIP have a clear cooperative winner and
-// other non-Level Zero GPUs keep the algorithm's default. On Level Zero the cooperative kernel must
-// first reproduce the scalar kernel's nonce-0 hash (the FishHash one silently computes nothing on an
-// Arc A770), then outrun it: Arc generations differ in register pressure versus subgroup-exchange
-// cost, so the real kernels are measured instead of branching on a GPU model.
-// `search(cooperative, count, is_test)` submits one search over the current input and target.
+// Compare one hash before timing on Level Zero. The cooperative FishHash kernel can return
+// without publishing a result on Arc A770, which would otherwise appear to win the timing probe.
 template <class Search>
-static bool select_cooperative(State& state, int& choice, const char* const algo,
-                               const bool other_gpu_default, const Search& search) {
-#if defined(MOM_SYCL_PORTABLE_OPENCL)
-  (void)state;
-  (void)choice;
-  (void)algo;
-  (void)other_gpu_default;
-  (void)search;
-  return false;
-#else
+static bool selectCooperative(State& state, int& choice, const char* algorithm,
+                              bool openclDefault, const Search& search) {
+  if (!state.coop_workgroup)
+    return false;
+  if (const char* overrideValue = std::getenv("MOM_FISHHASH_COOP"))
+    return overrideValue[0] != '0';
   if (choice >= 0)
     return choice != 0;
-  if (mom_is_cuda(state.device) || mom_is_hip(state.device)) {
-    choice = 1;
+  if (mom_is_cuda(state.device) || mom_is_hip(state.device))
     return true;
-  }
-  if (!sycl_is_level_zero_gpu(state.device)) {
-    choice = other_gpu_default ? 1 : 0;
-    return other_gpu_default;
-  }
-  const auto subgroup_sizes = state.device.get_info<sycl::info::device::sub_group_sizes>();
-  if (std::find(subgroup_sizes.begin(), subgroup_sizes.end(), FISH_TEAM) == subgroup_sizes.end()) {
-    choice = 0;
-    return false;
-  }
-
-  const auto run = [&](const bool cooperative, const uint32_t count, const bool is_test) {
+  if (!sycl_is_level_zero_gpu(state.device))
+    return openclDefault;
+  const auto run = [&](bool cooperative, uint32_t count, bool test = false) {
     std::memset(state.result, 0, sizeof(*state.result));
     const auto begin = std::chrono::steady_clock::now();
-    sycl_wait_and_throw(search(cooperative, count, is_test), state.device);
+    sycl_wait_and_throw(search(cooperative, count, test), state.device);
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
   };
-  // Test mode stores nonce 0's hash whatever the target; a kernel that stores none fails.
-  const auto first_hash = [&](const bool cooperative, uint8_t (&hash)[HASH_LEN]) {
-    run(cooperative, 1, true);
-    if (state.result->count == 0)
-      return false;
-    std::memcpy(hash, state.result->hash[0], HASH_LEN);
-    return true;
-  };
-  uint8_t cooperative_hash[HASH_LEN], scalar_hash[HASH_LEN];
-  if (!first_hash(true, cooperative_hash) || !first_hash(false, scalar_hash) ||
-      std::memcmp(cooperative_hash, scalar_hash, HASH_LEN) != 0) {
+
+  // Test mode writes the first hash independently of the target.
+  run(true, 1, true);
+  uint8_t cooperativeHash[HASH_LEN];
+  if (state.result->count)
+    std::memcpy(cooperativeHash, state.result->hash[0], HASH_LEN);
+  else {
     choice = 0;
-    std::fprintf(stderr, "%s: cooperative search disagrees with the scalar kernel; using scalar\n",
-                 algo);
+    std::fprintf(stderr, "%s: cooperative search returned no hash; using scalar\n", algorithm);
+    return false;
+  }
+  run(false, 1, true);
+  if (!state.result->count || std::memcmp(cooperativeHash, state.result->hash[0], HASH_LEN) != 0) {
+    choice = 0;
+    std::fprintf(stderr, "%s: cooperative search disagrees with scalar; using scalar\n", algorithm);
     return false;
   }
 
-  constexpr uint32_t warmup_intensity = 65536;
-  constexpr uint32_t sample_intensity = 1048576;
-  // Exclude each kernel's first-launch JIT cost, then alternate order to avoid a clock/thermal bias.
-  run(false, warmup_intensity, false);
-  run(true, warmup_intensity, false);
-  double scalar_seconds = run(false, sample_intensity, false);
-  double cooperative_seconds = run(true, sample_intensity, false);
-  cooperative_seconds += run(true, sample_intensity, false);
-  scalar_seconds += run(false, sample_intensity, false);
-  choice = cooperative_seconds < scalar_seconds ? 1 : 0;
-  const double hashes = 2.0 * sample_intensity / 1e6;
-  std::fprintf(stderr, "%s: selected %s search (scalar %.2f, cooperative %.2f MH/s)\n", algo,
-               choice ? "cooperative" : "scalar", hashes / scalar_seconds,
-               hashes / cooperative_seconds);
+  // Warm each route, then alternate timing order to reduce thermal and clock bias.
+  constexpr uint32_t warmupCount = 65536, sampleCount = 1048576;
+  run(false, warmupCount);
+  run(true, warmupCount);
+  double scalarSeconds = run(false, sampleCount);
+  double cooperativeSeconds = run(true, sampleCount);
+  cooperativeSeconds += run(true, sampleCount);
+  scalarSeconds += run(false, sampleCount);
+  choice = cooperativeSeconds < scalarSeconds;
+  const double megaHashes = 2.0 * sampleCount / 1e6;
+  std::fprintf(stderr, "%s: selected %s search (scalar %.2f, cooperative %.2f MH/s)\n",
+               algorithm, choice ? "cooperative" : "scalar", megaHashes / scalarSeconds,
+               megaHashes / cooperativeSeconds);
   return choice != 0;
-#endif
 }
 
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void fishhash_cleanup_states() noexcept {
-  try {
-    registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "fishhash: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<State>("fishhash");
 }

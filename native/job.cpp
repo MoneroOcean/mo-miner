@@ -14,6 +14,7 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <ranges>
 #include <set>
@@ -33,7 +34,7 @@ void Core::prepare(const Message& first) {
   const auto algo = first.values.find("algo");
   const auto dev = first.values.find("dev");
   if (algo == first.values.end() || dev == first.values.end() || !gpu_algos.contains(algo->second) ||
-      !sycl_has_compile_options(algo->second))
+      sycl_compile_options_for(algo->second) == SyclCompileOptions::none)
     return;
   try {
     sycl_set_compile_options(algo->second, dev->second.substr(0, dev->second.find('*')));
@@ -71,11 +72,11 @@ void Core::get_algo_params(const MessageValues& v) {
   // algo_params returns std::map<std::string,std::string>, which is exactly MessageValues
   send_msg("algo_params", algo_params(
     MAX_CN_CPU_WAYS, cpu_sockets, cpu_threads, cpu_l3cache, algo2mem, keys2set(cpu_name2algo),
-    gpu_algos_with(&FN::gpu_cn), gpu_algos_with(&FN::gpu_c29), gpu_algos_with(&FN::gpu_kawpow),
-    gpu_algos_with(&FN::gpu_etchash), gpu_algos_with(&FN::gpu_autolykos2),
-    gpu_algos_with(&FN::gpu_pearlhash), gpu_algos_with(&FN::gpu_fishhash),
-    gpu_algos_with(&FN::gpu_karlsenhashv2), gpu_algos_with(&FN::gpu_misc),
-    gpu_algos_with(&FN::gpu_verthash), gpu_algos_with(&FN::gpu_zelhash),
-    gpu_algos_with(&FN::gpu_beamhash3)
+    gpu_algos_with({DEV::CN_GPU}), gpu_algos_with({DEV::C29_GPU, DEV::C30_GPU}),
+    gpu_algos_with({DEV::PROGPOW_GPU}), gpu_algos_with({DEV::ETHASH_FAMILY_GPU}),
+    gpu_algos_with({DEV::AUTOLYKOS2_GPU}), gpu_algos_with({DEV::PEARLHASH_GPU}),
+    gpu_algos_with({DEV::FISHHASH_GPU}), gpu_algos_with({DEV::KARLSENHASHV2_GPU}),
+    gpu_algos_with({DEV::MISC_GPU}), gpu_algos_with({DEV::VERTHASH_GPU}),
+    gpu_algos_with({DEV::ZCASH_EQUIHASH_GPU}), gpu_algos_with({DEV::BEAMHASH3_GPU})
   ));
 }

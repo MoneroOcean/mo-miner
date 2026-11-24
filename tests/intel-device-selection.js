@@ -48,7 +48,10 @@ namespace platform { struct name {}; }
 struct platform;
 struct device {
   std::string name, vendor, api;
-  bool integrated = false, cpu = false, fault = false;
+  bool integrated, cpu, fault = false;
+  // A real default SYCL device performs its own runtime selection, which discovery must avoid.
+  device(const char* name, const char* vendor, const char* api, bool integrated, bool cpu = false)
+    : name(name), vendor(vendor), api(api), integrated(integrated), cpu(cpu) {}
   bool is_cpu() const { return cpu; }
   bool is_gpu() const { return !cpu; }
   platform get_platform() const;

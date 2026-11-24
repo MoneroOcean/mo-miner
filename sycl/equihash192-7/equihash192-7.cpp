@@ -120,23 +120,9 @@ struct State {
   }
 };
 
-// Keep persistent solver ownership under explicit shutdown control rather than static destruction.
-static DeviceStateRegistry<State>& registry() {
-  static auto* const value = new DeviceStateRegistry<State>;
-  return *value;
-}
-
-static State& state_for(const std::string& device_name) {
-  return registry().get(device_name, [&] { return std::make_unique<State>(device_name); });
-}
-
 // Release cached device solvers at ordered shutdown without propagating late runtime failures.
 void equihash192_7_cleanup_states() noexcept {
-  try {
-    registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "equihash192_7: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<State>("equihash192_7");
 }
 
 } // namespace mom_equihash192_7
@@ -153,7 +139,7 @@ int equihash192_7(unsigned, std::uint32_t, const std::uint8_t* input, const unsi
       "equihash192_7 requires input, output, a mining target, a 140-byte header, and intensity 1");
   if (is_test && std::getenv("MOM_EQUIHASH192_7_SOLVE") == nullptr)
     return mom_equihash192_7::run_generation_test(device_name, input, solution_out);
-  auto& state = mom_equihash192_7::state_for(device_name);
+  auto& state = persistentDeviceState<mom_equihash192_7::State>(device_name);
   std::lock_guard<std::mutex> lock(state.mutex);
   std::uint8_t header[Spec::header_length];
   std::memcpy(header, input, sizeof(header));

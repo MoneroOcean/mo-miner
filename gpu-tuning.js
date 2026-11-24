@@ -6,26 +6,28 @@ const {PROGPOW_ALGOS} = require("./miner/algorithms");
 const fishhashAlgos = ["fishhash", "karlsenhashv2"];
 const fixedIntensityAlgos = new Set(["c30", "equihash192_7", "zhash"]);
 /** @type {Set<keyof GpuTuning>} */
+const intensityFields = new Set(["intensity"]);
+/** @type {Set<keyof GpuTuning>} */
 const progpowFields = new Set(["intensity", "workgroup", "dag_workgroup", "dag_chunk"]);
 /** @type {Set<keyof GpuTuning>} */
 const fishhashFields = new Set(["intensity", "workgroup", "search_mode"]);
 /** @type {Array<[string, Set<keyof GpuTuning>]>} */
 const algoEntries = [
-  ["cn/gpu", new Set(["intensity"])],
+  ["cn/gpu", intensityFields],
   ["c29", new Set(["seed_workgroup", "seed_blocks"])],
-  ["c30", new Set(["intensity"])],
+  ["c30", intensityFields],
   ["etchash", new Set(["intensity", "dag_workgroup", "dag_chunk"])],
-  ["octopus", new Set(["intensity"])],
+  ["octopus", intensityFields],
   ["autolykos2", new Set([
     "intensity", "workgroup", "prehash_workgroup", "table_chunk", "search_mode",
   ])],
   ["hoohash", new Set(["intensity", "workgroup"])],
-  ["walahash", new Set(["intensity"])],
-  ["xelishashv3", new Set(["intensity"])],
-  ["nexapow", new Set(["intensity"])],
-  ["equihash192_7", new Set(["intensity"])],
-  ["zhash", new Set(["intensity"])],
-  ["verthash", new Set(["intensity"])],
+  ["walahash", intensityFields],
+  ["xelishashv3", intensityFields],
+  ["nexapow", intensityFields],
+  ["equihash192_7", intensityFields],
+  ["zhash", intensityFields],
+  ["verthash", intensityFields],
   ["pearlhash", new Set(["m", "n", "k", "rank", "cache_block", "tile"])],
   ["zelhash", new Set(["slots"])],
   ["beamhash3", new Set(["workgroup", "compact_workgroup", "scatter_workgroup", "layout"])],
@@ -35,16 +37,8 @@ for (const algo of PROGPOW_ALGOS) {algoFields.set(algo, progpowFields);}
 for (const algo of fishhashAlgos) {algoFields.set(algo, fishhashFields);}
 /** @type {Set<keyof GpuTuning>} */
 const allAlgoFields = new Set([...algoFields.values()].flatMap((fields) => [...fields]));
-/** @type {Set<string>} */
-const tuningFieldNames = new Set(allAlgoFields);
-
-/** @type {Set<keyof GpuTuning>} */
-const integerFields = new Set([
-  "intensity", "workgroup", "seed_workgroup", "seed_blocks",
-  "dag_workgroup", "dag_chunk", "prehash_workgroup", "table_chunk",
-  "m", "n", "k", "rank", "slots", "cache_block",
-  "compact_workgroup", "scatter_workgroup",
-]);
+/** @type {ReadonlySet<string>} */
+const tuningFieldNames = allAlgoFields;
 const zeroAllowedFields = new Set(["dag_chunk", "table_chunk", "cache_block"]);
 /** @type {Partial<Record<keyof GpuTuning, Set<string>>>} */
 const enumFields = {
@@ -70,15 +64,12 @@ const mainFieldByAlgo = new Map([
   ["zelhash", "slots"],
   ["beamhash3", "workgroup"],
 ]);
-const progpowWorkgroups = [64, 128, 256, 512];
-const fishhashWorkgroups = [64, 128, 256, 512];
+const workgroups64To512 = [64, 128, 256, 512];
 const workgroupsByAlgo = new Map([
   ["autolykos2", [32, 64, 128, 256]],
   ["hoohash", [64, 128, 256]],
-  ["pearlhash", [32, 64, 128, 256]],
 ]);
-for (const algo of PROGPOW_ALGOS) {workgroupsByAlgo.set(algo, progpowWorkgroups);}
-for (const algo of fishhashAlgos) {workgroupsByAlgo.set(algo, fishhashWorkgroups);}
+for (const algo of [...PROGPOW_ALGOS, ...fishhashAlgos]) {workgroupsByAlgo.set(algo, workgroups64To512);}
 const tuningFieldOrder = [
   "intensity", "seed_workgroup", "m", "slots", "workgroup",
   "seed_blocks", "dag_workgroup", "dag_chunk", "prehash_workgroup",
@@ -199,15 +190,11 @@ function validateTuning(algo, tuning, context = "tuning") {
     if (!isTuningField(field) || !allowed.has(field)) {
       throw new Error(`${context}.${field} is not supported for ${algo}`);
     }
-    if (integerFields.has(field)) {
+    const choices = enumFields[field];
+    if (!choices) {
       Object.assign(result, {[field]: validateInteger(field, value, `${context}.${field}`)});
     } else {
-      const choices = enumFields[field];
-      if (!choices) {throw new Error(`${context}.${field} has no validator`);}
-      if (typeof value !== "string") {
-        throw new Error(`${context}.${field} must be one of ${[...choices].join(", ")}`);
-      }
-      const normalized = value.toLowerCase();
+      const normalized = typeof value === "string" ? value.toLowerCase() : "";
       if (!choices.has(normalized)) {
         throw new Error(`${context}.${field} must be one of ${[...choices].join(", ")}`);
       }
@@ -509,15 +496,10 @@ function tuningEnvironment(algo, tuning) {
       env[envName] = String(normalized[field]);
     }
   }
-  if (algo === "autolykos2" && normalized.search_mode !== undefined) {
-    if (normalized.search_mode !== "auto") {
-      env["MOM_AUTOLYKOS2_SUBGROUP_COOP"] =
-        normalized.search_mode === "cooperative" ? "1" : "0";
-    }
-  }
-  if (fishhashAlgos.includes(algo) &&
-      normalized.search_mode !== undefined && normalized.search_mode !== "auto") {
-    env["MOM_FISHHASH_COOP"] = normalized.search_mode === "cooperative" ? "1" : "0";
+  if (normalized.search_mode && normalized.search_mode !== "auto") {
+    const cooperative = normalized.search_mode === "cooperative" ? "1" : "0";
+    if (algo === "autolykos2") {env["MOM_AUTOLYKOS2_SUBGROUP_COOP"] = cooperative;}
+    if (fishhashAlgos.includes(algo)) {env["MOM_FISHHASH_COOP"] = cooperative;}
   }
   if (algo === "beamhash3" && normalized.layout !== undefined && normalized.layout !== "auto") {
     env["MOM_BEAMHASH3_COMPACT"] = normalized.layout === "compact" ? "1" : "0";
@@ -578,18 +560,13 @@ function autotuneCandidates(algo, entry) {
       ]);
     }
   }
+  const workgroups = workgroupsByAlgo.get(algo);
+  if (workgroups) {add("workgroup", workgroups.filter((size) => size <= 256));}
   if (algo === "c29") {
     add("seed_workgroup", [64, 128, 256]);
     add("seed_blocks", [8, 16, 32]);
-  } else if (PROGPOW_ALGOS.has(algo)) {
-    add("workgroup", [64, 128, 256]);
-  } else if (algo === "autolykos2") {
-    add("workgroup", [32, 64, 128, 256]);
   } else if (fishhashAlgos.includes(algo)) {
-    add("workgroup", [64, 128, 256]);
     add("search_mode", ["scalar", "cooperative"]);
-  } else if (algo === "hoohash") {
-    add("workgroup", [64, 128, 256]);
   } else if (algo === "pearlhash" && base.m) {
     // Smaller user shapes would scale below PearlHash's m >= 128 minimum; skip those variants.
     add("m", [

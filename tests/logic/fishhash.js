@@ -40,8 +40,8 @@ describe("Iron Fish jobs, handshake, and submission", () => {
       ));
 
       assert.ok(jobMessage);
-      assert.equal(poolConfig.ironfish_xn, "a1b2");
-      assert.equal(poolConfig.ironfish_target, target);
+      assert.equal(poolConfig.job_state.ironfish_xn, "a1b2");
+      assert.equal(poolConfig.job_state.ironfish_target, target);
       assert.equal(jobMessage.algo, "fishhash");
       assert.equal(jobMessage.job_id, 17);
       assert.equal(jobMessage.blob, header);
@@ -81,13 +81,13 @@ describe("Iron Fish jobs, handshake, and submission", () => {
         method: "mining.notify", body: {miningRequestId: 17, header},
       }) + "\n"));
       assert.equal(dispatched, 0);
-      assert.ok(poolConfig.pending_job);
+      assert.ok(poolConfig.job_state.pending_job);
 
       socket.emit("data", Buffer.from(JSON.stringify({
         method: "mining.subscribed", body: {xn: "a1b2"},
       }) + "\n"));
       assert.equal(poolConfig.logged_in, true);
-      assert.equal(poolConfig.pending_job, undefined);
+      assert.equal(poolConfig.job_state.pending_job, undefined);
       assert.equal(dispatched, 1);
       assert.ok(jobMessage);
       assert.equal(jobMessage.job_id, 17);
@@ -123,11 +123,11 @@ describe("Iron Fish jobs, handshake, and submission", () => {
           method: "mining.notify", body: {miningRequestId: 17, header},
         }) + "\n"));
         assert.equal(dispatched, 0);
-        assert.ok(poolConfig.pending_job);
+        assert.ok(poolConfig.job_state.pending_job);
 
         socket.emit("data", Buffer.from(JSON.stringify(failure) + "\n"));
         assert.equal(poolConfig.logged_in, false);
-        assert.equal(poolConfig.pending_job, undefined);
+        assert.equal(poolConfig.job_state.pending_job, undefined);
         assert.equal(dispatched, 0);
       });
     }
@@ -269,8 +269,8 @@ describe("Kaspa-family exact jobs, targets, and submission", () => {
       ));
 
       assert.ok(jobMessage);
-      assert.equal(poolConfig.extra_nonce, "56e0");
-      assert.equal(poolConfig.kaspa_difficulty, 4.25);
+      assert.equal(poolConfig.job_state.extra_nonce, "56e0");
+      assert.equal(poolConfig.job_state.kaspa_difficulty, 4.25);
       assert.equal(jobMessage.algo, "karlsenhashv2");
       assert.equal(jobMessage.job_id, '7"a');
       assert.equal(jobMessage.nonce, "56e0000000000000");
@@ -333,7 +333,7 @@ describe("Kaspa-family exact jobs, targets, and submission", () => {
       assert.equal(jobMessage.blob.slice(0, 64), expectedPrePow);
       assert.equal(jobMessage.blob.slice(64, 80), expectedTimestamp);
       assert.equal(jobMessage.blob.slice(96, 160), "00".repeat(32));
-      assert.equal(poolConfig.extra_nonce, "56e0");
+      assert.equal(poolConfig.job_state.extra_nonce, "56e0");
     });
   });
 
@@ -374,7 +374,7 @@ describe("Kaspa-family exact jobs, targets, and submission", () => {
       socket.emit("data", Buffer.from(
         '{"id":null,"method":"mining.set_difficulty","params":[1e300]}\n'
       ));
-      assert.equal(poolConfig["kaspa_target"], "0".repeat(64));
+      assert.equal(poolConfig.job_state["kaspa_target"], "0".repeat(64));
       assert.equal(socket.destroyed, undefined);
     });
   });
@@ -397,7 +397,7 @@ describe("Kaspa-family exact jobs, targets, and submission", () => {
         socket.emit("data", Buffer.from(JSON.stringify({
           id: null, method: "mining.set_difficulty", params: [difficulty],
         }) + "\n"));
-        const kaspaTarget = poolConfig["kaspa_target"];
+        const kaspaTarget = poolConfig.job_state["kaspa_target"];
         target = typeof kaspaTarget === "string" ? kaspaTarget : undefined;
         assert.equal(socket.destroyed, undefined);
       });
@@ -492,7 +492,7 @@ describe("Hoosat and HooHash protocol", () => {
       ].map((message) => JSON.stringify(message)).join("\n") + "\n"));
 
       assert.ok(jobMessage);
-      assert.equal(poolConfig.kaspa_difficulty, 4.25);
+      assert.equal(poolConfig.job_state.kaspa_difficulty, 4.25);
       assert.equal(jobMessage.submit_mode, "hoosat");
       assert.equal(jobMessage.algo, "hoohash");
       assert.equal(jobMessage.nonceoffset, 72);
@@ -528,7 +528,7 @@ describe("Hoosat and HooHash protocol", () => {
       assert.ok(job);
       assert.equal(job.algo, "hoohash");
       assert.equal(job["submit_mode"], "hoosat");
-      assert.equal(job.target, poolConfig["kaspa_target"]);
+      assert.equal(job.target, poolConfig.job_state["kaspa_target"]);
       assert.equal(job.target, (((1n << 224n) - 1n) * 100n).toString(16).padStart(64, "0"));
 
       miner.messageHandler({thread_id: 0, type: "result", value: {

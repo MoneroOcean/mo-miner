@@ -244,12 +244,10 @@ static unsigned fishhash_intensity(const sycl::device& dev) {
                         {fallback_workgroup, 131072, 40}});
 }
 
-static bool hoohash_supported(const sycl::device& dev) {
-  return dev.has(sycl::aspect::fp64) && mom_has_usm_device(dev);
-}
-
 // Bound HooHash dispatch latency, with a larger measured WDDM/CUDA batch to amortize submission.
 static unsigned hoohash_intensity(const sycl::device& dev) {
+  if (!dev.has(sycl::aspect::fp64) || !mom_has_usm_device(dev))
+    return 0;
   const unsigned override = parse_pow_intensity_override(1, "MOM_HOOHASH_INTENSITY");
   if (override)
     return override;
@@ -259,14 +257,8 @@ static unsigned hoohash_intensity(const sycl::device& dev) {
   // job-switch latency, so keep the smaller point on the throughput plateau.
   if (mom_is_cuda(dev))
     return 114688;
-#else
-  (void)dev;
 #endif
   return 65536;
-}
-
-static bool xelishashv3_supported(const sycl::device& dev) {
-  return mom_has_usm_device(dev);
 }
 
 // Fit independent 531-KiB scratchpads within max_alloc and at most forty percent of device memory.
@@ -280,7 +272,7 @@ static uint64_t xelishashv3_scratch_capacity(const sycl::device& dev) {
 
 // Cap both explicit and automatic Xelis batches by scratch capacity; zero means unsupported.
 static unsigned xelishashv3_intensity(const sycl::device& dev) {
-  if (!xelishashv3_supported(dev))
+  if (!mom_has_usm_device(dev))
     return 0;
   const uint64_t memory_limit = xelishashv3_scratch_capacity(dev);
   if (!memory_limit)
@@ -297,6 +289,8 @@ static unsigned xelishashv3_intensity(const sycl::device& dev) {
 
 // Keep the measured Level Zero occupancy knee; size other defaults by available device memory.
 static unsigned nexapow_intensity(const sycl::device& dev) {
+  if (!mom_has_usm_device(dev))
+    return 0;
   const unsigned override = parse_pow_intensity_override(1, "MOM_NEXAPOW_INTENSITY");
   if (override)
     return override;
@@ -313,12 +307,10 @@ static unsigned nexapow_intensity(const sycl::device& dev) {
   return std::max(256u, dev.get_info<sycl::info::device::max_compute_units>() * 64u);
 }
 
-static bool walahash_supported(const sycl::device& dev) {
-  return dev.is_gpu() && mom_has_usm_device(dev) && sycl_workgroup_fits(dev, 32);
-}
-
 // Choose backend matrix-batch plateaus, guarding larger HIP/Level Zero defaults by memory.
 static unsigned walahash_intensity(const sycl::device& dev) {
+  if (!dev.is_gpu() || !mom_has_usm_device(dev) || !sycl_workgroup_fits(dev, 32))
+    return 0;
   const unsigned override = parse_pow_intensity_override(1, "MOM_WALAHASH_INTENSITY");
   if (override)
     return override;

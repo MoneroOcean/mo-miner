@@ -2,17 +2,16 @@ template <bool FULL> class FishKernel;
 
 // Search kernel. FULL=true: gather 128B items from the prebuilt 4.6 GB DAG (fast, mining/bench).
 // FULL=false: recompute each item from the 72 MB light cache (lazy; validation / low-mem only).
-// d_input is the header; the 8-byte nonce goes at nonce_off (LE for the offline @32 test, BE @172 for
-// live Iron Fish). target_be selects BE compare (Iron Fish) vs LE (offline test).
+// The nonce and target use the same byte order: BE for live Iron Fish, LE for the short vector.
 template <bool FULL>
 static sycl::event
 submit_fishhash_search(sycl::queue& q, const uint8_t* d_input, unsigned input_size,
                        uint64_t start_nonce,
                        const uint64_t* __restrict d_cache, const uint64_t* __restrict d_dag,
                        uint32_t intensity, const uint8_t* d_target, FishResult* d_result,
-                       bool is_test, unsigned nonce_off, bool nonce_be, bool target_be) {
+                       bool is_test, unsigned nonce_off, bool bigEndian) {
   constexpr unsigned WG = 128; // Latency-bound gathers benefit from more in-flight subgroups.
-  const size_t global = (static_cast<size_t>(intensity) + WG - 1) / WG * WG;
+  const size_t global = mom_round_up_size(intensity, WG);
   return q.submit([&](sycl::handler& h) {
     h.parallel_for<FishKernel<FULL>>(
         sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)),
@@ -26,7 +25,7 @@ submit_fishhash_search(sycl::queue& q, const uint8_t* d_input, unsigned input_si
           const unsigned hlen = input_size <= 180 ? input_size : 180;
           for (unsigned i = 0; i < hlen; ++i)
             header[i] = d_input[i];
-          if (nonce_be)
+          if (bigEndian)
             for (unsigned i = 0; i < 8; ++i)
               header[nonce_off + i] = (uint8_t)(nonce >> (8 * (7 - i))); // BE (Iron Fish @172)
           else
@@ -120,7 +119,7 @@ submit_fishhash_search(sycl::queue& q, const uint8_t* d_input, unsigned input_si
           uint8_t final_hash[32];
           blake3_dev(final_hash, 32, final_data, 96);
 
-          const bool hit = target_be ? mom_meets_target_be(final_hash, d_target)
+          const bool hit = bigEndian ? mom_meets_target_be(final_hash, d_target)
                                      : mom_meets_target_le(final_hash, d_target);
           if ((is_test && gid == 0) || hit)
             mom_store_pow_hit(d_result, nonce, final_hash);
@@ -141,7 +140,7 @@ static sycl::event submit_karlsenhashv2_search(
     const uint64_t* __restrict d_cache, const uint64_t* __restrict d_dag, uint32_t intensity,
     const uint8_t* d_target, FishResult* d_result, bool is_test) {
   constexpr unsigned WG = 128;
-  const size_t global = (static_cast<size_t>(intensity) + WG - 1) / WG * WG;
+  const size_t global = mom_round_up_size(intensity, WG);
   return q.submit([&](sycl::handler& h) {
     h.parallel_for<KarlsenKernel<FULL>>(
         sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)),

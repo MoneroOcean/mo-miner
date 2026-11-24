@@ -1,9 +1,11 @@
 "use strict";
 
 const crypto = require("node:crypto");
-const {isObject} = require("../helper/validate");
-const {isJobId, isJobNonce} = require("../helper/worker-protocol");
-const {hexWithoutPrefix} = require("../miner/submission");
+const {isObject, parseUnsignedDecimal, parseUint64Decimal} = require("../helper/validate");
+const {MAX_WORKER_ID_CHARS, hasValidJobNumbers, isIdentifier, isJobId, isJobNonce} = require("../helper/worker-protocol");
+const {hexWithoutPrefix, reverseHexBytes} = require("../miner/submission");
+
+const maxXelisDifficulty = (1n << 256n) - 1n;
 
 /**
  * @param {{
@@ -36,19 +38,6 @@ module.exports = ({
     "header_hash", "id", "nicehash_mask", "ntime", "pearlhash_base_target", "pre_pow",
     "seed_hex", "seed_hash", "solution", "submit_mode", "target", "xn", "nbits",
   ];
-  const poolJobNumberFields = [
-    "difficulty", "extra_nonce2_size", "height", "intensity", "nonce1_len", "noncebytes",
-    "nonceoffset", "pearlhash_cert_version", "pearlhash_k", "pearlhash_n", "pearlhash_rank",
-    "proofsize", "thread_id", "thread_num",
-  ];
-  const poolJobStringOrNumberFields = ["job_id", "nonce", "pool_id", "worker_id"];
-  const poolJobIntegerFields = new Set([
-    "extra_nonce2_size", "height", "nonce1_len", "nonceoffset", "thread_id",
-  ]);
-  const poolJobPositiveIntegerFields = new Set([
-    "intensity", "noncebytes", "pearlhash_k", "pearlhash_n",
-    "pearlhash_rank", "proofsize", "thread_num",
-  ]);
 
   /** @param {unknown} value @returns {string | number | null} */
   function poolJobId(value) {
@@ -64,47 +53,28 @@ module.exports = ({
       return false;
     }
     for (const key of poolJobStringFields) {
+      // A generic job's id becomes the worker ID carried back in each result.
+      const maxStringChars = key === "id" ? MAX_WORKER_ID_CHARS : MAX_POOL_JOB_STRING_CHARS;
       if (value[key] !== undefined &&
-          (typeof value[key] !== "string" || value[key].length > MAX_POOL_JOB_STRING_CHARS)) {
+          (typeof value[key] !== "string" || value[key].length > maxStringChars)) {
         return false;
       }
     }
-    for (const key of poolJobNumberFields) {
-      if (value[key] !== undefined &&
-          (typeof value[key] !== "number" || !Number.isFinite(value[key]))) {return false;}
-    }
-    for (const key of poolJobStringOrNumberFields) {
+    for (const key of ["pool_id", "worker_id"]) {
       const field = value[key];
-      const maxStringChars = key === "worker_id" ? 4096 : 256;
+      const maxStringChars = key === "worker_id" ? MAX_WORKER_ID_CHARS : 256;
       if (field !== undefined &&
-          !((typeof field === "string" && field.length <= maxStringChars) ||
-            (typeof field === "number" && Number.isSafeInteger(field)))) {
+          (!isIdentifier(field) || (typeof field === "string" && field.length > maxStringChars))) {
         return false;
       }
     }
-    if (poolJobId(value["job_id"]) === null ||
+    if (!isJobId(value["job_id"]) ||
         !["blob", "blob_hex", "header_hash", "pre_pow"].some((key) =>
           typeof value[key] === "string" && value[key].length > 0)) {
       return false;
     }
-    const difficulty = value["difficulty"];
-    if (difficulty !== undefined && (typeof difficulty !== "number" || difficulty <= 0)) {return false;}
-    for (const key of poolJobIntegerFields) {
-      const field = value[key];
-      if (field !== undefined &&
-          (typeof field !== "number" || !Number.isSafeInteger(field) || field < 0)) {return false;}
-    }
-    if (value["nonce"] !== undefined && !isJobNonce(value["nonce"])) {return false;}
-    for (const key of poolJobPositiveIntegerFields) {
-      const field = value[key];
-      if (field !== undefined &&
-          (typeof field !== "number" || !Number.isSafeInteger(field) || field <= 0)) {return false;}
-    }
-    const certVersion = value["pearlhash_cert_version"];
-    if (certVersion !== undefined && certVersion !== 3) {
-      return false;
-    }
-    return true;
+    return hasValidJobNumbers(value) &&
+      (value["nonce"] === undefined || isJobNonce(value["nonce"]));
   }
 
   /** @param {PoolMessage} json @returns {json is ObjectParamsPoolMessage} */
@@ -202,14 +172,14 @@ module.exports = ({
 
   /** @param {unknown} value @returns {string} */
   function validExtraNonce(value) {
-    const hex = hexWithoutPrefix(value);
-    return hex.length > 0 && hex.length % 2 === 0 && hex.length <= 16 && !/[^0-9a-f]/i.test(hex) ? hex : "";
+    const hex = boundedHex(value, 8);
+    return hex.length % 2 === 0 ? hex : "";
   }
 
   /** @param {unknown} value @param {number} bytes @returns {string} */
   function validHexBytes(value, bytes) {
-    const hex = hexWithoutPrefix(value);
-    return hex.length === bytes * 2 && !/[^0-9a-f]/i.test(hex) ? hex : "";
+    const hex = boundedHex(value, bytes);
+    return hex.length === bytes * 2 ? hex : "";
   }
 
   /** @param {unknown} value @param {number} maximumBytes @returns {string} */
@@ -224,24 +194,6 @@ module.exports = ({
     return job;
   }
 
-  /** @param {number} pool_id @param {unknown} result */
-  function rememberXelisSubscribeExtraNonce(pool_id, result) {
-    if (!Array.isArray(result)) {
-      return;
-    }
-    const pool = poolAt(pool_id);
-    pool.xelis_extra_nonce = validHexBytes(result[1], 32);
-    pool.xelis_public_key = validHexBytes(result[3], 32);
-  }
-
-  /** @param {unknown} result @returns {unknown[]} */
-  function subscribeExtraNonceCandidates(result) {
-    if (!Array.isArray(result)) {
-      return [];
-    }
-    return Array.isArray(result[0]) || result[0] == null ? [result[1]] : result;
-  }
-
   // extra_nonce2_size is a byte count (0..8) sent as a number or a decimal string.
   /** @param {unknown} value @returns {number | null} */
   function parseExtraNonce2Size(value) {
@@ -250,31 +202,35 @@ module.exports = ({
     return Number.isInteger(size) && size >= 0 && size <= 8 ? size : null;
   }
 
-  /** @param {unknown} result */
-  function subscribeExtraNonce2Size(result) {
-    if (!Array.isArray(result) || !(Array.isArray(result[0]) || result[0] == null)) {
-      return null;
-    }
-    return parseExtraNonce2Size(result[2]);
-  }
-
   /** @param {number} pool_id @param {unknown} value */
   function rememberPoolExtraNonceHex(pool_id, value) {
     const extraNonce = validExtraNonce(value);
     const pool = poolAt(pool_id);
-    if (extraNonce || value === "") {pool.extra_nonce = extraNonce;}
+    if (extraNonce || value === "") {pool.job_state.extra_nonce = extraNonce;}
   }
 
   /** @param {number} pool_id @param {unknown} result */
   function rememberSubscribeExtraNonce(pool_id, result) {
+    if (!Array.isArray(result)) {return;}
     const pool = poolAt(pool_id);
+    const state = pool.job_state;
     if (poolProtocol(pool) === "xelis") {
-      return rememberXelisSubscribeExtraNonce(pool_id, result);
+      state.xelis_extra_nonce = validHexBytes(result[1], 32);
+      state.xelis_public_key = validHexBytes(result[3], 32);
+      return;
     }
-    rememberPoolExtraNonceHex(pool_id, subscribeExtraNonceCandidates(result).find(validExtraNonce));
-    const extraNonce2Size = subscribeExtraNonce2Size(result);
-    if (extraNonce2Size !== null) {
-      pool.extra_nonce2_size = extraNonce2Size;
+    // Only the standard subscribe tuple carries a separate extranonce2 size.
+    const subscription = Array.isArray(result[0]) || result[0] == null;
+    for (const candidate of subscription ? [result[1]] : result) {
+      const prefix = validExtraNonce(candidate);
+      if (prefix) {
+        state.extra_nonce = prefix;
+        break;
+      }
+    }
+    if (subscription) {
+      const size = parseExtraNonce2Size(result[2]);
+      if (size !== null) {state.extra_nonce2_size = size;}
     }
   }
 
@@ -284,39 +240,16 @@ module.exports = ({
     const extraNonce = validHexBytes(params[0], 32);
     if (params.length >= 3) {
       const publicKey = validHexBytes(params[2], 32);
-      pool.xelis_extra_nonce = extraNonce && publicKey ? extraNonce : "";
-      pool.xelis_public_key = extraNonce && publicKey ? publicKey : "";
+      pool.job_state.xelis_extra_nonce = extraNonce && publicKey ? extraNonce : "";
+      pool.job_state.xelis_public_key = extraNonce && publicKey ? publicKey : "";
     } else if (extraNonce) {
-      pool.xelis_extra_nonce = extraNonce;
+      pool.job_state.xelis_extra_nonce = extraNonce;
     }
-  }
-
-  /** @param {string} hex @param {number} bytes */
-  function fixedHexBytesLE(hex, bytes) {
-    const padded = hex.padEnd(bytes * 2, "0").slice(0, bytes * 2);
-    const pairs = padded.match(/.{2}/g);
-    if (!pairs) {throw new Error("Invalid fixed-width hex value");}
-    return pairs.reverse().join("");
   }
 
   /** @param {PoolConfig} pool */
   function poolExtraNonce(pool) {
-    return hexWithoutPrefix(pool.extra_nonce || "");
-  }
-
-  /** @param {PoolConfig} pool */
-  function poolNonce(pool) {
-    return poolExtraNonce(pool).padEnd(16, "0").slice(0, 16);
-  }
-
-  /** @param {PoolConfig} pool */
-  function poolNonceMask(pool) {
-    return "ff".repeat(poolExtraNonce(pool).length / 2).padEnd(16, "0");
-  }
-
-  /** @param {string} headerHash @param {PoolConfig} pool */
-  function nonceAt32Blob(headerHash, pool) {
-    return headerHash + fixedHexBytesLE(poolExtraNonce(pool), 8);
+    return hexWithoutPrefix(pool.job_state.extra_nonce || "");
   }
 
   /** @param {unknown} value */
@@ -354,15 +287,15 @@ module.exports = ({
     const shortNonce = p.length === 4;
     const jobId = poolJobId(p[0]);
     const header = validHexBytes(p[1], 32);
-    const extraNonce = validHexBytes(pool.extra_nonce, shortNonce ? 4 : 8);
+    const extraNonce = validHexBytes(pool.job_state.extra_nonce, shortNonce ? 4 : 8);
     if (jobId === null || !header || !extraNonce ||
-        pool.extra_nonce2_size !== (shortNonce ? 4 : 8)) {
+        pool.job_state.extra_nonce2_size !== (shortNonce ? 4 : 8)) {
       return null;
     }
     const common = {
       algo: "nexapow", job_id: jobId, extra_nonce: extraNonce, noncebytes: 8,
-      target: pool.nexa_target || h.ethDiff2Target(pool.nexa_difficulty || 1),
-      difficulty: pool.nexa_difficulty || 1,
+      target: pool.job_state.nexa_target || h.ethDiff2Target(pool.job_state.nexa_difficulty || 1),
+      difficulty: pool.job_state.nexa_difficulty || 1,
     };
     if (shortNonce) {
       const nbits = validHexBytes(p[3], 4);
@@ -385,7 +318,7 @@ module.exports = ({
     };
   }
 
-  // Build the ZelHash (Equihash 125,4, Flux/ZIP-301) job from a mining.notify. The 8 notify fields go straight
+  // Build a ZIP-301 Equihash job from mining.notify. The 8 notify fields go straight
   // into the 140-byte Zcash header at the fixed offsets (prev/merkle/reserved already in header byte
   // order -- concat directly, NO reversal); the 32-byte nonce at offset 108 starts as nonce1 (the
   // subscribe extranonce prefix) followed by a zero nonce2 region the solver fills. The solver's 8-byte
@@ -393,7 +326,7 @@ module.exports = ({
   // clobbering the pool's fixed nonce1 prefix. Notify params: [job_id, version(LE 8hex),
   // prevhash(64), merkleroot(64), reserved(64), time(8), bits(8), clean].
   /** @param {PoolConfig} pool @param {ArrayPoolMessage} json @returns {PoolJob | null} */
-  function zelhashNotifyJob(pool, json) {
+  function equihashNotifyJob(pool, json) {
     const p = json.params;
     const jobId = poolJobId(p[0]);
     if (jobId === null) {return null;}
@@ -419,10 +352,10 @@ module.exports = ({
       noncebytes: 8,                   // the solver's incrementing search counter is 8 bytes
       nonceoffset: 108 + nonce1.length / 2,
     };
-    if (typeof pool.zelhash_target === "string") {
-      job.target = pool.zelhash_target;
-    } else if (typeof pool.stratum_target === "string") {
-      job.target = hexWithoutPrefix(pool.stratum_target).padStart(64, "0");
+    if (typeof pool.job_state.zelhash_target === "string") {
+      job.target = pool.job_state.zelhash_target;
+    } else if (typeof pool.job_state.stratum_target === "string") {
+      job.target = hexWithoutPrefix(pool.job_state.stratum_target).padStart(64, "0");
     }
     return job;
   }
@@ -452,8 +385,8 @@ module.exports = ({
     if (!Array.isArray(exactWords) || exactWords.length < 4 || json.__kaspa_timestamp === undefined) {
       throw new Error("Missing exact Kaspa pre-pow values");
     }
-    const words = exactWords.slice(0, 4).map((value) => uint64Decimal(value));
-    const timestamp = uint64Decimal(json.__kaspa_timestamp);
+    const words = exactWords.slice(0, 4).map(parseUint64Decimal);
+    const timestamp = parseUint64Decimal(json.__kaspa_timestamp);
 
     let blob = "";
     for (const word of words) {
@@ -474,8 +407,8 @@ module.exports = ({
         algoFromPass(pool) || (poolProtocol(pool) === "hoosat" ? "hoohash" : "karlsenhashv2")),
       blob: blob,                        // 160 hex = 80 bytes
       job_id: jobId,
-      target: pool.kaspa_target || kaspaDiffToTarget(pool.kaspa_difficulty || 1),
-      difficulty: pool.kaspa_difficulty || 1,
+      target: pool.job_state.kaspa_target || kaspaDiffToTarget(pool.job_state.kaspa_difficulty || 1),
+      difficulty: pool.job_state.kaspa_difficulty || 1,
       noncebytes: 8,
       nonceoffset: 72,
       nonce: nonceSeedHex,
@@ -495,36 +428,7 @@ module.exports = ({
     return out;
   }
 
-  // Parse a non-negative integer given as a safe number or a canonical decimal string, up to maximum.
-  /** @param {unknown} value @param {bigint} maximum @param {string} label */
-  function unsignedDecimal(value, maximum, label) {
-    let text;
-    if (typeof value === "number") {
-      if (!Number.isSafeInteger(value) || value < 0) {
-        throw new Error(`Invalid ${label}`);
-      }
-      text = String(value);
-    } else if (typeof value === "string") {
-      text = value;
-      if (!/^(0|[1-9]\d*)$/.test(text)) {
-        throw new Error(`Invalid ${label}`);
-      }
-    } else {
-      throw new Error(`Invalid ${label}`);
-    }
-    if (text.length > maximum.toString().length) {
-      throw new Error(`${label} is out of range`);
-    }
-    const parsed = BigInt(text);
-    if (parsed > maximum) {throw new Error(`${label} is out of range`);}
-    return parsed;
-  }
-
-  /** @param {unknown} value */
-  function uint64Decimal(value) {
-    return unsignedDecimal(value, 0xffffffffffffffffn, "uint64 decimal");
-  }
-
+  // XELIS sends timestamps as hexadecimal strings or safe integer JSON numbers.
   /** @param {unknown} value */
   function xelisHex(value) {
     if (typeof value !== "number") {return hexWithoutPrefix(value);}
@@ -536,7 +440,7 @@ module.exports = ({
 
   /** @param {unknown} value */
   function xelisDifficulty(value) {
-    const diff = unsignedDecimal(value, (1n << 256n) - 1n, "XELIS difficulty");
+    const diff = parseUnsignedDecimal(value, maxXelisDifficulty, "XELIS difficulty");
     if (diff === 0n) {throw new Error("XELIS difficulty must be positive");}
     return diff;
   }
@@ -545,7 +449,7 @@ module.exports = ({
   /** @param {unknown} difficulty */
   function xelisDiffToTarget(difficulty) {
     const diff = xelisDifficulty(difficulty);
-    return (((1n << 256n) - 1n) / diff).toString(16).padStart(64, "0");
+    return (maxXelisDifficulty / diff).toString(16).padStart(64, "0");
   }
 
   /** @param {unknown} value @param {string} label */
@@ -572,17 +476,17 @@ module.exports = ({
     const headerWorkHash = validHexBytes(p[2], 32);
     const timestampHex = xelisHex(p[1]);
     if (job_id === null || !headerWorkHash || !/^[0-9a-f]{1,16}$/i.test(timestampHex) ||
-        !pool.xelis_extra_nonce || !pool.xelis_public_key) {
+        !pool.job_state.xelis_extra_nonce || !pool.job_state.xelis_public_key) {
       return null;
     }
-    const rawDifficulty = pool.xelis_difficulty ?? 1;
+    const rawDifficulty = pool.job_state.xelis_difficulty ?? 1;
     const target = xelisDiffToTarget(rawDifficulty);
     const difficulty = Number(rawDifficulty);
     /** @type {PoolJob} */
     const job = {
       algo: "xelishashv3",
       blob: headerWorkHash + timestampHex.padStart(16, "0") + "00".repeat(8) +
-            pool.xelis_extra_nonce + pool.xelis_public_key,
+            pool.job_state.xelis_extra_nonce + pool.job_state.xelis_public_key,
       header_hash: headerWorkHash,
       job_id,
       target,
@@ -596,7 +500,7 @@ module.exports = ({
   /** @param {PoolConfig} pool @param {unknown} notifyTarget */
   function ravenTarget(pool, notifyTarget) {
     const rawTarget = notifyTarget === undefined || notifyTarget === null || notifyTarget === ""
-      ? pool.raven_target || pool.stratum_target || "" : notifyTarget;
+      ? pool.job_state.raven_target || pool.job_state.stratum_target || "" : notifyTarget;
     const target = hexWithoutPrefix(rawTarget);
     if (!boundedHex(target, 32)) {throw new Error("Invalid Raven target");}
     return target.padEnd(64, "0");
@@ -604,8 +508,8 @@ module.exports = ({
 
   /** @param {PoolConfig} pool */
   function ethTarget(pool) {
-    const target = hexWithoutPrefix(pool.eth_target || pool.stratum_target || "");
-    if (!target) {return h.ethDiff2Target(pool.eth_difficulty || 1);}
+    const target = hexWithoutPrefix(pool.job_state.eth_target || pool.job_state.stratum_target || "");
+    if (!target) {return h.ethDiff2Target(pool.job_state.eth_difficulty || 1);}
     if (!boundedHex(target, 32)) {throw new Error("Invalid Ethash target");}
     return target.padStart(64, "0");
   }
@@ -660,7 +564,7 @@ module.exports = ({
     // LuckyPool calls this field "diff"; variable difficulty may arrive separately.
     const suppliedDifficulty = params["difficulty"] ?? params["diff"];
     const difficulty = suppliedDifficulty === undefined
-      ? pearlhashDiffFromJobId(jobId) || pool.pearlhash_difficulty
+      ? pearlhashDiffFromJobId(jobId) || pool.job_state.pearlhash_difficulty
       : positiveDifficulty(suppliedDifficulty, "PearlHash");
     const certVersion = params["cert_version"] === undefined
       ? 3 : poolHeight(params["cert_version"], "PearlHash certificate version");
@@ -710,7 +614,7 @@ module.exports = ({
         job.pearlhash_base_target = target;
       }
     }
-    pool.pearlhash_proof_encodings = proofEncodings;
+    pool.job_state.pearlhash_proof_encodings = proofEncodings;
     return job;
   }
 
@@ -799,24 +703,24 @@ module.exports = ({
     if (typeof target !== "string") {throw new Error("Invalid pool target message");}
     const protocol = poolProtocol(pool);
     if (protocol === "raven") {
-      pool.raven_target = ravenTarget(pool, target);
+      pool.job_state.raven_target = ravenTarget(pool, target);
       return;
     }
     const hex = hexWithoutPrefix(target);
     h.target256ToWork(hex);
     switch (protocol) {
       case "eth":
-        pool.eth_target = hex;
+        pool.job_state.eth_target = hex;
         return;
       case "zelhash":
-        pool.zelhash_target = hex.padStart(64, "0");
+        pool.job_state.zelhash_target = hex.padStart(64, "0");
         return;
       case "ironfish":
-        pool.ironfish_target = hex.padStart(64, "0");
+        pool.job_state.ironfish_target = hex.padStart(64, "0");
         return;
       default:
         // Preserve an early target until a later notify identifies the dialect.
-        pool.stratum_target = hex;
+        pool.job_state.stratum_target = hex;
     }
   }
 
@@ -829,39 +733,40 @@ module.exports = ({
     if (protocol === "xelis") {
       // XELIS difficulty is an integer up to 256 bits, so keep its decimal string exact.
       const exactDifficulty = xelisDifficulty(raw);
-      pool.xelis_difficulty = typeof raw === "string" ? raw :
+      pool.job_state.xelis_difficulty = typeof raw === "string" ? raw :
         Number(exactDifficulty);
       return;
     }
     const difficulty = positiveDifficulty(raw, "pool");
-    pool.eth_difficulty = difficulty;
+    pool.job_state.eth_difficulty = difficulty;
     if (protocol === "verthash") {
-      pool.verthash_difficulty = difficulty;
+      pool.job_state.verthash_difficulty = difficulty;
     }
     // Var-diff PearlHash pools may push a standalone set_difficulty; stash it so the next job picks
     // it up if the notify itself omits a diff field (otherwise jobTarget would fall back to MAX).
     if (protocol === "pearlhash") {
-      pool.pearlhash_difficulty = difficulty;
+      pool.job_state.pearlhash_difficulty = difficulty;
     }
     // Kaspa pushes mining.set_difficulty [diff] (a float). Stash it and precompute the BE share target;
     // the next mining.notify (which carries no target) picks it up via kaspaNotifyJob.
     if (protocol === "kaspa" || protocol === "hoosat") {
-      pool.kaspa_difficulty = difficulty;
-      pool.kaspa_target = kaspaDiffToTarget(raw);
+      pool.job_state.kaspa_difficulty = difficulty;
+      pool.job_state.kaspa_target = kaspaDiffToTarget(raw);
     }
     if (protocol === "echelon") {
-      pool.nexa_difficulty = difficulty;
-      pool.nexa_target = h.ethDiff2Target(difficulty);
+      pool.job_state.nexa_difficulty = difficulty;
+      pool.job_state.nexa_target = h.ethDiff2Target(difficulty);
     }
   }
 
   /** @param {PoolConfig} pool @param {PoolJob & {algo: string, header_hash: string}} job @returns {PoolJob} */
   function nonceAt32Job(pool, job) {
+    const prefix = poolExtraNonce(pool), nonce = prefix.padEnd(16, "0").slice(0, 16);
     return {
       ...job,
-      blob: nonceAt32Blob(job.header_hash, pool),
-      nonce: poolNonce(pool),
-      nicehash_mask: poolNonceMask(pool),
+      blob: job.header_hash + reverseHexBytes(nonce),
+      nonce,
+      nicehash_mask: "ff".repeat(prefix.length / 2).padEnd(16, "0"),
       noncebytes: 8,
       nonceoffset: 32,
     };
@@ -872,7 +777,7 @@ module.exports = ({
   /** @param {PoolConfig} pool @param {ArrayPoolMessage} json @returns {PoolJob | null} */
   function verthashNotifyJob(pool, json) {
     const p = json.params;
-    const extraNonce2Size = pool.extra_nonce2_size ?? 4;
+    const extraNonce2Size = pool.job_state.extra_nonce2_size ?? 4;
     if (!Number.isSafeInteger(extraNonce2Size) || extraNonce2Size < 0 || extraNonce2Size > 8) {
       throw new Error("Invalid Verthash extranonce2 size");
     }
@@ -914,7 +819,7 @@ module.exports = ({
       algo: "verthash", job_id: jobId,
       blob: reverseWord(version) + previousHeader + merkle.toString("hex") +
         reverseWord(ntime) + reverseWord(bits) + "00000000",
-      noncebytes: 4, nonceoffset: 76, difficulty: pool.verthash_difficulty || 1,
+      noncebytes: 4, nonceoffset: 76, difficulty: pool.job_state.verthash_difficulty || 1,
       extranonce2: xnonce2, ntime,
     };
     return job;
@@ -934,10 +839,10 @@ module.exports = ({
     if (!header || !target || height === null) {
       return null;
     }
-    pool.cortex_nonce ??= crypto.randomBytes(6).toString("hex");
+    pool.job_state.cortex_nonce ??= crypto.randomBytes(6).toString("hex");
     return {
       algo: "c30", blob: header, header_hash: "0x" + header, job_id: header,
-      target, proofsize: 42, noncebytes: 8, nonceoffset: 0, nonce: pool.cortex_nonce,
+      target, proofsize: 42, noncebytes: 8, nonceoffset: 0, nonce: pool.job_state.cortex_nonce,
       height,
     };
   }
@@ -1030,7 +935,7 @@ module.exports = ({
         target = rawTarget.slice(2).padStart(64, "0");
       } else {
         if (typeof rawTarget !== "string") {throw new Error("Invalid Conflux target");}
-        const targetValue = unsignedDecimal(
+        const targetValue = parseUnsignedDecimal(
           rawTarget, (1n << 256n) - 1n, "Conflux target");
         if (targetValue === 0n) {throw new Error("Conflux target must be positive");}
         target = h.decimalTargetToHex(targetValue.toString());
@@ -1056,7 +961,7 @@ module.exports = ({
       if (jobId === null || !headerHash || (rawNtime !== undefined && rawNtime !== "" && !ntime)) {
         return null;
       }
-      const targetValue = unsignedDecimal(
+      const targetValue = parseUnsignedDecimal(
         json.params[6], (1n << 256n) - 1n, "Autolykos2 target");
       if (targetValue === 0n) {throw new Error("Autolykos2 target must be positive");}
       const extraNonce = poolExtraNonce(pool);
@@ -1068,12 +973,12 @@ module.exports = ({
         height: poolHeight(json.params[1], "Autolykos2"),
         ntime,
         extra_nonce: extraNonce,
-        extra_nonce2_size: pool.extra_nonce2_size ?? Math.max(0, 8 - Math.ceil(extraNonce.length / 2)),
+        extra_nonce2_size: pool.job_state.extra_nonce2_size ?? Math.max(0, 8 - Math.ceil(extraNonce.length / 2)),
       });
       return commitSubmitMode("erg", job);
     }
     if (protocol === "zelhash" && isMiningNotification(json, 8)) {
-      return commitSubmitMode("zelhash", zelhashNotifyJob(pool, json));
+      return commitSubmitMode("zelhash", equihashNotifyJob(pool, json));
     }
     if (protocol === "ironfish" && isIronfishJobNotification(json)) {
       const body = json.body;
@@ -1087,9 +992,9 @@ module.exports = ({
         job_id: requestId,
         noncebytes: 8,
         nonceoffset: 172,
-        xn: pool.ironfish_xn || "",
+        xn: pool.job_state.ironfish_xn || "",
       };
-      if (pool.ironfish_target !== undefined) {job.target = pool.ironfish_target;}
+      if (pool.job_state.ironfish_target !== undefined) {job.target = pool.job_state.ironfish_target;}
       return commitSubmitMode("ironfish", job);
     }
     if ((protocol === "kaspa" || protocol === "hoosat") && isKaspaJobNotification(json)) {
@@ -1102,7 +1007,7 @@ module.exports = ({
       const jobId = poolJobId(json.id);
       const input = validHexBytes(json.input, 32);
       if (jobId === null || !input) {return null;}
-      const rawPacked = json.difficulty ?? pool.beam_difficulty;
+      const rawPacked = json.difficulty ?? pool.job_state.beam_difficulty;
       const target = beamPackedTarget(rawPacked);
       const packed = typeof rawPacked === "number" ? rawPacked : Number(rawPacked);
       const job = {
@@ -1112,9 +1017,9 @@ module.exports = ({
         difficulty:  packed,                          // raw packed int32, for reporting
         target,                                       // native re-derives the packed int from the target
         // A retained job resumes with its accepted prefix, even after later pool settings change.
-        xn: pool.beam_nonceprefix ?? "",
+        xn: pool.job_state.beam_nonceprefix ?? "",
       };
-      pool.beam_difficulty = packed;
+      pool.job_state.beam_difficulty = packed;
       return commitSubmitMode("beam", job);
     }
     return null;

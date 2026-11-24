@@ -152,10 +152,9 @@ public:
 
   // DAG nodes per dispatch, or 0 for one dispatch; MOM_ETCHASH_DAG_CHUNK_NODES overrides.
   static uint32_t etchash_dag_chunk_nodes(const sycl::device& dev) {
-    unsigned long parsed = 0;
-    if (mom_parse_env_ulong("MOM_ETCHASH_DAG_CHUNK_NODES", parsed) &&
-        parsed <= std::numeric_limits<uint32_t>::max())
-      return static_cast<uint32_t>(parsed);
+    uint32_t parsed;
+    if (mom_parse_env_u32("MOM_ETCHASH_DAG_CHUNK_NODES", parsed))
+      return parsed;
     // Integrated GPUs also serve the desktop. Retire short DAG-generation command lists instead
     // of leaving one epoch-sized kernel in the driver long enough to trigger its hang watchdog.
     if (is_integrated_gpu(dev))
@@ -246,26 +245,10 @@ public:
     epoch = UINT32_MAX;
     seed_epoch = UINT32_MAX;
     constexpr const char* failure = "Can't allocate etchash DAG buffers";
-    if (new_light_cache_words != light_cache_words || !light_cache) {
-      light_cache.reset();
-      light_cache_words = 0;
-      light_cache = mom_usm_alloc<uint32_t>(queue, new_light_cache_words, shared_dag, failure);
-      light_cache_words = new_light_cache_words;
-    }
-    if (new_dag_words != dag_words || !dag) {
-      dag.reset();
-      dag_words = 0;
-      dag = mom_usm_alloc<uint32_t>(queue, new_dag_words, shared_dag, failure);
-      dag_words = new_dag_words;
-    }
+    mom_resize_usm(queue, light_cache, light_cache_words, new_light_cache_words, shared_dag, failure);
+    mom_resize_usm(queue, dag, dag_words, new_dag_words, shared_dag, failure);
 
-    MomSyclHostTransferGuard host_cache_transfers(queue, "etchash cache upload");
-    if (shared_dag)
-      std::memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t));
-    else
-      sycl_wait_and_throw(
-          queue.memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t)),
-          device);
+    upload_ethash_light_cache(queue, device, light_cache, host_cache, shared_dag, "etchash cache upload");
 
     const uint32_t light_nodes = static_cast<uint32_t>(new_light_cache_words / ETHASH_NODE_WORDS);
     generate_ethash_dag<ETHASH_DATASET_PARENTS2>(
@@ -283,28 +266,7 @@ public:
   }
 };
 
-// Keep the registry shell alive across static teardown; ordered cleanup releases its values.
-static DeviceStateRegistry<State>& registry() {
-  static auto* const value = new DeviceStateRegistry<State>;
-  return *value;
-}
-
-static State& state_for(const std::string& dev_str) {
-  return registry().get(dev_str, [&] { return std::make_unique<State>(dev_str); });
-}
-
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void etchash_cleanup_states() noexcept {
-  try {
-    registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "etchash: ordered SYCL cleanup failed\n");
-  }
-}
-
-// Program build options for sycl_set_compile_options(): none by default ("-O3" is process-global,
-// PearlHash's ESIMD image rejects it, and it does not help Etchash); MOM_ETCHASH_COMPILE_OPTIONS
-// overrides.
-const char* etchash_compile_options() {
-  return std::getenv("MOM_ETCHASH_COMPILE_OPTIONS");
+  clearPersistentDeviceStates<State>("etchash");
 }

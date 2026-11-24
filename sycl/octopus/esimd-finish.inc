@@ -146,7 +146,7 @@ static sycl::event native_finish_esimd(
             octopus_esimd::simd<uint32_t, PAGE_WORDS> values[HashesPerThread];
 #pragma unroll
             for (unsigned parallel = 0; parallel < HashesPerThread; ++parallel) {
-              const uint32_t address = fnv32(
+              const uint32_t address = fnv_dev(
                   initial[parallel] ^ access ^ polynomial[parallel][access],
                   mix[parallel][access]);
               const uint32_t page = fast_mod_dev(address, page_mod);

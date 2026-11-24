@@ -6,8 +6,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const {extractCppBlock} = require("./common/cpp-source");
 
-/** @typedef {{kawpow: string, etchash: string, state: string, program: string, internal: string}} SourceVariant */
+/** @typedef {{kawpow: string, kawpowState: string, etchash: string, etchashState: string, autolykos: string, program: string, internal: string}} SourceVariant */
 
 test.describe("Portable DAG modes", {concurrency: false}, () => {
   const repoRoot = path.join(__dirname, "..");
@@ -19,27 +20,6 @@ test.describe("Portable DAG modes", {concurrency: false}, () => {
  */
   function fail(message) {
     throw new Error(`portable DAG fixture: ${message}`);
-  }
-
-  /**
- * @param {string} source
- * @param {string} signature
- * @returns {string}
- */
-  function extractFunction(source, signature) {
-    const start = source.indexOf(signature);
-    if (start < 0) {fail(`missing production function ${signature}`);}
-    const brace = source.indexOf("{", start);
-    if (brace < 0) {fail(`missing function body ${signature}`);}
-    let depth = 0;
-    for (let index = brace; index < source.length; index++) {
-      if (source[index] === "{") {depth++;}
-      if (source[index] === "}") {
-        depth--;
-        if (depth === 0) {return source.slice(start, index + 1);}
-      }
-    }
-    fail(`unterminated production function ${signature}`);
   }
 
   /**
@@ -60,7 +40,7 @@ test.describe("Portable DAG modes", {concurrency: false}, () => {
  */
   function extractPredicate(source) {
     const start = source.indexOf("if (epoch == new_epoch");
-    if (start < 0) {fail("missing Etchash cache reuse predicate");}
+    if (start < 0) {fail("missing DAG cache reuse predicate");}
     const open = source.indexOf("(", start);
     let depth = 0;
     for (let index = open; index < source.length; index++) {
@@ -72,7 +52,7 @@ test.describe("Portable DAG modes", {concurrency: false}, () => {
         }
       }
     }
-    fail("unterminated Etchash cache reuse predicate");
+    fail("unterminated DAG cache reuse predicate");
   }
 
   /**
@@ -82,7 +62,6 @@ test.describe("Portable DAG modes", {concurrency: false}, () => {
   function generatedHeader(variant) {
     const kawpow = variant.kawpow;
     const etchash = variant.etchash;
-    const state = variant.state;
     const program = variant.program;
     const internal = variant.internal;
     const kawpowCacheWords = extractLine(
@@ -91,15 +70,14 @@ test.describe("Portable DAG modes", {concurrency: false}, () => {
       program, /^constexpr uint32_t KAWPOW_LANES = .*;\r?$/m, "KAWPOW_LANES");
     const kawpowDagLoads = extractLine(
       program, /^constexpr uint32_t KAWPOW_DAG_LOADS = .*;\r?$/m, "KAWPOW_DAG_LOADS");
-    const parser = extractFunction(internal, "inline bool mom_parse_env_ulong");
-    const integratedGpu = extractFunction(internal, "inline bool is_integrated_gpu");
-    const compactCorrectnessTest = extractFunction(internal,
+    const parser = extractCppBlock(internal, "inline bool mom_parse_env_ulong");
+    const integratedGpu = extractCppBlock(internal, "inline bool is_integrated_gpu");
+    const compactCorrectnessTest = extractCppBlock(internal,
       "inline bool mom_compact_correctness_test");
     const fastModStart = internal.indexOf("struct FastModData");
     const fastModEnd = internal.indexOf("#if defined(_WIN32)", fastModStart);
     if (fastModStart < 0 || fastModEnd < 0) {fail("missing production fast modulus block");}
     const fastMod = internal.slice(fastModStart, fastModEnd);
-    const keyPredicate = extractPredicate(state);
 
     return [
       "#pragma once",
@@ -119,17 +97,25 @@ test.describe("Portable DAG modes", {concurrency: false}, () => {
       parser,
       integratedGpu,
       compactCorrectnessTest,
+      extractCppBlock(internal, "class MomBufferAllocation") + ";",
+      "constexpr bool mom_sycl_portable_opencl = true;",
+      "struct PortableResultState { sycl::queue queue; MomBufferAllocation<unsigned> portable_results;",
+      extractCppBlock(variant.autolykos, "  void ensure_portable_results(") + "};",
       fastMod,
-      extractFunction(kawpow, "static bool kawpow_portable_test"),
-      extractFunction(etchash, "static bool etchash_portable_test"),
+      extractCppBlock(kawpow, "static bool kawpow_portable_test"),
+      extractCppBlock(etchash, "static bool etchash_portable_test"),
       "inline bool etchash_cache_key_matches(",
       "    const uint32_t epoch, const uint32_t new_epoch, const uint32_t seed_epoch,",
       "    const uint32_t new_seed_epoch, const uint64_t light_cache_words,",
       "    const uint64_t new_light_cache_words, const uint64_t dag_words,",
       "    const uint64_t new_dag_words, const void* const light_cache, const void* const dag) {",
-      "  if (" + keyPredicate.replace(/\bepoch\b/g, "epoch") + ")",
-      "    return true;",
-      "  return false;",
+      "  return " + extractPredicate(variant.etchashState) + ";",
+      "}",
+      "inline bool kawpow_cache_key_matches(",
+      "    const uint32_t epoch, const uint32_t new_epoch, const uint64_t light_cache_words,",
+      "    const uint64_t new_light_cache_words, const uint64_t dag_words,",
+      "    const uint64_t new_dag_words, const void* const light_cache, const void* const dag) {",
+      "  return " + extractPredicate(variant.kawpowState) + ";",
       "}",
       "} // namespace portable_fixture",
       "",
@@ -151,8 +137,10 @@ test.describe("Portable DAG modes", {concurrency: false}, () => {
     };
     return {
       kawpow: read("sycl/kawpow/kawpow.cpp"),
+      kawpowState: read("sycl/kawpow/state.inc"),
       etchash: read("sycl/etchash/etchash.cpp"),
-      state: read("sycl/etchash/state.inc"),
+      etchashState: read("sycl/etchash/state.inc"),
+      autolykos: read("sycl/autolykos2/state.inc"),
       program: read("sycl/kawpow/program.inc"),
       internal: read("sycl/lib-internal.h"),
     };

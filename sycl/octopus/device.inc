@@ -64,7 +64,7 @@ inline uint64_t rotl64(const uint64_t x, const unsigned n) {
   return mom_rotate(x, static_cast<uint64_t>(n));
 }
 
-inline uint32_t fnv32(const uint32_t x, const uint32_t y) {
+inline uint32_t fnv_dev(const uint32_t x, const uint32_t y) {
   return x * FNV_PRIME ^ y;
 }
 inline uint64_t fnv64(const uint64_t x, const uint64_t y) {
@@ -137,7 +137,7 @@ inline void keccak(uint64_t state[25]) {
 }
 
 // Hash one cache node in place with Keccak-512 padding, not SHA3 padding.
-inline void keccak512_words(uint32_t words[CACHE_NODE_WORDS]) {
+inline void keccak_512_words_dev(uint32_t words[CACHE_NODE_WORDS]) {
   uint64_t state[25]{};
   for (unsigned i = 0; i < 8; ++i)
     state[i] =
@@ -292,21 +292,8 @@ inline uint32_t mad_field(const uint32_t a, const uint32_t b, const uint32_t c) 
   return static_cast<uint32_t>(remainder);
 }
 
-// Regenerate one Ethash-style dataset node from the epoch cache for light-DAG search.
-inline void dataset_item(const uint32_t* const cache, const FastModData cache_mod,
-                         const uint32_t node_index, uint32_t item[CACHE_NODE_WORDS]) {
-  const uint32_t cache_index = fast_mod_dev(node_index, cache_mod);
-  for (unsigned word = 0; word < CACHE_NODE_WORDS; ++word)
-    item[word] = cache[cache_index * CACHE_NODE_WORDS + word];
-  item[0] ^= node_index;
-  keccak512_words(item);
-  for (uint32_t i = 0; i < DATASET_PARENTS; ++i) {
-    const uint32_t parent = fast_mod_dev(fnv32(node_index ^ i, item[i & 15]), cache_mod);
-    for (unsigned word = 0; word < CACHE_NODE_WORDS; ++word)
-      item[word] = fnv32(item[word], cache[parent * CACHE_NODE_WORDS + word]);
-  }
-  keccak512_words(item);
-}
+#include "../ethash-dag.inc"
+static_assert(ETHASH_DAG_NODE_WORDS == CACHE_NODE_WORDS);
 
 // Generate one lane of coefficients for a nonce-aligned polynomial group; callers barrier before use.
 inline void make_polynomial_coefficients(const uint8_t* const header, const uint64_t nonce,
@@ -397,7 +384,7 @@ inline void octopus_hash_scalar(
 
   for (uint32_t access = 0; access < ACCESSES; ++access) {
     if (lane == 0) {
-      page[0] = fast_mod_dev(fnv32(seed[0] ^ access ^ polynomial[access], mix[access]), page_mod);
+      page[0] = fast_mod_dev(fnv_dev(seed[0] ^ access ^ polynomial[access], mix[access]), page_mod);
     }
     sycl::group_barrier(item.get_group());
 
@@ -405,7 +392,8 @@ inline void octopus_hash_scalar(
       if (lane == 0) {
         for (unsigned node = 0; node < 4; ++node) {
           uint32_t item_words[CACHE_NODE_WORDS];
-          dataset_item(cache, cache_mod, page[0] * 4 + node, item_words);
+          ethash_dataset_node_dev<DATASET_PARENTS>(page[0] * 4 + node, cache, cache_mod,
+                                                   item_words);
           for (unsigned word = 0; word < CACHE_NODE_WORDS; ++word)
             dataset_words[node * CACHE_NODE_WORDS + word] = item_words[word];
         }
@@ -417,7 +405,7 @@ inline void octopus_hash_scalar(
       const size_t base =
           (static_cast<size_t>(page[0]) * 4 + word / CACHE_NODE_WORDS) * CACHE_NODE_WORDS;
       const uint32_t value = FULL_DAG ? dag[base + word % CACHE_NODE_WORDS] : dataset_words[word];
-      mix[word] = fnv32(mix[word], value);
+      mix[word] = fnv_dev(mix[word], value);
     }
     // The next page uses mix[access + 1], so all 64 words must be visible before it is selected.
     sycl::group_barrier(item.get_group());
@@ -428,10 +416,10 @@ inline void octopus_hash_scalar(
     const unsigned right_offset = (8 + lane) * 4;
     uint32_t left = mix[left_offset], right = mix[right_offset];
     for (unsigned j = 1; j < 4; ++j) {
-      left = fnv32(left, mix[left_offset + j]);
-      right = fnv32(right, mix[right_offset + j]);
+      left = fnv_dev(left, mix[left_offset + j]);
+      right = fnv_dev(right, mix[right_offset + j]);
     }
-    compressed[lane] = fnv32(left, right);
+    compressed[lane] = fnv_dev(left, right);
   }
   sycl::group_barrier(item.get_group());
 
@@ -515,7 +503,7 @@ octopus_hash_batched(sycl::nd_item<1> item, const uint8_t* const header, const u
 
   for (uint32_t access = 0; access < ACCESSES; ++access) {
     const uint32_t page =
-        fast_mod_dev(fnv32(seed[0] ^ access ^ polynomial[access], mix[access]), page_mod);
+        fast_mod_dev(fnv_dev(seed[0] ^ access ^ polynomial[access], mix[access]), page_mod);
     for (unsigned node = 0; node < 4; ++node) {
       uint32_t item_words[CACHE_NODE_WORDS];
       if constexpr (FULL_DAG) {
@@ -523,11 +511,11 @@ octopus_hash_batched(sycl::nd_item<1> item, const uint8_t* const header, const u
         for (unsigned word = 0; word < CACHE_NODE_WORDS; ++word)
           item_words[word] = dag[base + word];
       } else {
-        dataset_item(cache, cache_mod, page * 4 + node, item_words);
+        ethash_dataset_node_dev<DATASET_PARENTS>(page * 4 + node, cache, cache_mod, item_words);
       }
       for (unsigned word = 0; word < CACHE_NODE_WORDS; ++word)
         mix[node * CACHE_NODE_WORDS + word] =
-            fnv32(mix[node * CACHE_NODE_WORDS + word], item_words[word]);
+            fnv_dev(mix[node * CACHE_NODE_WORDS + word], item_words[word]);
     }
   }
 
@@ -537,10 +525,10 @@ octopus_hash_batched(sycl::nd_item<1> item, const uint8_t* const header, const u
     const unsigned right_offset = (8 + lane8) * 4;
     uint32_t left = mix[left_offset], right = mix[right_offset];
     for (unsigned j = 1; j < 4; ++j) {
-      left = fnv32(left, mix[left_offset + j]);
-      right = fnv32(right, mix[right_offset + j]);
+      left = fnv_dev(left, mix[left_offset + j]);
+      right = fnv_dev(right, mix[right_offset + j]);
     }
-    compressed[lane8] = fnv32(left, right);
+    compressed[lane8] = fnv_dev(left, right);
   }
   uint8_t output[HASH_LEN];
   keccak256_seed_mix(seed, compressed, output);
@@ -549,7 +537,7 @@ octopus_hash_batched(sycl::nd_item<1> item, const uint8_t* const header, const u
 }
 
 inline uint32_t fnv_reduce4(const uint32_t value[4]) {
-  return fnv32(fnv32(fnv32(value[0], value[1]), value[2]), value[3]);
+  return fnv_dev(fnv_dev(fnv_dev(value[0], value[1]), value[2]), value[3]);
 }
 
 // Mirrors open-cfxmine's CUDA layout: each native warp evaluates 32 nonces, then
@@ -633,12 +621,12 @@ inline void octopus_hash_cooperative(sycl::nd_item<1> item, const uint8_t* const
           const uint32_t polynomial_value =
               coefficients[offset + (access + step) * WARP + hash_lane];
           uint32_t page = fast_mod_dev(
-              fnv32(initial[parallel] ^ (access + step) ^ polynomial_value, mix[parallel][step]),
+              fnv_dev(initial[parallel] ^ (access + step) ^ polynomial_value, mix[parallel][step]),
               page_mod);
           page = mom_select_from_group(sg, page, address_lane);
           const size_t dag_offset = static_cast<size_t>(page) * PAGE_WORDS + team_lane * 4;
           for (uint32_t word = 0; word < 4; ++word)
-            mix[parallel][word] = fnv32(mix[parallel][word], dag[dag_offset + word]);
+            mix[parallel][word] = fnv_dev(mix[parallel][word], dag[dag_offset + word]);
         }
       }
     }
@@ -646,7 +634,7 @@ inline void octopus_hash_cooperative(sycl::nd_item<1> item, const uint8_t* const
       const uint32_t reduced = fnv_reduce4(mix[parallel]);
       const uint32_t hash_lane = team_base + first + parallel;
       for (uint32_t word = 0; word < 8; ++word) {
-        const uint32_t compressed = fnv32(mom_select_from_group(sg, reduced, team_base + word),
+        const uint32_t compressed = fnv_dev(mom_select_from_group(sg, reduced, team_base + word),
                                           mom_select_from_group(sg, reduced, team_base + 8 + word));
         if (lane == hash_lane)
           final_mix[word] = compressed;

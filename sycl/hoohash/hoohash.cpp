@@ -43,32 +43,6 @@ struct FloatPair {
 class SearchKernel;
 class TestKernel;
 
-inline uint64_t load64le(const uint8_t* p) {
-  uint64_t value = 0;
-  for (unsigned i = 0; i < 8; ++i)
-    value |= static_cast<uint64_t>(p[i]) << (8 * i);
-  return value;
-}
-inline uint64_t rotl64(uint64_t x, unsigned n) {
-  return (x << n) | (x >> (64 - n));
-}
-
-// Expand the header seed with the reference PRNG and FP64 scaling order.
-static void make_matrix(const uint8_t hash[32], double matrix[4096]) {
-  uint64_t s0 = load64le(hash), s1 = load64le(hash + 8), s2 = load64le(hash + 16),
-           s3 = load64le(hash + 24);
-  for (unsigned i = 0; i < 4096; ++i) {
-    const uint64_t value = rotl64(s0 + s3, 23) + s0, t = s1 << 17;
-    s2 ^= s0;
-    s3 ^= s1;
-    s1 ^= s2;
-    s0 ^= s3;
-    s2 ^= t;
-    s3 = rotl64(s3, 45);
-    matrix[i] = static_cast<double>(static_cast<uint32_t>(value)) / 4294967295.0 * 1000000.0;
-  }
-}
-
 // Canonical host recomputation must not inherit a caller's nondefault rounding mode.
 class RoundingToNearest {
   int previous_;
@@ -126,7 +100,7 @@ inline void trig_reduce(double x, uint64_t& octant, double& reduced) {
 static constexpr unsigned PERIODIC_LUT_SIZE = 98304;
 static constexpr unsigned MAX_FILTER_RETRIES = 8;
 // Map the filter's argument onto one LUT period, retaining precision for large angles.
-inline bool periodic_position(double x, double& position) {
+inline double periodic_position(double x) {
   double reduced;
   if (sycl::fabs(x) >= 14100000000000000.0) {
     const bool negative = x < 0;
@@ -147,13 +121,11 @@ inline bool periodic_position(double x, double& position) {
     reduced += 6.28318530717958647693;
   else if (reduced >= 6.28318530717958647693)
     reduced -= 6.28318530717958647693;
-  position = reduced * 15645.56752570568075;
-  return true;
+  return reduced * 15645.56752570568075;
 }
 // Interpolate the filter LUT; the duplicated endpoint permits the final interval's read.
 inline double periodic_lookup(const double* table, double x) {
-  double position;
-  periodic_position(x, position);
+  const double position = periodic_position(x);
   unsigned index = static_cast<unsigned>(position);
   if (index >= PERIODIC_LUT_SIZE)
     index = PERIODIC_LUT_SIZE - 1;
@@ -263,22 +235,10 @@ public:
     sycl_cleanup_noexcept("hoohash wait", [&] { queue.wait_and_throw(); });
   }
 };
-// Keep the registry shell alive across static teardown; ordered cleanup releases its values.
-static DeviceStateRegistry<State>& registry() {
-  static auto* const value = new DeviceStateRegistry<State>;
-  return *value;
-}
-// Reuse one mutex-serialized matrix/LUT owner for the selected device.
-static State& state_for(const std::string& dev) {
-  return registry().get(dev, [&] { return std::make_unique<State>(dev); });
-}
+
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void hoohash_cleanup_states() noexcept {
-  try {
-    registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "hoohash: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<State>("hoohash");
 }
 
 // Append the little-endian nonce and derive the first digest plus its big-endian word XOR.
@@ -348,9 +308,8 @@ static sycl::event search(State& s, uint64_t first_nonce, unsigned count) {
   const uint8_t* input = s.input;
   const uint8_t* target = s.target;
   Result* result = s.result;
+  const size_t global = mom_round_up_size(count, s.workgroup);
   return s.queue.submit([&](sycl::handler& h) {
-    const size_t global =
-        (static_cast<size_t>(count) + s.workgroup - 1) / s.workgroup * s.workgroup;
     h.parallel_for<SearchKernel>(
         sycl::nd_range<1>(global, s.workgroup),
         [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
@@ -404,14 +363,14 @@ int hoohash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
   if (const char* error = mom_hoohash_math_error())
     throw std::string(error);
   RoundingToNearest rounding;
-  State& state = state_for(dev_str);
+  State& state = persistentDeviceState<State>(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   std::unique_ptr<FloatPair[]> normal;
   MomSyclHostTransferGuard host_transfers(state.queue, "hoohash host transfers");
   if (!state.matrix_ready || std::memcmp(state.matrix_seed, input, 32)) {
     state.matrix_ready = false;
     normal = std::make_unique<FloatPair[]>(4096 * 16);
-    make_matrix(input, state.canonical_matrix);
+    mom_hoohash_make_matrix(input, state.canonical_matrix);
     state.queue.memcpy(state.matrix, state.canonical_matrix, sizeof(state.canonical_matrix));
     for (unsigned k = 0; k < 4096; ++k)
       for (unsigned value = 0; value < 16; ++value) {

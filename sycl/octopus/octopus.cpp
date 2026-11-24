@@ -73,11 +73,7 @@ namespace mom_octopus {
 
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void octopus_cleanup_states() noexcept {
-  try {
-    registry().clear();
-  } catch (...) {
-    std::fprintf(stderr, "octopus: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<State>("octopus");
 }
 
 } // namespace mom_octopus
@@ -95,7 +91,7 @@ int octopus(unsigned, uint32_t height, const uint8_t* input, unsigned input_size
   const uint64_t start_nonce = load64(input + HASH_LEN);
   if (static_cast<uint64_t>(intensity) - 1 > std::numeric_limits<uint64_t>::max() - start_nonce)
     throw std::string("octopus nonce range exceeds uint64 max");
-  State& state = state_for(dev_str);
+  State& state = persistentDeviceState<State>(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_epoch(height / EPOCH_LENGTH, !is_benchmark, is_test);
   const bool header_changed = state.ensure_points(input);

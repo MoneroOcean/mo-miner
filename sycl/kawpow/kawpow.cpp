@@ -50,20 +50,10 @@ static bool kawpow_portable_test(const bool is_test, const bool is_benchmark,
   return mom_compact_correctness_test(is_test, is_benchmark, device);
 }
 
-// The environment cleanup hook calls kawpow_cleanup_states() at the correct runtime-lifetime boundary.
-static DeviceStateRegistry<State>& registry() {
-  static auto* const value = new DeviceStateRegistry<State>;
-  return *value;
-}
-
-static State& state_for(const std::string& dev_str) {
-  return registry().get(dev_str, [&] { return std::make_unique<State>(dev_str); });
-}
-
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void kawpow_cleanup_states() noexcept {
   try {
-    registry().clear();
+    persistentDeviceStates<State>().clear();
   } catch (const std::exception& error) {
     std::fprintf(stderr, "kawpow: ordered SYCL cleanup failed: %s\n", error.what());
   } catch (...) {
@@ -98,7 +88,7 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
   for (unsigned i = 0; i < 15; ++i)
     seal_params.magic[i] = variant.magic[i];
 
-  State& state = state_for(dev_str);
+  State& state = persistentDeviceState<State>(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
   // Publish this call's seal into the state (under the mutex) so build_period_bundle bakes it into the
   // runtime-JIT source and the bundle cache key reflects it. A device shared across algos can switch seal.
@@ -135,8 +125,7 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
           : (variant.chfast_init_items
                  ? chfast_dag_bytes(size_epoch, variant.chfast_init_items, variant.chfast_growth_items)
                  : dag_sizes[epoch]);
-  // Light cache: MeowPow uses chfast cache sizing (scales with the dag change); everyone else uses the
-  // classic cache_sizes[] table. The SEED always uses the real epoch (passed separately below).
+  // MeowPow scales the light cache with the DAG. Other variants use the classic cache size table.
   const uint64_t cache_bytes =
       compact_test
           ? KAWPOW_PORTABLE_TEST_CACHE_BYTES
@@ -145,7 +134,7 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
                                       variant.chfast_cache_growth_items)
                  : cache_sizes[epoch]);
   const uint64_t t_state = loop_stats ? kawpow_now_us() : 0;
-  state.ensure_epoch(epoch, cache_bytes, dag_bytes, epoch, !is_benchmark);
+  state.ensure_epoch(epoch, cache_bytes, dag_bytes, !is_benchmark);
   const uint64_t t_epoch = loop_stats ? kawpow_now_us() : 0;
   state.ensure_period(period);
 
@@ -405,7 +394,7 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
   return hits;
 }
 
-// ABI entrypoints (gpu_kawpow_hash_fun). The fn-pointer signature does not carry the algo name, so
+// ABI entrypoints (gpu_progpow_hash_fun). The fn-pointer signature does not carry the algo name, so
 // each ProgPoW variant is a DISTINCT exported function that bakes its own epoch/period/seal/magic.
 // Dispatch Ravencoin consensus sizing and seal through the common runner.
 int kawpow(const unsigned job_id, const uint32_t block_height, const uint8_t* const input,

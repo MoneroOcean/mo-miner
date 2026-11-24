@@ -7,6 +7,7 @@ extern "C" {
 #endif
 
 const char* mom_hoohash_math_error(void);
+void mom_hoohash_make_matrix(const uint8_t seed[32], double matrix[4096]);
 void mom_hoohash_canonical_hash(const uint8_t input[72], uint64_t nonce, uint8_t output[32]);
 
 #ifdef __cplusplus

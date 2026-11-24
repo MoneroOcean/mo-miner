@@ -56,11 +56,6 @@ sycl::device get_dev(const std::string&) {
   return sycl::device{fixture_cpu, fixture_integrated};
 }
 
-static DeviceStateRegistry<State>& registry() {
-  static auto* const value = new DeviceStateRegistry<State>;
-  return *value;
-}
-
 #include "verthash_state_for.inc"
 
 static void require(const bool condition, const char* const reason) {
@@ -97,7 +92,7 @@ static void test_admission_matrix() {
             fixture_cpu = cpu;
             fixture_integrated = integrated;
             configure_env(env);
-            registry().clear();
+            persistentDeviceStates<State>().clear();
             const unsigned before_queries = fixture_device_queries;
             State& state = state_for("matrix", is_test, is_benchmark);
             require(state.compact_test_data ==
@@ -113,7 +108,7 @@ static void test_state_keys() {
   fixture_cpu = true;
   fixture_integrated = false;
   configure_env(nullptr);
-  registry().clear();
+  persistentDeviceStates<State>().clear();
   State* const normal = &state_for("normal", false, false);
   require(normal == &state_for("normal", false, false), "normal Verthash state key is not reused");
   require(normal == &state_for("normal", true, false),
@@ -121,7 +116,7 @@ static void test_state_keys() {
   require(!normal->compact_test_data, "official Verthash state became compact without switch");
 
   configure_env("1");
-  registry().clear();
+  persistentDeviceStates<State>().clear();
   State* const compact = &state_for("transition", true, false);
   require(compact->compact_test_data, "CPU test did not select compact Verthash state");
   require(compact == &state_for("transition", true, false),
@@ -136,14 +131,14 @@ static void test_state_keys() {
 
   fixture_cpu = false;
   fixture_integrated = false;
-  registry().clear();
+  persistentDeviceStates<State>().clear();
   State* const gpu_test = &state_for("gpu", true, false);
   require(!gpu_test->compact_test_data, "GPU inherited test switch selected compact data");
   require(gpu_test == &state_for("gpu", false, false),
           "GPU inherited test switch created a second official state");
 
   fixture_integrated = true;
-  registry().clear();
+  persistentDeviceStates<State>().clear();
   State* const integrated_compact = &state_for("integrated", true, false);
   require(integrated_compact->compact_test_data,
           "integrated GPU test did not select compact Verthash state");
@@ -162,7 +157,7 @@ int main() {
     test_state_keys();
     require(fixture_states_constructed != 0, "Verthash route fixture constructed no states");
     configure_env(nullptr);
-    registry().clear();
+    persistentDeviceStates<State>().clear();
     std::puts("verthash-test-route:passed");
     return 0;
   } catch (const std::exception& error) {

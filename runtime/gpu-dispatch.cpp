@@ -42,14 +42,15 @@ extern "C" void mom_native_sycl_prepare_shutdown();
 #endif
 namespace {
 struct StaticImages { void* descriptor; bool registered; bool failed; };
-StaticImages static_images[3]{};
+enum ImageProfileSlot : unsigned { dpcppSlot, oneapiSlot, dpcppOpenclSlot, noImageSlot };
+StaticImages staticImages[noImageSlot]{};
 
-void remember_images(unsigned profile, void* descriptor) {
-  auto& image = static_images[profile];
+void rememberImages(ImageProfileSlot profile, void* descriptor) {
+  auto& image = staticImages[profile];
   // The producer emits exactly one merged registration unit per profile. Do not silently
   // overwrite another bundle if that build contract changes.
   if (!descriptor || image.descriptor) std::abort();
-  for (const auto& other : static_images)
+  for (const auto& other : staticImages)
     if (other.descriptor == descriptor) std::abort();
 #ifdef _WIN32
   // The wrapper registers its atexit callback after this gate returns. Prepare the original
@@ -58,17 +59,18 @@ void remember_images(unsigned profile, void* descriptor) {
 #endif
   image.descriptor = descriptor;
 }
-void forget_images(unsigned profile, void* descriptor) {
-  auto& image = static_images[profile];
+void forgetImages(ImageProfileSlot profile, void* descriptor) {
+  auto& image = staticImages[profile];
   if (image.descriptor != descriptor) std::abort();
   if (image.registered) __sycl_unregister_lib(descriptor);
   image = {};
 }
-void activate_images(const char* key) {
-  const int profile = std::strcmp(key, "dpcpp") == 0 ? 0 :
-      std::strcmp(key, "oneapi") == 0 ? 1 : std::strcmp(key, "dpcpp-opencl") == 0 ? 2 : -1;
-  if (profile < 0) return;
-  auto& image = static_images[profile];
+void activateImages(const char* key) {
+  const auto profile = std::strcmp(key, "dpcpp") == 0 ? dpcppSlot :
+      std::strcmp(key, "oneapi") == 0 ? oneapiSlot :
+      std::strcmp(key, "dpcpp-opencl") == 0 ? dpcppOpenclSlot : noImageSlot;
+  if (profile == noImageSlot) return;
+  auto& image = staticImages[profile];
   if (!image.descriptor || image.failed)
     throw std::string("Native GPU images are unavailable: ") + key;
   if (!image.registered) {
@@ -84,17 +86,17 @@ void activate_images(const char* key) {
 }
 // Only static offload-wrapper imports are remapped. Runtime-compiled SYCL JIT images keep
 // the original registration API and the already-selected process's ordinary SYCL runtime.
-#define MOM_IMAGE_GATE(name, slot) \
-  extern "C" void mom_native_register_##name(void* image) { remember_images(slot, image); } \
-  extern "C" void mom_native_unregister_##name(void* image) { forget_images(slot, image); }
+#define MOM_IMAGE_GATE(name, profile) \
+  extern "C" void mom_native_register_##name(void* image) { rememberImages(profile, image); } \
+  extern "C" void mom_native_unregister_##name(void* image) { forgetImages(profile, image); }
 #ifdef MOM_NATIVE_GPU_DPCPP
-MOM_IMAGE_GATE(dpcpp, 0)
+MOM_IMAGE_GATE(dpcpp, dpcppSlot)
 #endif
 #ifdef MOM_NATIVE_GPU_ONEAPI
-MOM_IMAGE_GATE(oneapi, 1)
+MOM_IMAGE_GATE(oneapi, oneapiSlot)
 #endif
 #ifdef MOM_NATIVE_GPU_DPCPP_OPENCL
-MOM_IMAGE_GATE(dpcpp_opencl, 2)
+MOM_IMAGE_GATE(dpcpp_opencl, dpcppOpenclSlot)
 #endif
 #undef MOM_IMAGE_GATE
 #endif
@@ -155,7 +157,7 @@ const GpuTable* select() {
 #if defined(MOM_NATIVE_GPU_DPCPP) || defined(MOM_NATIVE_GPU_ONEAPI) || defined(MOM_NATIVE_GPU_DPCPP_OPENCL)
   // Selection's function-static initialization serializes first entry. Failed selection is
   // still retryable: no profile's images are registered before its factory validates.
-  activate_images(key);
+  activateImages(key);
 #endif
   active.store(table, std::memory_order_release);
   return table;

@@ -6,7 +6,7 @@
 #include "field-8x32-portable.inc"
 #if defined(MOM_NEXAPOW_SYCL_NATIVE_FIELD) || defined(MOM_NEXAPOW_ACPP_PTX_FIELD)
 #include "field-4x64-ptx.inc"
-#include "field-4x64-hybrid-ptx.inc"
+#include "field-8x32-hybrid-ptx.inc"
 #endif
 
 namespace sycl_pipeline {

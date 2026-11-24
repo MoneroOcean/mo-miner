@@ -48,9 +48,8 @@ function ergSubmitParams(pool, job, value) {
 // Nexa submit params for the job's dialect (see nexaNotifyJob in pool/jobs.js).
 /** @param {Pick<PoolConfig, "login">} pool @param {PoolJob} job @param {ShareResult} value */
 function nexaSubmitParams(pool, job, value) {
-  const extraNonce = hexWithoutPrefix(job.extra_nonce);
+  const extraNonce = hexWithoutPrefix(job.extra_nonce), nonce = normalizedFullNonce(value.nonce);
   if (job.extra_nonce2_size === 4) {
-    const nonce = normalizedFullNonce(value.nonce);
     if (!/^[0-9a-f]{8}$/i.test(extraNonce)) {throw new Error("Invalid Nexa fixed nonce prefix");}
     // Four-field jobs have no time field. This dialect ignores the timestamp slot and hashes
     // the concatenation of submit fields 2 and 4 (MagicPool's WildRig-compatible ParseWork):
@@ -60,7 +59,7 @@ function nexaSubmitParams(pool, job, value) {
   return [
     pool.login,
     job.job_id,
-    extraNonce + normalizedFullNonce(value.nonce),
+    extraNonce + nonce,
     hexWithoutPrefix(job.ntime),
   ];
 }
@@ -69,14 +68,14 @@ function nexaSubmitParams(pool, job, value) {
 // nonce1 (nonce1_len bytes) || nonce2; the solver advances an 8-byte counter at the start of nonce2,
 // the remaining nonce2 bytes stay as the job delivered them (zeros). Returns wire-order hex.
 /** @param {PoolJob} job @param {unknown} nonceHex */
-function zelhashNonce2(job, nonceHex) {
+function equihashNonce2(job, nonceHex) {
   const nonce1_len = job.nonce1_len ?? 0;
   if (!Number.isSafeInteger(nonce1_len) || nonce1_len < 0 || nonce1_len > 24) {
-    throw new Error("Invalid ZelHash nonce prefix length");
+    throw new Error("Invalid Equihash nonce prefix length");
   }
   // full 32-byte nonce (64 hex) lives at the end of the 280-hex header blob
   const blob = hexWithoutPrefix(job.blob || job.blob_hex || "");
-  if (!/^[0-9a-f]{280}$/i.test(blob)) {throw new Error("Invalid ZelHash job blob");}
+  if (!/^[0-9a-f]{280}$/i.test(blob)) {throw new Error("Invalid Equihash job blob");}
   const fullNonce = blob.slice(-64);
   // The native prints the counter big-endian; the header stores its eight bytes little-endian.
   const counterLE = reverseHexBytes(normalizedFullNonce(nonceHex));
@@ -86,15 +85,25 @@ function zelhashNonce2(job, nonceHex) {
   return (counterLE + tail).padEnd(64 - nonce1_len * 2, "0");
 }
 
-/** @param {Pick<PoolConfig, "login">} pool @param {PoolJob} job @param {ShareResult} value */
-function verthashSubmitParams(pool, job, value) {
-  return [pool.login, job.job_id, job.extranonce2, job.ntime, value.nonce];
-}
+// A native ZIP-301 proof includes its canonical CompactSize prefix.
+/** @type {ReadonlyMap<string, [number, string]>} */
+const equihashProofs = new Map([
+  ["zelhash", [52, "34"]],
+  ["zhash", [100, "64"]],
+  ["equihash192_7", [400, "fd9001"]],
+]);
 
-/** @param {Pick<PoolConfig, "login">} pool @param {PoolJob} job @param {ShareResult} value @param {string} solution */
-function zelhashSubmitParams(pool, job, value, solution) {
+/** @param {Pick<PoolConfig, "login">} pool @param {PoolJob} job
+ * @param {Pick<WorkerResult, "nonce" | "solution">} value */
+function equihashSubmitParams(pool, job, value) {
+  const layout = equihashProofs.get(job.algo || "");
+  const {solution} = value;
+  if (!layout || typeof solution !== "string") {return null;}
+  const [bytes, prefix] = layout;
+  if (solution.length !== bytes * 2 + prefix.length ||
+      solution.slice(0, prefix.length).toLowerCase() !== prefix) {return null;}
   return [pool.login, job.job_id, hexWithoutPrefix(job.ntime),
-    zelhashNonce2(job, value.nonce), solution];
+    equihashNonce2(job, value.nonce), solution];
 }
 
 // XELIS worker name for both mining.authorize and mining.submit: the login's ".worker" suffix,
@@ -111,7 +120,6 @@ module.exports = {
   hexWithoutPrefix,
   isValidNonce,
   reverseHexBytes,
-  verthashSubmitParams,
   xelisWorkerName,
-  zelhashSubmitParams,
+  equihashSubmitParams,
 };

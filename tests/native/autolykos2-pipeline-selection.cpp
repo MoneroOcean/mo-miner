@@ -6,7 +6,7 @@
 #include <initializer_list>
 #include <limits>
 
-#include "autolykos_pipeline_selector.inc"
+#include "autolykos2-pipeline-selector.inc"
 
 int main() {
   using Selector = AutolykosPipelineSelection;

@@ -224,7 +224,7 @@ static void clear_fn() {
   ++clears;
   m_has_fn = false;
 }
-enum class DEV { C29_GPU, PEARLHASH_GPU, ZELHASH_GPU, BEAMHASH3_GPU };
+enum class DEV { C29_GPU, PEARLHASH_GPU, ZCASH_EQUIHASH_GPU, BEAMHASH3_GPU };
 static uint64_t pearlhash_attempt_hashes(unsigned, unsigned, unsigned, unsigned) { return 0; }
 static uint8_t input[4] = {0, 0, 0, 71};
 static uint8_t* nonce_address() { return input; }
@@ -232,14 +232,14 @@ static std::atomic<uint64_t> m_hash_count{0};
 static void compute_owner(uint8_t* output, uint32_t* edges) {
   const DEV m_dev = DEV::C29_GPU;
   const bool is_test = false;
-  const unsigned m_nonce_bytes = 4, dispatch_job_ref = 9, m_c29_proof_size = proof_size;
+  const unsigned m_nonce_bytes = 4, dispatch_job_ref = 9, m_cuckaroo_proof_size = proof_size;
   const auto m_input = input;
   const unsigned m_input_len = sizeof(input), m_batch = 1;
   const auto m_output = output;
   void* m_spads = edges;
   const std::string m_dev_str = "fixture", m_algo_str = "c29";
   const unsigned m_pearlhash_n = 1, m_pearlhash_k = 1, m_pearlhash_rank = 1;
-  struct { decltype(&call) gpu_c29 = call; } m_fn;
+  struct { decltype(&call) gpu_cuckaroo = call; } m_fn;
   for (int tick = 0; tick != 2; ++tick) {
 #include "active-guard.inc"
     int dev_sols = 0;

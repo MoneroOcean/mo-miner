@@ -5,10 +5,9 @@ static sycl::event submit_fishhash_search_coop(sycl::queue& q, const uint8_t* d_
                                                uint64_t start_nonce,
                                                const uint64_t* __restrict d_dag, uint32_t intensity,
                                                const uint8_t* d_target, FishResult* d_result,
-                                               bool is_test, unsigned nonce_off, bool nonce_be,
-                                               bool target_be, unsigned workgroup) {
-  const size_t work_items = static_cast<size_t>(intensity) * FISH_TEAM;
-  const size_t global = (work_items + workgroup - 1) / workgroup * workgroup;
+                                               bool is_test, unsigned nonce_off, bool bigEndian,
+                                               unsigned workgroup) {
+  const size_t global = mom_round_up_size(static_cast<uint64_t>(intensity) * FISH_TEAM, workgroup);
   return q.submit([&](sycl::handler& h) {
     sycl::local_accessor<uint8_t, 1> stage(
         sycl::range<1>((workgroup / FISH_TEAM) * FISH_STAGE_BYTES), h);
@@ -33,7 +32,7 @@ static sycl::event submit_fishhash_search_coop(sycl::queue& q, const uint8_t* d_
               work[i] = d_input[i];
           }
           if (team_lane == 0) {
-            if (nonce_be) {
+            if (bigEndian) {
               for (unsigned i = 0; i < 8; ++i)
                 work[nonce_off + i] = static_cast<uint8_t>(nonce >> (8 * (7 - i)));
             } else {
@@ -92,7 +91,7 @@ static sycl::event submit_fishhash_search_coop(sycl::queue& q, const uint8_t* d_
           if (team_lane == 0 && active) {
             uint8_t final_hash[32];
             blake3_dev(final_hash, 32, work, 96);
-            const bool hit = target_be ? mom_meets_target_be(final_hash, d_target)
+            const bool hit = bigEndian ? mom_meets_target_be(final_hash, d_target)
                                        : mom_meets_target_le(final_hash, d_target);
             if ((is_test && gid == 0) || hit)
               mom_store_pow_hit(d_result, nonce, final_hash);
@@ -107,8 +106,7 @@ static sycl::event submit_karlsenhashv2_search_coop(
     sycl::queue& q, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
     const uint64_t* __restrict d_dag, uint32_t intensity, const uint8_t* d_target,
     FishResult* d_result, bool is_test, unsigned workgroup) {
-  const size_t work_items = static_cast<size_t>(intensity) * FISH_TEAM;
-  const size_t global = (work_items + workgroup - 1) / workgroup * workgroup;
+  const size_t global = mom_round_up_size(static_cast<uint64_t>(intensity) * FISH_TEAM, workgroup);
   return q.submit([&](sycl::handler& h) {
     sycl::local_accessor<uint8_t, 1> stage(
         sycl::range<1>((workgroup / FISH_TEAM) * FISH_STAGE_BYTES), h);

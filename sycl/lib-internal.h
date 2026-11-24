@@ -73,9 +73,9 @@ public:
   void allocate(const size_t count) {
     if (!count)
       throw std::string("SYCL buffer allocation size must be nonzero");
-    if (buffer_ && count_ >= count)
+    if (count_ >= count)
       return;
-    buffer_.reset();
+    release();
     buffer_ = std::make_unique<sycl::buffer<T, 1>>(sycl::range<1>{count});
     count_ = count;
   }
@@ -84,6 +84,8 @@ public:
     buffer_.reset();
     count_ = 0;
   }
+
+  size_t capacity() const noexcept { return count_; }
 
   template <sycl::access_mode Mode>
   auto device_view(sycl::handler& handler) {
@@ -221,6 +223,15 @@ inline bool mom_parse_env_ulong(const char* const name, unsigned long& out) {
     parsed = parsed * 10 + digit;
   }
   out = parsed;
+  return true;
+}
+
+// Keep the caller's fallback intact if the decimal override does not fit the device's u32 range.
+inline bool mom_parse_env_u32(const char* name, uint32_t& out) {
+  unsigned long parsed = 0;
+  if (!mom_parse_env_ulong(name, parsed) || parsed > std::numeric_limits<uint32_t>::max())
+    return false;
+  out = static_cast<uint32_t>(parsed);
   return true;
 }
 
@@ -498,9 +509,13 @@ inline FastModData make_fast_mod_data(const uint32_t divisor) {
 // Align a range upward without wrapping either uint64_t arithmetic or the host's size_t.
 inline size_t mom_round_up_size(const uint64_t value, const uint64_t step) {
   const uint64_t maximum = std::numeric_limits<size_t>::max();
-  if (!step || step > maximum || value > maximum - (step - 1))
+  if (!step || step > maximum || value > maximum)
     throw std::string("SYCL range is too large");
-  return static_cast<size_t>(((value + step - 1) / step) * step);
+  const uint64_t remainder = value % step;
+  const uint64_t padding = remainder ? step - remainder : 0;
+  if (padding > maximum - value)
+    throw std::string("SYCL range is too large");
+  return static_cast<size_t>(value + padding);
 }
 
 // Reduce using an unchanged descriptor from make_fast_mod_data; divisor zero is never valid.
@@ -642,12 +657,49 @@ UsmPtr<T> mom_usm_alloc(sycl::queue& queue, const size_t count, const bool share
   return UsmPtr<T>(pointer, queue);
 }
 
+// The caller retires the previous uses first. Release the old allocation before replacing it
+// to avoid doubling peak device memory. A failed replacement leaves the count at zero.
+template <typename T>
+void mom_resize_usm(sycl::queue& queue, UsmPtr<T>& buffer, uint64_t& count,
+                    const uint64_t requested, const bool shared, const char* failure) {
+  if (buffer && count == requested)
+    return;
+  if (requested > std::numeric_limits<size_t>::max() / sizeof(T))
+    throw std::string(failure);
+  buffer.reset();
+  count = 0;
+  buffer = mom_usm_alloc<T>(queue, static_cast<size_t>(requested), shared, failure);
+  count = requested;
+}
+
 // Monotonic milliseconds for host-side progress and profiling logs.
 inline uint64_t mom_now_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
+
+// Record throughput over a two-second window. Keep one window under each device's state lock.
+class MomSyclRateWindow {
+  uint64_t start = 0, total = 0, samples = 0;
+
+public:
+  template <class Report>
+  void record(uint64_t count, const Report& report) {
+    const uint64_t now = mom_now_ms();
+    if (!start)
+      start = now;
+    total += count;
+    ++samples;
+    if (now - start < 2000)
+      return;
+    const double seconds = static_cast<double>(now - start) / 1000.0;
+    report(static_cast<double>(total) / seconds, static_cast<double>(samples) / seconds);
+    start = now;
+    total = 0;
+    samples = 0;
+  }
+};
 
 // Format a log duration in ms, seconds or minutes, whichever reads best.
 inline void mom_format_duration_ms(char* const out, const size_t out_size, const uint64_t ms) {
