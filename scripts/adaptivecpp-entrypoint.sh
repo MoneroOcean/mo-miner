@@ -3,7 +3,7 @@ set -euo pipefail
 
 host_root=$PWD
 source "$host_root/scripts/build-helpers.sh"
-build_jobs="${MOM_BUILD_JOBS:-$(nproc)}"
+build_jobs="$(mom_build_jobs)"
 compiler="$host_root/scripts/cxx-adaptivecpp.sh"
 host_cc=${MOM_ADAPTIVE_HOST_CC:-clang-21}
 host_cxx=${MOM_ADAPTIVE_HOST_CXX:-clang++-21}
@@ -85,9 +85,9 @@ trap 'rm -rf -- "$work_root"' EXIT
   if [ -d "$cache_dir" ]; then
     mv "$cache_dir" build
   fi
-  state_tools=("$host_cc" "$host_cxx" acpp)
-  if [ "$backend" = hip ]; then state_tools+=("$rocm_root/llvm/bin/clang++"); fi
-  node scripts/linux-build-state.js prepare build "adaptivecpp-$backend" "${state_tools[@]}"
+  state_args=(build "adaptivecpp-$backend" "$host_cc" "$host_cxx" acpp)
+  if [ "$backend" = hip ]; then state_args+=("$rocm_root/llvm/bin/clang++"); fi
+  node scripts/linux-build-state.js prepare "${state_args[@]}"
   # node-gyp records the compiler's absolute path. Reconfigure a relocated cache in place so its
   # valid Release objects survive a different constrained-container mount point.
   if [ ! -s build/Makefile ] ||
@@ -100,7 +100,7 @@ trap 'rm -rf -- "$work_root"' EXIT
   mom_run_quiet "[adaptivecpp-$backend] node-gyp build" env JOBS="$build_jobs" \
     CC="$host_cc" CXX="$compiler" LINK="$compiler" \
     node-gyp build --nodedir=/usr/local --jobs "$build_jobs" -- "${mom_make_dependency_args[@]}"
-  node scripts/linux-build-state.js finish build "adaptivecpp-$backend" "${state_tools[@]}"
+  node scripts/linux-build-state.js finish "${state_args[@]}"
   [ ! -f "$MOM_BUILD_LOG" ] || cp "$MOM_BUILD_LOG" build/build-output.log
   cd "$host_root"
   rm -rf "$cache_dir"

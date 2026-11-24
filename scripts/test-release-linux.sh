@@ -22,11 +22,16 @@ fi
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
 node_bin="${NODE_BIN:-$(command -v node)}"
-work_dir="$(realpath -m -- "${MOM_RELEASE_TEST_DIR:-mom-release-test}")"
-if [[ ! ${work_dir##*/} =~ ^mom-release-[A-Za-z0-9_.-]+$ ]]; then
+workspace="${MOM_RELEASE_TEST_DIR:-mom-release-test}"
+IFS= read -r -d '' workspace_name < <(basename -z -- "$workspace")
+if [[ ! $workspace_name =~ ^mom-release-[A-Za-z0-9_.-]+$ ]]; then
   echo "MOM_RELEASE_TEST_DIR must name a dedicated mom-release-* directory" >&2
   exit 2
 fi
+# Resolve the parent only so the ownership check can still detect a symlink at the work directory.
+IFS= read -r -d '' workspace_parent < <(dirname -z -- "$workspace")
+IFS= read -r -d '' workspace_parent < <(realpath -zm -- "$workspace_parent")
+work_dir="${workspace_parent%/}/$workspace_name"
 workspace_marker="$work_dir/.mom-release-test-workspace"
 
 escape_github_message() {
@@ -76,13 +81,9 @@ esac
 # Run a command, capturing combined stdout+stderr into the global CAPTURE_OUT
 # and its exit status into CAPTURE_RC (without tripping set -e). The command
 # runs in a subshell, so a leading `cd` stays contained.
-CAPTURE_OUT=""
-CAPTURE_RC=0
 capture() {
-  set +e
-  CAPTURE_OUT="$( "$@" 2>&1 )"
-  CAPTURE_RC=$?
-  set -e
+  CAPTURE_RC=0
+  CAPTURE_OUT="$("$@" 2>&1)" || CAPTURE_RC=$?
 }
 
 if [[ -e "$work_dir" || -L "$work_dir" ]]; then
@@ -102,25 +103,13 @@ printf '%s\n' 'mom release test workspace' >"$workspace_marker"
 cp -- "$archive" "$private_archive"
 archive="$private_archive"
 
-archive_list="$(mktemp)"
-trap 'rm -f "$archive_list"' EXIT
-tar -tzf "$archive" >"$archive_list"
-if grep -Eq '(^/|(^|/)\.\.(/|$))' "$archive_list"; then
-  die "Release archive contains an unsafe path."
-fi
-root="$expected_root"
-if grep -Eq '(^|/)tests(/|$)' "$archive_list"; then
-  die "Release archive must not contain tests/."
-fi
-grep -Eq '(^|/)DEVELOPMENT\.md$' "$archive_list" &&
-  die "Release archive must not contain DEVELOPMENT.md."
-
-python3 - "$archive" "$work_dir" "$root" <<'PY'
+python3 - "$archive" "$work_dir" "$expected_root" <<'PY'
+import gzip
 import os
-import sys
 import posixpath
+import sys
 import tarfile
-from pathlib import PurePosixPath
+import zlib
 
 archive, destination, expected_root = sys.argv[1:]
 
@@ -136,32 +125,28 @@ def normalize_hardlink(linkname):
     return candidate
 
 try:
-    with tarfile.open(archive, "r:gz") as payload:
-        members = payload.getmembers()
+    with gzip.open(archive) as compressed, tarfile.open(fileobj=compressed, mode="r:") as payload:
         seen = set()
         safe_members = []
-        has_root_entry = False
-        for member in members:
+        for member in payload:
             raw_name = member.name
             name = raw_name.rstrip("/")
-            parts = PurePosixPath(name).parts
+            parts = name.split("/")
             if (not name or raw_name.startswith("/") or "\\" in raw_name or
-                    "//" in raw_name or
-                    any(part in (".", "..") for part in raw_name.split("/")) or
-                    any(part in (".", "..") for part in parts)):
+                    "//" in raw_name or any(part in (".", "..") for part in parts)):
                 raise tarfile.FilterError(f"noncanonical member: {raw_name!r}")
-            if not parts or parts[0] != expected_root:
+            if parts[0] != expected_root:
                 raise tarfile.FilterError(
                     f"member is outside the expected package root: {raw_name!r}"
                 )
+            if "tests" in parts or parts[-1] == "DEVELOPMENT.md":
+                raise tarfile.FilterError(f"release must not contain {raw_name!r}")
             if name in seen:
                 raise tarfile.FilterError(f"duplicate member: {raw_name!r}")
             seen.add(name)
-            if name == expected_root:
-                if not member.isdir():
-                    raise tarfile.FilterError("archive must contain an explicit package root directory")
-                has_root_entry = True
-            if member.issym() or not (member.isfile() or member.isdir() or member.islnk()):
+            if name == expected_root and not member.isdir():
+                raise tarfile.FilterError("archive must contain an explicit package root directory")
+            if not (member.isfile() or member.isdir() or member.islnk()):
                 raise tarfile.FilterError(
                     f"unsupported member type for {raw_name!r}"
                 )
@@ -171,21 +156,21 @@ try:
             if filtered is None:
                 raise tarfile.FilterError(f"archive member was filtered: {raw_name!r}")
             safe_members.append(filtered)
-        if not has_root_entry:
+        if expected_root not in seen:
             raise tarfile.FilterError("archive must contain an explicit package root directory")
+        # tar stops at its end marker, which can precede gzip's footer and integrity check.
+        while compressed.read(1024 * 1024):
+            pass
         if os.environ.get("MOM_RELEASE_ARCHIVE_VALIDATION_ONLY", "0") != "1":
             payload.extractall(destination, members=safe_members, filter="data")
-except (OSError, tarfile.TarError, ValueError) as error:
-    raise SystemExit(f"Release archive contains an unsafe member: {error}") from error
+except (EOFError, OSError, tarfile.TarError, ValueError, zlib.error) as error:
+    raise SystemExit(f"Release archive contains an unsafe member: {error}") from None
 PY
 # Focused archive tests set this after the structural checks; release CI leaves it unset.
 if [ "${MOM_RELEASE_ARCHIVE_VALIDATION_ONLY:-0}" = 1 ]; then
   exit 0
 fi
-# Canonicalize once so later runtime paths stay valid whether MOM_RELEASE_TEST_DIR is absolute or
-# relative. Prefixing $PWD to an already-absolute work directory produced a nonexistent OpenCL ICD
-# path and let the SYCL-CPU package smoke skip instead of exercising the bundled runtime.
-package_dir="$(cd "$work_dir/$root" && pwd -P)"
+package_dir="$work_dir/$expected_root"
 libs_dir="$package_dir/libs"
 for sidecar in kawpow_device.inc kawpow_keccak.inc; do
   [ -s "$libs_dir/dpcpp/$sidecar" ] ||
@@ -332,10 +317,8 @@ export PATH="$package_dir:$system_path"
 # not implemented by every system loader; OCL_ICD_VENDORS with a private one-line manifest is. This
 # also prevents unrelated host GPU ICDs from making a CPU-only CI gate appear to pass accidentally.
 if [ "$suite" = gpu-portable-cpu ]; then
-  # Test workers run with the extracted package as cwd, so the loader needs an absolute vendor
-  # directory. A relative MOM_RELEASE_TEST_DIR otherwise works for the launcher smoke but becomes a
-  # nonexistent package-relative path when tests spawn their own miner processes.
-  icd_dir="$(cd "$work_dir" && pwd -P)/opencl-icd"
+  # Workers change cwd to the package directory, so give the loader an absolute vendor directory.
+  icd_dir="$work_dir/opencl-icd"
   mkdir -p "$icd_dir"
   printf '%s\n' "$(readlink -f "$libs_dir/oneapi/libintelocl.so")" >"$icd_dir/intel64.icd"
   export OCL_ICD_VENDORS="$icd_dir"

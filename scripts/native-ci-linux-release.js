@@ -389,6 +389,7 @@ function restoreLinuxNativeDescriptorHandoff(state, paths, auditedArchives = und
     hashes = Object.fromEntries(Object.entries(linked.hashes).sort(([a], [b]) => a.localeCompare(b))),
     gnuNoticeSources = linuxNativeSdkGnuNoticeSources(state, archives),
     rocmNoticeSources = linuxNativeSdkRocmNoticeSources(state, archives);
+  verifyLinuxCudaImageLinkInputs(admission.cudaImages, linked.cudaImageInputs);
   if (selected.keys.slice().sort().join(",") !== linuxNativeGpuProfiles.slice().sort().join(",") ||
       !hasExactKeys(admission.selectedLinkInputs, ["files", "sha256"]) ||
       !isDeepStrictEqual(admission.selectedLinkInputs.files, hashes) ||
@@ -777,6 +778,17 @@ function auditLinuxNativeSdkDescriptorCudaImages(state, dpcppInputs) {
     }])), headerPackPayloadsRetained: false, noticeSources};
 }
 
+/** The recorded image matrix and the link receipt must describe the same admitted files.
+ * @param {Pick<ReturnType<typeof auditLinuxNativeSdkDescriptorCudaImages>, "include" | "includeSha256" | "sidecar" | "sidecarSha256"> | undefined} images
+ * @param {Record<string, string> | undefined} linkInputs */
+function verifyLinuxCudaImageLinkInputs(images, linkInputs) {
+  if (!images?.includeSha256 || !images.sidecarSha256 ||
+      linkInputs?.[images.include] !== images.includeSha256 ||
+      linkInputs?.[images.sidecar] !== images.sidecarSha256) {
+    throw new Error("CUDA image include or sidecar differs from the admitted link inputs");
+  }
+}
+
 /** Compose the maintained release descriptor after all original public producers pass admission.
  * This emits no Core/factory result and is not a built or runtime-qualified application. @param {ReturnType<typeof import("./native-ci-linux-sources").ciPaths>} paths */
 function buildLinuxNativeSdkDescriptor(paths) {
@@ -822,6 +834,7 @@ function buildLinuxNativeSdkDescriptor(paths) {
   const ioOpenSsl = auditIoOpenSsl(paths), config = linuxNativeSdkDescriptorConfig(state, hermesTools),
     {nativeSdkConfig, nativeSdkLinkInputs} = require("./build-native-release"), selected = nativeSdkConfig(config, repo),
     linked = nativeSdkLinkInputs(selected.sdk);
+  verifyLinuxCudaImageLinkInputs(cudaImages, linked.cudaImageInputs);
   if (selected.keys.slice().sort().join(",") !== "acpp-cuda,acpp-hip,dpcpp,dpcpp-opencl,oneapi" ||
       !isDeepStrictEqual(Object.keys(config.sdkSources).sort(), ["acpp", "cudaImages", "hermes", "openmpSdk", "rocm", "zstd"].sort()) ||
       !linked.sources || !isDeepStrictEqual(Object.keys(linked.sources).sort(), ["acpp", "cudaImages", "hermes", "openmp", "openssl", "rocm", "zstd"].sort()) ||
@@ -855,6 +868,7 @@ function buildLinuxNativeSdkDescriptor(paths) {
 
 module.exports = {auditLinuxNativeApplicationEntrypoint, auditLinuxNativeComponentArchive, auditLinuxNativeComponentTree,
   auditLinuxNativeSdkDescriptorCudaImages, auditLinuxNativeSdkDescriptorInputArchive, auditLinuxNativeSdkDescriptorInputArchives,
+  verifyLinuxCudaImageLinkInputs,
   auditLinuxNativeSdkDescriptorLineage, buildLinuxNativeApplication, buildLinuxNativeComponent, buildLinuxNativeSdkDescriptor,
   linuxNativeApplicationBuildCommand, linuxNativeApplicationStatePaths, linuxNativeAssemblyComponents, linuxNativeAssemblyConfig,
   linuxNativeComponentArchivePins, linuxNativeComponentFiles, linuxNativeComponentProfiles, linuxNativeComponentStatePaths,

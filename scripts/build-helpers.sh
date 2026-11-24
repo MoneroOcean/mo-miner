@@ -60,6 +60,16 @@ mom_assert_linux_cache_paths() {
   done
 }
 
+# Resolve a worker count before starting any compiler or modifying its cache.
+mom_build_jobs() {
+  local jobs=${MOM_BUILD_JOBS-$(nproc)}
+  if [[ ! $jobs =~ ^[1-9][0-9]*$ ]]; then
+    echo 'MOM_BUILD_JOBS must be a positive decimal integer' >&2
+    return 2
+  fi
+  printf '%s\n' "$jobs"
+}
+
 # Run noisy compiler commands quietly on success while preserving complete diagnostics on failure.
 # Set MOM_BUILD_VERBOSE=1 for an interactive full build log.
 mom_run_quiet() {
@@ -71,9 +81,11 @@ mom_run_quiet() {
     "$@"
     return
   fi
-  if ! "$@" >"$MOM_BUILD_LOG" 2>&1; then
+  local status=0
+  "$@" >"$MOM_BUILD_LOG" 2>&1 || status=$?
+  if [ "$status" -ne 0 ]; then
     echo "$label failed" >&2
-    cat "$MOM_BUILD_LOG" >&2
-    return 1
+    cat "$MOM_BUILD_LOG" >&2 || true
   fi
+  return "$status"
 }

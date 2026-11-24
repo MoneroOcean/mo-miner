@@ -19,17 +19,6 @@ function Invoke-MominerNative {
   }
 }
 
-function Get-MominerBuildJobs {
-  $jobs = 0
-  if ($env:MOM_BUILD_JOBS) {
-    [void][int]::TryParse($env:MOM_BUILD_JOBS, [ref]$jobs)
-  }
-  if ($jobs -lt 1) {
-    $jobs = [Environment]::ProcessorCount
-  }
-  return [Math]::Max(1, $jobs)
-}
-
 function Get-MomNodeHeaderInputs([string]$Root) {
   $files = @(Get-ChildItem -LiteralPath $Root -File)
   # Downloaded headers use include/node + architecture import libraries; an
@@ -85,8 +74,8 @@ function Find-MominerNodeGyp {
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repoRoot
 . (Join-Path $repoRoot 'scripts\windows-incremental-build.ps1')
+. (Join-Path $repoRoot 'scripts\windows-install-helpers.ps1')
 Initialize-MomBuildEnvironment $repoRoot
-. (Join-Path $repoRoot 'scripts\windows-msbuild-cache.ps1')
 if (-not $env:ONEAPI_ROOT) {
   $env:ONEAPI_ROOT = "C:\Program Files (x86)\Intel\oneAPI"
 }
@@ -143,7 +132,7 @@ Write-Host "ICInstallDir = $compilerDir"
 
 Invoke-MominerNative { icx --version } "icx"
 
-$buildJobs = Get-MominerBuildJobs
+$buildJobs = Resolve-MomBuildJobs
 Write-Host "MOM_BUILD_JOBS = $buildJobs"
 
 # MSBuild is on PATH inside a VS Developer/Native-Tools shell (and on CI runners), but not on a bare
@@ -197,6 +186,7 @@ $toolchainRoots = @($compilerDir, $env:VCToolsInstallDir, $env:WindowsSdkDir) |
 $context = Initialize-MomIncrementalBuild $oneapiCache @(
   $nodeGyp, (Get-Command node).Source, (Get-Command icx).Source, $msbuild,
   (Join-Path $repoRoot 'scripts\windows-incremental-build.ps1'),
+  (Join-Path $repoRoot 'scripts\windows-install-helpers.ps1'),
   (Join-Path $repoRoot 'scripts\windows-msbuild-cache.ps1')
 ) $toolchainRoots
 # Inventory changes can alter include resolution even when an existing header

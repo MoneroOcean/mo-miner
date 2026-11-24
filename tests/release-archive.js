@@ -180,6 +180,28 @@ test.describe("Release archive contracts", {concurrency: false}, () => {
       const valid = validateLinuxArchive(validArchive, path.join(fixture, "mom-release-valid"));
       assert.equal(valid.status, 0, valid.stdout + valid.stderr);
 
+      const damagedArchive = path.join(fixture, "damaged.tgz");
+      const damaged = fs.readFileSync(validArchive);
+      const crcOffset = damaged.length - 8;
+      damaged.writeUInt8(damaged.readUInt8(crcOffset) ^ 1, crcOffset);
+      fs.writeFileSync(damagedArchive, damaged);
+      const damagedResult = validateLinuxArchive(damagedArchive, path.join(fixture, "mom-release-damaged"));
+      assert.notEqual(damagedResult.status, 0);
+      assert.match(damagedResult.stderr, /CRC check failed/);
+
+      for (const member of ["nested/tests/data", "nested/DEVELOPMENT.md"]) {
+        const forbidden = path.join(packageDirectory, member);
+        fs.mkdirSync(path.dirname(forbidden), {recursive: true});
+        fs.writeFileSync(forbidden, "fixture");
+        const archive = path.join(fixture, "forbidden.tgz");
+        createTarArchive(archive, fixture, [RELEASE_ROOT]);
+        const result = validateLinuxArchive(archive, path.join(fixture, "mom-release-forbidden"));
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /release must not contain/);
+        fs.unlinkSync(forbidden);
+        if (member.includes("/tests/")) {fs.rmdirSync(path.dirname(forbidden));}
+      }
+
       /** @type {Array<[string, string[], string | undefined, RegExp]>} */
       const cases = [
         ["wrong root", ["mom-vwrong"], undefined, /expected package root/i],

@@ -28,25 +28,7 @@ Initialize-MomBuildEnvironment $RepoRoot
 . (Join-Path $RepoRoot 'scripts\windows-sycl-sources.ps1')
 . (Join-Path $RepoRoot 'scripts\windows-install-helpers.ps1')
 
-function Resolve-BuildJobs([int]$Requested) {
-  if ($Requested -lt 0) {
-    throw "Jobs must be zero or a positive integer, got '$Requested'"
-  }
-  $jobs = $Requested
-  if ($jobs -eq 0 -and $null -ne $env:MOM_BUILD_JOBS -and $env:MOM_BUILD_JOBS -ne '') {
-    $parsed = 0
-    if (-not [int]::TryParse($env:MOM_BUILD_JOBS, [ref]$parsed) -or $parsed -lt 1) {
-      throw "MOM_BUILD_JOBS must be a positive integer, got '$env:MOM_BUILD_JOBS'"
-    }
-    $jobs = $parsed
-  }
-  if ($jobs -eq 0) {
-    $jobs = [Environment]::ProcessorCount
-  }
-  return [Math]::Max(1, $jobs)
-}
-
-$buildJobs = Resolve-BuildJobs $Jobs
+$buildJobs = Resolve-MomBuildJobs $Jobs
 
 if (-not $ToolchainDir) { throw "ToolchainDir not set (run restore-toolchain-win.ps1 first, or pass -ToolchainDir)." }
 $clang  = Join-Path $ToolchainDir "bin\clang++.exe"
@@ -95,7 +77,8 @@ New-Item -ItemType Directory -Force $obj, (Split-Path -Parent $publishedOutput) 
 $publishSeparate = (Resolve-MomBuildPath $publishedOutput) -ne (Resolve-MomBuildPath $out)
 if ($publishSeparate) { Remove-Item -LiteralPath $publishedOutput -Force -ErrorAction SilentlyContinue }
 $buildContext = Initialize-MomIncrementalBuild $obj @($clang, $clangc, $lld, $PSCommandPath,
-  (Join-Path $RepoRoot 'scripts\windows-incremental-build.ps1')) @($ToolchainDir, $CudaPath, $env:VCToolsInstallDir, $env:WindowsSdkDir)
+  (Join-Path $RepoRoot 'scripts\windows-incremental-build.ps1'),
+  (Join-Path $RepoRoot 'scripts\windows-install-helpers.ps1')) @($ToolchainDir, $CudaPath, $env:VCToolsInstallDir, $env:WindowsSdkDir)
 
 $inc = "-I" + (Join-Path $RepoRoot "xmrig")
 $syclIncludes = @(('-I' + (Join-Path $ToolchainDir 'include\sycl')), ('-I' + (Join-Path $ToolchainDir 'include')))

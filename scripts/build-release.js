@@ -193,6 +193,19 @@ function bindPackingReceipt(output, binary, sourceHash, packing, value) {
   return {path: receiptPath, sha256: receiptHash};
 }
 
+/** Match both receipt formats against the build-only artifact and its producer descriptor.
+ * @param {any} producer @param {{path:string, bytes:number, sha256:string}} expected
+ * @param {string} configHash @param {string} [windowsTarget] */
+function matchesProducerReceipt(producer, expected, configHash, windowsTarget) {
+  if (!producer || typeof producer !== "object" || Array.isArray(producer) ||
+      producer.buildOnly !== true || producer.publicationQualified !== false || producer.configHash !== configHash) {return false;}
+  const targetMatches = windowsTarget ? producer.target === windowsTarget :
+    producer.target === undefined || ["linux", "x86_64-unknown-linux-gnu"].includes(producer.target);
+  const artifact = windowsTarget ? producer.artifact : {path: producer.binary, bytes: producer.bytes, sha256: producer.sha256};
+  return targetMatches && artifact && typeof artifact === "object" && !Array.isArray(artifact) &&
+    artifact.path === expected.path && artifact.bytes === expected.bytes && artifact.sha256 === expected.sha256;
+}
+
 /** Pack an already-assembled raw candidate without reopening its SDK or invoking a builder.
  * The producer entrypoint remains immutable provenance; only its pinned raw executable and
  * transported producer receipt are consumed at their relocated paths.
@@ -283,9 +296,6 @@ function packNativeEntrypoint(options, spawn = spawnSync) {
     }
   } finally {fs.closeSync(sourceFd);}
   if (fileHash(sourcePath) !== sourceHash) {throw new Error("Native raw executable changed during target admission");}
-  if (typeof originalProducerHash !== "string" || !hashPattern.test(originalProducerHash)) {
-    throw new Error("Native original entrypoint has an invalid producer receipt hash");
-  }
   regularFile(producerReceiptPath, "transported producer receipt", 8 << 20);
   const producerHash = fileHash(producerReceiptPath);
   if (producerHash !== originalProducerHash) {
@@ -293,14 +303,9 @@ function packNativeEntrypoint(options, spawn = spawnSync) {
   }
   const producer = readBuildJson(producerReceiptPath);
   if (fileHash(producerReceiptPath) !== producerHash) {throw new Error("Transported producer receipt changed during admission");}
-  const producerArtifact = target === "win32" ? producer?.artifact : producer &&
-    {path: producer.binary, bytes: producer.bytes, sha256: producer.sha256};
-  const expectedConfigHash = entry.generatedDescriptor?.sha256 || entry.configHash,
-    producerTargetMatches = target === "win32" ? producer?.target === "x86_64-pc-windows-msvc" :
-      producer?.target === undefined || ["linux", "x86_64-unknown-linux-gnu"].includes(producer.target);
-  if (!record(producer) || producer.buildOnly !== true || producer.publicationQualified !== false ||
-      producer.configHash !== expectedConfigHash || !producerTargetMatches || !record(producerArtifact) ||
-      producerArtifact.path !== originalArtifactPath || producerArtifact.sha256 !== sourceHash || producerArtifact.bytes !== Number(sourceStat.size) ||
+  const rawArtifact = {path: originalArtifactPath, bytes: Number(sourceStat.size), sha256: sourceHash};
+  if (!matchesProducerReceipt(producer, rawArtifact, entry.generatedDescriptor?.sha256 || entry.configHash,
+    target === "win32" ? "x86_64-pc-windows-msvc" : undefined) ||
       target === "win32" && (producer.nativeRuntime !== true || producer.executed !== false)) {
     throw new Error("Transported producer receipt does not bind the pinned raw executable, target and descriptor");
   }
@@ -418,20 +423,16 @@ function buildNativeArtifact(configFile, output, packing, environment = process.
   const producerReceiptPath = path.join(unpacked, "result.json");
   if (!fs.existsSync(producerReceiptPath)) {throw new Error("Native source builder did not write its build receipt");}
   const receiptBefore = fileHash(producerReceiptPath), producer = readBuildJson(producerReceiptPath), producerReceiptHash = fileHash(producerReceiptPath);
-  const producerArtifact = windows ? producer?.artifact : producer && {path: producer.binary, sha256: producer.sha256, bytes: producer.bytes};
-  const targetMatches = windows ? producer?.target === (descriptor.target || "x86_64-pc-windows-msvc") :
-    producer?.target === undefined || ["linux", "x86_64-unknown-linux-gnu"].includes(producer.target);
-  if (receiptBefore !== producerReceiptHash || !producer || typeof producer !== "object" || Array.isArray(producer) ||
-      !producerArtifact || producerArtifact.path !== binary || producerArtifact.sha256 !== sourceHash ||
-      producerArtifact.bytes !== fs.statSync(binary).size || producer.configHash !== (generatedDescriptor?.sha256 || configHash) ||
-      producer.buildOnly !== true || producer.publicationQualified !== false || !targetMatches) {
+  const artifact = {path: binary, bytes: fs.statSync(binary).size, sha256: sourceHash};
+  if (receiptBefore !== producerReceiptHash || !matchesProducerReceipt(producer, artifact, generatedDescriptor?.sha256 || configHash,
+    windows ? descriptor.target || "x86_64-pc-windows-msvc" : undefined)) {
     throw new Error("Native producer receipt does not match the build-only executable and target");
   }
   const producerReceipt = {path: producerReceiptPath, sha256: producerReceiptHash};
   componentHashes[producerReceiptPath] = producerReceiptHash;
   if (fileHash(producerReceipt.path) !== producerReceipt.sha256) {throw new Error("Native producer receipt changed before packing");}
   const result = packing ? require("./pack-native-executable").packNativeRelease({source: binary, output, ...packing}) :
-    {artifact: {path: binary, bytes: fs.statSync(binary).size, sha256: sourceHash}, buildOnly: true, publicationQualified: false};
+    {artifact, buildOnly: true, publicationQualified: false};
   if (fileHash(producerReceipt.path) !== producerReceipt.sha256) {throw new Error("Native producer receipt changed during packing");}
   if (fileHash(configFile) !== configHash) {throw new Error("Native release descriptor changed during packing");}
   if (generatedDescriptor && fileHash(generatedDescriptor.path) !== generatedDescriptor.sha256) {throw new Error("Generated Windows controller descriptor changed during packing");}

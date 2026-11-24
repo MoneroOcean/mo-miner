@@ -482,6 +482,12 @@ test.describe("Windows native GPU source and host policy", () => {
     ].sort());
     assert.equal(new Set([...maintained.main, ...maintained.support]).size,
       maintained.main.length + maintained.support.length);
+    // The development builders retain stable object names, so compare their source paths alone.
+    const windowsSources = fs.readFileSync(path.join(repo, "scripts/windows-sycl-sources.ps1"), "utf8");
+    const development = [...windowsSources.matchAll(/'([^']+\.cpp)'/g)]
+      .map(match => (match[1] || "").replaceAll("\\", "/"));
+    assert.deepEqual(development.sort(), [...maintained.main,
+      ...maintained.support.filter(file => file.startsWith("sycl/") && file.endsWith(".cpp"))].sort());
   });
 
   test("keeps C support on the strict host recipe while C++ gets the static header", () => {

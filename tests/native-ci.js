@@ -8,6 +8,7 @@ const path = require("node:path");
 const {createHash} = require("node:crypto");
 const test = require("node:test");
 const vm = require("node:vm");
+const {verifyLinuxCudaImageLinkInputs} = require("../scripts/native-ci-linux-release");
 const {extractState, packState, listState, safeRelative, tarExpandedBytes, linuxNativeSdkDiskPreflight} = require("../scripts/native-ci-tar"),
   {ciPaths, hermesStatePaths, assertHermesFetchProvenance, acppStatePaths, assertAcppFetchProvenance, assertAcppPreparedSource, linuxSourceStatePaths, assertSdkFetchProvenance, assertPreparedSdkPaths, linuxSourceFetchArgs, linuxSourcePreparationPlan, rocmParserSource, assertRocmParserReceipt, verifyRocmParserSource, rocmSourceStatePaths, rocmSourceFetchArgs, dpcppCudaInputsStatePaths, dpcppSourceArchivePin, dpcppCudaInputPins, gnuHeadersStatePaths, buildWindowsGnuHeaders, zstdStatePaths, openmpStatePaths} = require("../scripts/native-ci-linux-sources"),
   {admitLinuxLlvmOutput, linuxLlvmConfigureCommand} = require("../scripts/native-ci-linux-llvm"),
@@ -731,6 +732,19 @@ setInterval(() => {}, 1000);
     assert.deepEqual(openmpBuildCommand(state), {script: "scripts/build-native-openmp-sdk.js",
       args: [state.archive, state.sdkRoot, state.toolsFile]});
     assert.throws(() => openmpStatePaths(paths, {MOM_NATIVE_OPENMP_SDK_DIR: "/tmp/ambient-openmp"}), /exactly match/);
+  });
+
+  test("CUDA image provenance must match both admitted link files", () => {
+    const include = "/cuda/cuda-images.inc", sidecar = include + ".json";
+    const includeSha256 = "a".repeat(64), sidecarSha256 = "b".repeat(64);
+    const images = {include, includeSha256, sidecar, sidecarSha256};
+    const linkInputs = {[include]: includeSha256, [sidecar]: sidecarSha256};
+    verifyLinuxCudaImageLinkInputs(images, linkInputs);
+    for (const file of [include, sidecar]) {
+      assert.throws(() => verifyLinuxCudaImageLinkInputs(images, {...linkInputs, [file]: "c".repeat(64)}),
+        /differs from the admitted link inputs/);
+    }
+    assert.throws(() => verifyLinuxCudaImageLinkInputs(images, undefined), /differs from the admitted link inputs/);
   });
 
   test("ACPP and descriptor transport pins reject mismatches before extraction or archive parsing", {skip: linuxOnlySkip}, t => {

@@ -1,3 +1,15 @@
+function Resolve-MomBuildJobs([int]$Requested = 0, [int]$Default = [Environment]::ProcessorCount) {
+  if ($Requested -lt 0) { throw "Jobs must be zero or a positive integer, got '$Requested'" }
+  if ($Requested -gt 0) { return $Requested }
+  $value = $env:MOM_BUILD_JOBS
+  if ($null -eq $value) { return $Default }
+  $jobs = 0
+  if ($value -notmatch '\A[1-9][0-9]*\z' -or -not [int]::TryParse($value, [ref]$jobs)) {
+    throw "MOM_BUILD_JOBS must be a positive integer in decimal notation, got '$value'"
+  }
+  return $jobs
+}
+
 function Invoke-Checked([string]$File, [string[]]$Arguments) {
   & $File @Arguments
   if ($LASTEXITCODE -ne 0) { throw "$File failed with exit code $LASTEXITCODE" }

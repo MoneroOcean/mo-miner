@@ -27,11 +27,17 @@ function fileHash(file) {
   } finally {fs.closeSync(fd);}
 }
 
-/** Shared source/SDK traversal preserves Engineering's deterministic ordering. Callers choose
- * explicit source roots; this helper never inventories home, caches or arbitrary toolchains.
+/** Keep directory names in code-unit order for build receipts and cache keys.
+ * @param {string} directory */
+function sortedBuildEntries(directory) {
+  return fs.readdirSync(directory, {withFileTypes: true}).sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+}
+
+/** Shared source/SDK traversal. Callers choose the source roots explicitly.
  * @param {string} directory @param {(file: string) => void} visit */
 function walk(directory, visit) {
-  for (const entry of fs.readdirSync(directory, {withFileTypes: true}).sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const entry of sortedBuildEntries(directory)) {
     const file = path.join(directory, entry.name);
     if (entry.isDirectory()) {walk(file, visit);} else {visit(file);}
   }
@@ -175,5 +181,5 @@ function completeBuildInputs(depfiles, repo, output, startedAt, initial) {
   return current;
 }
 
-module.exports = {fileHash, walk, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildJson, readBuildText,
+module.exports = {fileHash, sortedBuildEntries, walk, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildJson, readBuildText,
   buildDependencies, buildFileInputs, completeBuildInputs};

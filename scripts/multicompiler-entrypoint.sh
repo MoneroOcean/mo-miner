@@ -10,7 +10,7 @@ case "${backend,,}" in
     ;;
 esac
 build_compiler=${MOM_LINUX_BUILD_COMPILER:-all}
-jobs=${MOM_BUILD_JOBS:-$(nproc)}
+jobs="$(mom_build_jobs)"
 opencl_device_type=${MOM_OPENCL_DEVICE_TYPE:-gpu}
 case "$build_compiler" in
   all|oneapi|dpcpp|dpcpp-opencl|acpp-cuda|acpp-hip) ;;
@@ -268,14 +268,15 @@ build_oneapi() {
   active_cache="$out"
   rm -rf build
   [ ! -d "$out" ] || mv "$out" build
-  node scripts/linux-build-state.js prepare build oneapi icx icpx
+  local -a state_args=(build oneapi icx icpx)
+  node scripts/linux-build-state.js prepare "${state_args[@]}"
   # Content preparation owns graph/toolchain invalidation and removes stale Makefiles.
   if [ ! -s build/Makefile ] ||
      ! grep -Fqx "CXX.target ?= $PWD/scripts/cxx-oneapi.sh" build/Makefile; then
     CC=icx CXX="$PWD/scripts/cxx-oneapi.sh" node-gyp configure --nodedir=/usr/local -- -Dmom_sycl_impl=dpcpp
   fi
   JOBS="$jobs" CC=icx CXX="$PWD/scripts/cxx-oneapi.sh" node-gyp build --nodedir=/usr/local --jobs "$jobs" -- "${mom_make_dependency_args[@]}"
-  node scripts/linux-build-state.js finish build oneapi icx icpx
+  node scripts/linux-build-state.js finish "${state_args[@]}"
   rm -rf "$out"
   mv build "$out"
   active_cache=

@@ -2142,12 +2142,33 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
         assert.equal(wrongMarker.status, 2, wrongMarker.stderr);
         assert.match(wrongMarker.stderr, /\.mom-release-test-workspace marker/);
         assert.equal(fs.readFileSync(wrongMarkerSentinel, "utf8"), "keep");
+
+        const markedWorkspace = path.join(temp, "mom-release-marked");
+        const workspaceLink = path.join(temp, "mom-release-link");
+        fs.mkdirSync(markedWorkspace);
+        fs.writeFileSync(path.join(markedWorkspace, ".mom-release-test-workspace"), "mom release test workspace\n");
+        const markedSentinel = path.join(markedWorkspace, "sentinel");
+        fs.writeFileSync(markedSentinel, "keep");
+        fs.symlinkSync(markedWorkspace, workspaceLink, "dir");
+        const linked = spawnSync("bash", [linux, safeArchive], {
+          encoding: "utf8", env: {...process.env, MOM_RELEASE_TEST_DIR: workspaceLink + "/"},
+        });
+        assert.equal(linked.status, 2, linked.stderr);
+        assert.match(linked.stderr, /must be an owned directory/);
+        assert.equal(fs.readFileSync(markedSentinel, "utf8"), "keep");
+        const invalidName = spawnSync("bash", [linux, safeArchive], {
+          encoding: "utf8", env: {...process.env, MOM_RELEASE_TEST_DIR: markedWorkspace + "\n"},
+        });
+        assert.equal(invalidName.status, 2, invalidName.stderr);
+        assert.match(invalidName.stderr, /dedicated mom-release-/);
+        assert.equal(fs.readFileSync(markedSentinel, "utf8"), "keep");
+
         const result = spawnSync("bash", [linux, archive], {
           encoding: "utf8", env: {...process.env,
             MOM_RELEASE_TEST_DIR: path.join(temp, "mom-release-work")},
         });
         assert.notEqual(result.status, 0);
-        assert.match(result.stderr, /unsafe path/);
+        assert.match(result.stderr, /noncanonical member/);
         assert.equal(fs.existsSync(path.join(temp, "escape")), false);
 
         const outside = path.join(temp, "outside-dir");

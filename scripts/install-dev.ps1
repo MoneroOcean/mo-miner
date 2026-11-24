@@ -1,6 +1,6 @@
 param(
   [Alias('Components')][string[]]$Component = @('all'),
-  [int]$Jobs = $(if ($env:MOM_BUILD_JOBS) { [int]$env:MOM_BUILD_JOBS } else { [Environment]::ProcessorCount }),
+  [int]$Jobs = 0,
   [string]$DpcppDir = 'C:\Tools\dpcpp',
   [string]$AcppCudaDir = 'C:\Tools\acpp-cuda',
   [string]$AcppHipDir = 'C:\Tools\acpp-amd',
@@ -15,10 +15,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 if ($PSVersionTable.PSVersion.Major -ge 7) { $PSNativeCommandUseErrorActionPreference = $true }
-if ($Jobs -lt 1) { throw '-Jobs must be a positive integer' }
-$env:MOM_BUILD_JOBS = [string]$Jobs
+if ($PSBoundParameters.ContainsKey('Jobs') -and $Jobs -lt 1) { throw '-Jobs must be a positive integer' }
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 . (Join-Path $PSScriptRoot 'windows-install-helpers.ps1')
+$Jobs = Resolve-MomBuildJobs $Jobs
+$env:MOM_BUILD_JOBS = [string]$Jobs
 . (Join-Path $PSScriptRoot "install-cutlass.ps1")
 
 function Resolve-FromRepo([string]$Path) {

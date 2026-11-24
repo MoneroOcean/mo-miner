@@ -112,6 +112,39 @@ test.describe("Linux completed CPU portability profiles", {skip: process.platfor
   });
 });
 
+test("quiet build commands preserve failure status and diagnostics", {skip: process.platform !== "linux"}, t => {
+  const f = fixture(t);
+  const result = spawnSync("bash", ["-ec",
+    'source scripts/build-helpers.sh; mom_run_quiet "fixture command" sh -c \'printf "command details\\n" >&2; exit 37\''],
+  {cwd: f.root, env: {...f.env, MOM_BUILD_LOG: path.join(f.root, "build/build.log")}, encoding: "utf8"});
+  assert.equal(result.status, 37);
+  assert.match(result.stderr, /fixture command failed/);
+  assert.match(result.stderr, /command details/);
+
+  const unavailable = spawnSync("bash", ["-ec",
+    'source scripts/build-helpers.sh; cat() { return 1; }; mom_run_quiet "fixture command" sh -c "exit 37"'],
+  {cwd: f.root, env: {...f.env, MOM_BUILD_LOG: path.join(f.root, "build/build.log")}, encoding: "utf8"});
+  assert.equal(unavailable.status, 37);
+});
+
+test("Linux worker builds reject malformed job counts before the build starts", {skip: process.platform !== "linux"}, t => {
+  const f = fixture(t);
+  const result = spawnSync("bash", ["-ec",
+    "source scripts/build-helpers.sh; nproc() { echo 7; }; unset MOM_BUILD_JOBS; mom_build_jobs; MOM_BUILD_JOBS=3 mom_build_jobs"],
+  {cwd: f.root, env: f.env, encoding: "utf8"});
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "7\n3\n");
+  for (const script of ["adaptivecpp-entrypoint", "combined-build", "multicompiler-entrypoint"]) {
+    for (const value of ["", "0", "-2", " 2", "two"]) {
+      const invalid = spawnSync("bash", [`scripts/${script}.sh`], {
+        cwd: path.resolve(__dirname, ".."), env: {...f.env, MOM_BUILD_JOBS: value}, encoding: "utf8",
+      });
+      assert.equal(invalid.status, 2, invalid.stderr);
+      assert.match(invalid.stderr, /MOM_BUILD_JOBS must be a positive decimal integer/);
+    }
+  }
+});
+
 test.describe("Linux content-based incremental build", {skip: process.platform !== "linux"}, () => {
   test("Engineering JavaScript edits execute directly without recompiling or relinking native objects", t => {
     const f = fixture(t);

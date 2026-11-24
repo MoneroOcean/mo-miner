@@ -53,6 +53,27 @@ test.describe("Windows script safety", {concurrency: false}, () => {
     return fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
   }
 
+  test("Windows worker builds share strict job-count resolution", {skip: !WINDOWS}, t => {
+    const fixture = makeFixture();
+    t.after(() => fs.rmSync(fixture, {recursive: true, force: true}));
+    const driver = makeDriver(fixture, String.raw`
+param([string]$Helpers)
+$ErrorActionPreference = 'Stop'
+. $Helpers
+Remove-Item Env:MOM_BUILD_JOBS -ErrorAction SilentlyContinue
+if ((Resolve-MomBuildJobs) -ne [Environment]::ProcessorCount -or (Resolve-MomBuildJobs -Default 8) -ne 8) { throw 'Default worker count changed' }
+$env:MOM_BUILD_JOBS = '3'
+if ((Resolve-MomBuildJobs) -ne 3 -or (Resolve-MomBuildJobs 2) -ne 2) { throw 'Worker override changed' }
+foreach ($value in @('0', '-2', ' 2', 'two', '99999999999')) {
+  $env:MOM_BUILD_JOBS = $value
+  try { Resolve-MomBuildJobs; throw 'Accepted invalid worker count' }
+  catch { if ($_.Exception.Message -notlike 'MOM_BUILD_JOBS must be a positive integer in decimal notation*') { throw } }
+}
+`);
+    const result = runPowerShell(driver, [path.join(repo, "scripts/windows-install-helpers.ps1")]);
+    assert.equal(result.status, 0, result.stderr);
+  });
+
   test("Windows release vector stage uses an isolated native PowerShell boundary", () => {
     const source = readSource(path.join(repo, "scripts/test-windows-release-gpu.ps1"));
     assert.match(source, /& \$vectorPowerShell -NoProfile -ExecutionPolicy Bypass -File/);

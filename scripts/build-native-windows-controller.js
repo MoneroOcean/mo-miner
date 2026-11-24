@@ -16,7 +16,7 @@ const {controllerBundleOptions, controllerAotCommand, verifyBundle, nativeApplic
 const {controllerEntry, nativeApplicationBuildInputs} = require("./build-native-application");
 const nativeResources = require("./native-resources");
 const {nativeJitCacheHeader} = require("./native-jit-cache-tag");
-const {buildDependencies, fileHash, readBuildJson, readBuildText} = require("./build-source-inputs");
+const {buildDependencies, compilerIncludePaths, fileHash, readBuildJson, readBuildText} = require("./build-source-inputs");
 const {validateWindowsApplication, windowsApplicationInputs, verifyWindowsApplicationFiles, rejectStaticNvrtcArchives, windowsResponseFile, auditWindowsLinkMap} = require("./native-windows-application");
 const {gpuTable, gpuForwards} = require("./native-gpu-table");
 const {isolateCoffCompilerArchives} = require("./native-coff-archive");
@@ -331,11 +331,8 @@ function windowsGeneratedCompileInputs(name, output) {
 function windowsObjectIncludeRoots(commands, output) {
   const roots = new Set(), outputRoot = path.resolve(output);
   for (const {args} of commands) {
-    for (let i = 0; i < args.length; ++i) {
-      const arg = args[i];
-      let selected;
-      if (arg === "-I" || arg === "-isystem" || arg === "-imsvc") {selected = args[++i];} else if (arg?.startsWith("-I") && arg.length > 2) {selected = arg.slice(2);}
-      if (!selected || !path.isAbsolute(selected)) {continue;}
+    for (const selected of compilerIncludePaths(args)) {
+      if (!path.isAbsolute(selected)) {continue;}
       const root = path.resolve(selected);
       if (root === outputRoot || root.startsWith(outputRoot + path.sep)) {continue;}
       try {if (fs.statSync(root).isDirectory()) {roots.add(root);}} catch (error) {

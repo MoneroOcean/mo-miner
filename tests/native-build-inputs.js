@@ -1,7 +1,7 @@
 "use strict";
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const {createHash} = require("node:crypto"), {spawnSync} = require("node:child_process");
-const {fileHash, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildJson, readBuildText,
+const {fileHash, walk, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildJson, readBuildText,
   buildDependencies, buildFileInputs, completeBuildInputs} = require("../scripts/build-source-inputs");
 const {admitCpuCache} = require("../scripts/build-native-core");
 const {nativeApplicationInputs, nativeApplicationBuildInputs, nativeApplicationCudaImages, verifyCudaImageReceiptInputs} = require("../scripts/build-native-application");
@@ -49,6 +49,14 @@ function application(t) {
 }
 
 test.describe("Shared build source content and membership", () => {
+  test("source traversal order is independent of the host locale", t => {
+    const f = fixture(t), directory = path.join(f.root, "walk");
+    for (const name of ["z", "a", "B"]) {f.put(path.join("walk", name), "fixture");}
+    /** @type {string[]} */
+    const names = [];
+    walk(directory, file => names.push(path.basename(file)));
+    assert.deepEqual(names, ["B", "a", "z"]);
+  });
   test("unchanged sources produce identical content receipts", t => {const f = fixture(t); assert.deepEqual(sourceInputs(f.root), sourceInputs(f.root));});
   test("JavaScript-only Engineering changes do not enter native source state", t => {
     const f = fixture(t), before = sourceInputs(f.root); f.put("mom.js", "changed controller"); assert.deepEqual(sourceInputs(f.root), before);

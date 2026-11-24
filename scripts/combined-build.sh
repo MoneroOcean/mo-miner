@@ -11,11 +11,11 @@ cd "$ROOT"
 DPCPP="${MOM_DPCPP_ROOT:-/opt/dpcpp}"
 ICPX="${MOM_ICPX:-icpx}"
 WRAP="$ROOT/scripts/cxx-combined.sh"
-build_jobs="${MOM_BUILD_JOBS:-$(nproc)}"
 build_log="$ROOT/build/combined-build-output.log"
 verbose_build="${MOM_BUILD_VERBOSE:-0}"
 MOM_BUILD_LOG="$build_log"
 source "$ROOT/scripts/build-helpers.sh"
+build_jobs="$(mom_build_jobs)"
 
 # Dual-compiler builds link at the OBJECT level: icx host objects + clang -fsycl link. LTO is
 # impossible across the two (icx LLVM bitcode != nightly clang bitcode, and the nightly tarball
@@ -41,7 +41,8 @@ if [ -z "${MOM_INTEL_AOT_DEVICE:-}" ] && [[ ",$MOM_COMBINED_TARGETS," == *,spir6
 fi
 export MOM_DPCPP_IMPL="${MOM_DPCPP_IMPL:-dpcpp-combined}"
 
-node scripts/linux-build-state.js prepare build "$MOM_DPCPP_IMPL" icx "$ICPX" "$DPCPP/bin/clang++"
+state_args=(build "$MOM_DPCPP_IMPL" icx "$ICPX" "$DPCPP/bin/clang++")
+node scripts/linux-build-state.js prepare "${state_args[@]}"
 
 # Content preparation owns invalidation; retain admission for absolute wrapper paths after moves.
 if [ ! -s build/Makefile ] \
@@ -55,7 +56,7 @@ export MOM_COMBINED_LOG="$ROOT/build/combined-routing.log"
 mom_run_quiet "[combined] node-gyp build" \
   env JOBS="$build_jobs" CC=icx CXX="$WRAP" LINK="$WRAP" MAKEFLAGS="-s -j${build_jobs}" \
     node-gyp build --nodedir=/usr/local --jobs "$build_jobs" --silent -- "${mom_make_dependency_args[@]}"
-node scripts/linux-build-state.js finish build "$MOM_DPCPP_IMPL" icx "$ICPX" "$DPCPP/bin/clang++"
+node scripts/linux-build-state.js finish "${state_args[@]}"
 
 if [ "$verbose_build" = 1 ]; then
   echo "[combined] compiler routing (want: 7 SYCL->clang, rest HOST->icpx, 1 LINK->clang):"

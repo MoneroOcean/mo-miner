@@ -40,14 +40,7 @@ if ($BaseToolchain.StartsWith($workspacePrefix, [StringComparison]::OrdinalIgnor
 }
 Set-Location $Workspace
 
-$buildJobs = 8
-if ($env:MOM_BUILD_JOBS) {
-  $parsedBuildJobs = 0
-  if (-not [int]::TryParse($env:MOM_BUILD_JOBS, [ref]$parsedBuildJobs) -or $parsedBuildJobs -lt 1) {
-    throw "MOM_BUILD_JOBS must be a positive integer, got '$env:MOM_BUILD_JOBS'"
-  }
-  $buildJobs = $parsedBuildJobs
-}
+$buildJobs = Resolve-MomBuildJobs -Default 8
 $subprojectJobs = [Math]::Min(4, $buildJobs)
 
 function Invoke-CheckedCommand {

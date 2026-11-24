@@ -7,7 +7,7 @@
 const fs = require("node:fs"), path = require("node:path");
 const crypto = require("node:crypto");
 const {spawnSync} = require("node:child_process");
-const {fileHash, buildDependencies} = require("./build-source-inputs");
+const {fileHash, sortedBuildEntries, buildDependencies} = require("./build-source-inputs");
 
 const MAX_COMMANDS = 65536, MAX_ARGS = 65536, MAX_FILES = 200000, MAX_JSON = 8 << 20;
 const generatedSuffix = /\.(?:c|cc|cpp|cxx|cuh|h|hh|hpp|hxx|inc|inl|ipp)$/i;
@@ -115,7 +115,7 @@ function generatedFiles(output) {
   const files = [];
   /** @param {string} dir @param {string} prefix */
   function walk(dir, prefix) {
-    for (const entry of fs.readdirSync(dir, {withFileTypes: true}).sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const entry of sortedBuildEntries(dir)) {
       const file = path.join(dir, entry.name), relative = prefix ? prefix + "/" + entry.name : entry.name;
       if (entry.isDirectory()) {walk(file, relative); continue;}
       if (entry.isSymbolicLink()) {
@@ -164,7 +164,7 @@ function includeMembership(roots, output, generated, repo) {
       const realDir = fs.realpathSync(dir);
       if (active.has(realDir)) {return;}
       active.add(realDir);
-      for (const entry of fs.readdirSync(dir, {withFileTypes: true}).sort((a, b) => a.name.localeCompare(b.name))) {
+      for (const entry of sortedBuildEntries(dir)) {
         if (entries.length >= MAX_FILES) {throw new Error("Native include root has too many entries");}
         const child = path.join(dir, entry.name), rel = prefix ? prefix + "/" + entry.name : entry.name;
         if (entry.isDirectory()) {entries.push([rel, "directory"]); walk(child, rel);} else if (entry.isFile()) {entries.push([rel, "file"]);} else if (entry.isSymbolicLink()) {
@@ -180,7 +180,7 @@ function includeMembership(roots, output, generated, repo) {
       const exclusions = new Set([".git", "build", "node_modules", "vendor", "deps", "dist", "coverage", ".cache"]);
       const maintained = new Set(["native", "runtime", "sycl", "xmrig"]);
       active.add(physical);
-      for (const entry of fs.readdirSync(physical, {withFileTypes: true}).sort((a, b) => a.name.localeCompare(b.name))) {
+      for (const entry of sortedBuildEntries(physical)) {
         if (entries.length >= MAX_FILES) {throw new Error("Native repository include root has too many entries");}
         const child = path.join(physical, entry.name), rel = entry.name;
         if (entry.isDirectory()) {
