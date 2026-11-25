@@ -30,11 +30,8 @@ public:
   static unsigned cooperative_workgroup(const sycl::device& dev) {
     if constexpr (mom_sycl_portable_opencl)
       return 0;
-    const std::initializer_list<unsigned> allowed = {64, 128, 256, 512};
-    const auto fits = [&](unsigned size) {
-      return sycl_workgroup_fits(dev, size, 0, 0, FISH_STAGE_BYTES, FISH_TEAM);
-    };
-    if (!dev.is_gpu() || !sycl_reqd_subgroup_16_supported(dev) || !fits(*allowed.begin()))
+    if (!dev.is_gpu() || !sycl_reqd_subgroup_16_supported(dev) ||
+        !sycl_workgroup_fits(dev, 64, 0, 0, FISH_STAGE_BYTES, FISH_TEAM))
       return 0;
     // Both CUDA compiler paths peak at 512 on the RTX 5060 Ti (3.2% over 128 for AdaptiveCpp and
     // 5.1% for DPC++); wide pre-sm80 CUDA peaks at 256 (V100S: +2.7%). Intel and AMD are
@@ -44,15 +41,9 @@ public:
     if (mom_is_cuda(dev) && dev.get_info<sycl::info::device::max_compute_units>() >= 64)
       preferred = 256;
 #endif
-    const unsigned fallback = sycl_default_workgroup(dev, allowed, preferred,
-                                                     0, 0, FISH_STAGE_BYTES, FISH_TEAM);
-    unsigned long parsed = 0;
-    if (!mom_parse_env_ulong("MOM_FISHHASH_WORKGROUP", parsed))
-      return fallback;
-    for (const unsigned candidate : allowed)
-      if (parsed == candidate && fits(candidate))
-        return candidate;
-    return fallback;
+    // intensity.inc admits the same override set when it sizes the batch.
+    return sycl_env_workgroup(dev, "MOM_FISHHASH_WORKGROUP", {64, 128, 256, 512}, preferred,
+                              0, 0, FISH_STAGE_BYTES, FISH_TEAM);
   }
   // Drain kernels before releasing cache, DAG, and job buffers.
   ~State() {
@@ -61,7 +52,7 @@ public:
   // Only offline vectors may use the light cache. Full-test mode exercises the mining DAG.
   bool prepareJob(unsigned inputSize, bool isTest, bool isBenchmark) {
     ensure_io(inputSize);
-    const bool lightTest = isTest && std::getenv("MOM_FISHHASH_FULL_TEST") == nullptr;
+    const bool lightTest = isTest && !mom_env_flag("MOM_FISHHASH_FULL_TEST").value_or(false);
     if (lightTest)
       ensure_cache(!isBenchmark);
     else
@@ -148,8 +139,9 @@ static bool selectCooperative(State& state, int& choice, const char* algorithm,
                               bool openclDefault, const Search& search) {
   if (!state.coop_workgroup)
     return false;
-  if (const char* overrideValue = std::getenv("MOM_FISHHASH_COOP"))
-    return overrideValue[0] != '0';
+  // gpu-tuning.js search_mode writes MOM_FISHHASH_COOP; an explicit value skips the probe.
+  if (const std::optional<bool> forced = mom_env_flag("MOM_FISHHASH_COOP"))
+    return *forced;
   if (choice >= 0)
     return choice != 0;
   if (mom_is_cuda(state.device) || mom_is_hip(state.device))

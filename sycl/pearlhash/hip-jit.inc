@@ -253,7 +253,7 @@ struct PearlHashHipSearch {
       for (;;) {
         const hipError_t status = hipEventQuery(done);
         if (status == hipSuccess) {
-          if (std::getenv("MOM_PEARLHASH_STATS") && stats_printed++ < 4) {
+          if (mom_env_flag("MOM_PEARLHASH_STATS").value_or(false) && stats_printed++ < 4) {
             float search_ms = 0.0f;
             hip_check(hipEventElapsedTime(&search_ms, started, done),
                       "hipEventElapsedTime(PearlHash search)");

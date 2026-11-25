@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdio>
+#include <exception>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -67,11 +68,19 @@ static State& persistentDeviceState(const std::string& device_key) {
 }
 
 // Called after workers stop. A failure in one miner must allow the next miner to release its state.
-template <typename State>
-static void clearPersistentDeviceStates(const char* algorithm) noexcept {
+// `should_erase` may retain states whose runtime cannot be torn down safely (see clear above).
+template <typename State, typename Predicate>
+static void clearPersistentDeviceStates(const char* algorithm, Predicate&& should_erase) noexcept {
   try {
-    persistentDeviceStates<State>().clear();
+    persistentDeviceStates<State>().clear(std::forward<Predicate>(should_erase));
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "%s: ordered SYCL cleanup failed: %s\n", algorithm, error.what());
   } catch (...) {
     std::fprintf(stderr, "%s: ordered SYCL cleanup failed\n", algorithm);
   }
+}
+
+template <typename State>
+static void clearPersistentDeviceStates(const char* algorithm) noexcept {
+  clearPersistentDeviceStates<State>(algorithm, [](const auto&) { return true; });
 }

@@ -5,7 +5,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <new>
+#include <optional>
 #include <initializer_list>
 #include <stdexcept>
 #include <string>
@@ -145,6 +147,7 @@ static bool mom_has_usm_device(const sycl::device&) {
   return true;
 }
 // Production c30 DeviceMemory: layout selection, fit checks and partial-allocation cleanup.
+#include "env_flag.inc"
 #include "c30_device_memory.inc"
 
 // Construct the production arena on a device reporting the given memory limits.
@@ -332,15 +335,16 @@ int main() {
     unrelated_threw = true;
   }
   require(unrelated_threw == native_profile, "unrelated error not swallowed");
-  for (const char* force : {"", "1", "false", " 0"}) {
+  // mom_env_flag: only unset, empty, "0", "false" and "off" leave the full layout selectable.
+  for (const char* force : {"1", "true", " 0", "00", "0false"}) {
     device.queries = 0;
     require(packed(device, 250, 100, force), "force semantics");
     require(device.queries == 0, "forced packed skips optional query");
   }
   device = {};
   device.width = 16;
-  for (const char* force : {"0", "00", "0false"})
-    require(!packed(device, 250, 100, force), "leading zero does not force");
+  for (const char* force : {"", "0", "false", "off"})
+    require(!packed(device, 250, 100, force), "off values do not force");
   device.width = 8;
   require(packed(device, 250, 100, "0") == native_profile, "zero does not force full");
   device.failure = 4;

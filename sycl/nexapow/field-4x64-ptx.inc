@@ -17,9 +17,7 @@
 
 #if (defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)) || defined(MOM_NEXAPOW_ACPP_PTX_FIELD)
 
-#ifndef MOM_NEXAPOW_NO_STDINT
 #include <stdint.h>
-#endif
 
 #define MOM_NEXA_F64_PTX_UADDO(c, a, b)                                                            \
   asm volatile("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b) : "memory");

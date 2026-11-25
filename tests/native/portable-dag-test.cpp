@@ -2,8 +2,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <stdexcept>
 
@@ -112,11 +114,11 @@ void set_portable_flag(const char* const value) {
 
 void check_admission(const char* const label, const bool is_test, const bool is_benchmark,
                      const sycl::device& device, const bool expected) {
-  const bool kawpow = portable_fixture::kawpow_portable_test(is_test, is_benchmark, device);
-  const bool etchash = portable_fixture::etchash_portable_test(is_test, is_benchmark, device);
-  if (kawpow != expected || etchash != expected) {
-    std::fprintf(stderr, "%s: KawPow=%d Etchash=%d expected=%d\n", label, kawpow, etchash,
-                 expected);
+  // KawPow and Etchash both admit their bounded fixtures through this production predicate.
+  const bool admitted =
+      portable_fixture::mom_compact_correctness_test(is_test, is_benchmark, device);
+  if (admitted != expected) {
+    std::fprintf(stderr, "%s: admitted=%d expected=%d\n", label, admitted, expected);
     throw std::runtime_error("portable test admission mismatch");
   }
 }
@@ -215,11 +217,11 @@ int main() {
     check_admission("integrated gpu zero flag", true, false, integrated_gpu, false);
     require(sycl::host_unified_memory_queries == no_flag_queries,
             "zero fixture flag queried integrated-device properties");
-    set_portable_flag("invalid");
-    check_admission("invalid", true, false, cpu, false);
-    check_admission("integrated gpu invalid flag", true, false, integrated_gpu, false);
+    set_portable_flag("false");
+    check_admission("false", true, false, cpu, false);
+    check_admission("integrated gpu false flag", true, false, integrated_gpu, false);
     require(sycl::host_unified_memory_queries == no_flag_queries,
-            "invalid fixture flag queried integrated-device properties");
+            "false fixture flag queried integrated-device properties");
     set_portable_flag("1");
     check_admission("cpu test", true, false, cpu, true);
     check_admission("mining", false, false, cpu, false);
@@ -229,7 +231,7 @@ int main() {
     check_admission("gpu benchmark", true, true, gpu, false);
     const unsigned enabled_queries = sycl::host_unified_memory_queries;
     check_admission("integrated gpu test", true, false, integrated_gpu, true);
-    require(sycl::host_unified_memory_queries == enabled_queries + 2,
+    require(sycl::host_unified_memory_queries == enabled_queries + 1,
             "opted-in fixture did not query integrated-device eligibility");
     const unsigned after_integrated_test = sycl::host_unified_memory_queries;
     check_admission("integrated gpu mining", false, false, integrated_gpu, false);

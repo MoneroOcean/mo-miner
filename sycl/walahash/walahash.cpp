@@ -64,7 +64,8 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
              uint8_t*, uint64_t* pnonce, const uint8_t* target, const uint8_t*, unsigned intensity,
              bool is_test, bool, const std::string& dev) {
   if (!input || !output || !pnonce || !target || input_size != 80 || !intensity)
-    throw std::string("walahash requires an 80-byte header and nonzero intensity");
+    throw std::string(
+      "walahash requires input, output, nonce, target, an 80-byte header, and nonzero intensity");
   if (!mom::job_boundary::padded_u32_range_fits(intensity, 256))
     throw std::string("WalaHash intensity is too large");
   State& state = persistentDeviceState<State>(dev);
@@ -75,8 +76,8 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
   b3_first_block_cv(state.prehash_cv, input);
 #endif
   state.queue.memcpy(state.target, target, 32);
-  const char* configured = std::getenv("MOM_WALAHASH_SYCL_NATIVE");
-  bool native = !configured || std::strcmp(configured, "0");
+  // compiler-policy.js sets MOM_WALAHASH_SYCL_NATIVE per backend route; standalone runs default on.
+  bool native = mom_env_flag("MOM_WALAHASH_SYCL_NATIVE").value_or(true);
 #ifdef MOM_SYCL_HAS_CUDA
   // Native=true selects DP4A even in the non-fixed-hash kernel. Gate both dispatches together.
   if (mom_is_cuda(state.device) && !mom::nvidia::has_dp4a(state.cuda_sm))
@@ -91,8 +92,8 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
       sycl_default_workgroup(state.device, {32, 64, 128, 256}, 256);
 #if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
   // Fixed hashes need only integer math; AdaptiveCpp independently gates DP4A at JIT target reflection.
-  const char* cuda_required = std::getenv("MOM_WALAHASH_CUDA_REQUIRE");
-  const bool cuda_require = cuda_required && *cuda_required && std::strcmp(cuda_required, "0");
+  // Validation knob: fail instead of silently using the generic kernel.
+  const bool cuda_require = mom_env_flag("MOM_WALAHASH_CUDA_REQUIRE").value_or(false);
   const bool cuda_device = state.device.is_gpu() && mom_is_cuda(state.device);
   const bool cuda_fast = native && cuda_device && sycl_workgroup_fits(state.device, 128);
   if (cuda_require && !cuda_fast)
@@ -101,8 +102,8 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
 #ifdef MOM_SYCL_HAS_HIP
   const bool amd_fast =
       native && sycl_workgroup_fits(state.device, 256) && state.amd_wmma.ensure(state.queue);
-  const char* amd_required = std::getenv("MOM_WALAHASH_AMD_WMMA_REQUIRE");
-  if (amd_required && *amd_required && std::strcmp(amd_required, "0") && !amd_fast)
+  // Validation knob: fail instead of silently using the generic kernel.
+  if (mom_env_flag("MOM_WALAHASH_AMD_WMMA_REQUIRE").value_or(false) && !amd_fast)
     throw std::string("WalaHash gfx12 WMMA required but unavailable");
   if (amd_fast)
     state.ensure(intensity);
@@ -173,6 +174,7 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
   // search with the shared low-CPU wait before enqueuing the already-ready result copy.
   sycl_wait_and_throw(search_event, state.device);
   PowHits<> hits;
+  MomSyclHostTransferGuard result_transfer(state.queue, "walahash result readback");
   sycl_wait_and_throw(state.queue.memcpy(&hits, state.result, sizeof(hits)), state.device);
   return mom_take_pow_hits(hits, output, pnonce);
 }

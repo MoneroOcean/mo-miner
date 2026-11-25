@@ -28,6 +28,13 @@ const {
 
 const {readSyclSource, extractCppBlock} = require("./common/cpp-source");
 
+// Fixtures that compile production MOM_* on/off switches include the real parser.
+/** @param {string} fixture */
+function writeEnvFlagParser(fixture) {
+  fs.writeFileSync(path.join(fixture, "mom_env_flag.inc"), extractCppBlock(
+    fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8"), "inline std::optional<bool> mom_env_flag("));
+}
+
 /**
  * @template T
  * @param {import("node:test").TestContext} parent
@@ -1716,8 +1723,9 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const root = path.join(__dirname, "..");
       const source = fs.readFileSync(path.join(root, "sycl/verthash/verthash.cpp"), "utf8");
       const internal = fs.readFileSync(path.join(root, "sycl/lib-internal.h"), "utf8");
-      const compactHelpers = ["inline bool mom_parse_env_ulong(", "inline bool is_integrated_gpu(",
-        "inline bool mom_compact_correctness_test("].map(anchor => extractCppBlock(internal, anchor)).join("\n");
+      const compactHelpers = ["inline std::optional<bool> mom_env_flag(", "inline bool is_integrated_gpu(",
+        "inline bool mom_portable_test_requested(", "inline bool mom_compact_correctness_test("]
+        .map(anchor => extractCppBlock(internal, anchor)).join("\n");
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-verthash-small-"));
       try {
         fs.copyFileSync(path.join(__dirname, "native/verthash-test-route.cpp"),
@@ -2215,6 +2223,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-solver-diagnostics-"));
       try {
         fs.copyFileSync(path.join(__dirname, "native/solver-diagnostics.cpp"), path.join(fixture, "fixture.cpp"));
+        writeEnvFlagParser(fixture);
         const parts = ["zelhash", "beamhash3"].map((algo) => {
           const source = fs.readFileSync(path.join(__dirname, "../sycl", algo, algo + ".cpp"), "utf8");
           const prof = source.match(/static const bool prof = [^;]+;/)?.[0];
@@ -2245,11 +2254,9 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
             for (const mode of legacy ? [0] : [0, 1, 2]) {
               for (const prof of legacy ? [0] : [0, 1]) {
                 const env = {...process.env};
-                delete env["MOM_ZELHASH_PROF"]; delete env["MOM_BEAMHASH3_PROF"];
-                if (prof) {
-                  // Presence is the production contract, even for the string "0".
-                  env["MOM_ZELHASH_PROF"] = "0"; env["MOM_BEAMHASH3_PROF"] = "0";
-                }
+                // mom_env_flag: "0" is off like an unset variable; "1" turns profiling on.
+                env["MOM_ZELHASH_PROF"] = prof ? "1" : "0";
+                env["MOM_BEAMHASH3_PROF"] = prof ? "1" : "0";
                 const result = spawnSync(executable, [String(mode), String(prof), part.prefix], {encoding: "utf8", env});
                 assert.equal(result.status, legacy ? (part.prefix === "zel" ? 17 : 18) : 0, result.stderr);
                 if (legacy) {
@@ -2412,6 +2419,7 @@ int main() {
       t.after(() => fs.rmSync(fixture, {recursive: true, force: true}));
       fs.writeFileSync(path.join(fixture, "beam_compact_enabled.inc"),
         extractCppBlock(layout, "inline bool beam_compact_enabled("));
+      writeEnvFlagParser(fixture);
       // The non-portable control proves the fixture can observe compact selection at all.
       for (const [portable, expected] of [[true, 0], [false, 9]]) {
         const executable = path.join(fixture, portable ? "portable" : "native");
@@ -3518,6 +3526,7 @@ int main() {
       let unexposedMonolithicNegatives = 0;
       try {
         fs.copyFileSync(path.join(__dirname, "native/readback-wait-fault.cpp"), path.join(fixture, "readback.cpp"));
+        writeEnvFlagParser(fixture);
         fs.writeFileSync(path.join(fixture, "wait.inc"), extractCppBlock(library, "inline void sycl_wait_and_throw("));
         fs.writeFileSync(path.join(fixture, "cleanup.inc"), ["inline void sycl_log_cleanup_exception(",
           "inline void sycl_cleanup_noexcept(", "class MomSyclHostTransferGuard {"]
@@ -4141,6 +4150,7 @@ static_assert(sizeof(mom::NvrtcProgram) > 0);
       try {
         const source = path.join(fixture, "submission.cpp"), executable = path.join(fixture, "probe");
         fs.copyFileSync(path.join(__dirname, "native/nexapow-submission.cpp"), source);
+        writeEnvFlagParser(fixture);
         fs.writeFileSync(path.join(fixture, "result.inc"), extractCppBlock(host, "struct Result {") + ";\n");
         fs.writeFileSync(path.join(fixture, "cleanup.inc"), ["inline void sycl_log_cleanup_exception(",
           "inline void sycl_cleanup_noexcept(", "class MomSyclHostTransferGuard {"]
@@ -6534,6 +6544,7 @@ int main(int argc, char** argv) {
       const matrix = fs.readFileSync(path.join(root, "matrix.inc"), "utf8");
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-hip-slices-"));
       try {
+        writeEnvFlagParser(fixture);
         fs.writeFileSync(path.join(fixture, "hip-launch.inc"), extractCppBlock(source, "  void launch("));
         fs.writeFileSync(path.join(fixture, "hip-wait.inc"), extractCppBlock(source, "  void wait(double learned_us)"));
         fs.writeFileSync(path.join(fixture, "hip-wave-groups.inc"), extractCppBlock(kernel, "DEV void wave_groups("));
@@ -6678,6 +6689,7 @@ int main(int argc, char** argv) {
       const mutantExecutable = path.join(fixture, "pearlhash_fault_mutant");
       try {
         fs.copyFileSync(path.join(__dirname, "native/pearlhash-fault.cpp"), source);
+        writeEnvFlagParser(fixture);
         fs.copyFileSync(path.join(root, "claim.h"), path.join(fixture, "claim.h"));
         fs.copyFileSync(path.join(root, "proof-axis.h"), path.join(fixture, "proof-axis.h"));
         // This fixture exercises the legacy pair and HIP/CUDA lifecycle, not compact root caching.
@@ -6927,6 +6939,7 @@ int main(int argc, char** argv) {
       try {
         const source = path.join(fixture, "fixture.cpp");
         fs.copyFileSync(path.join(__dirname, "native/equihash192-7-arena-selection.cpp"), source);
+        writeEnvFlagParser(fixture);
         for (const name of ["run_with_cache", "select_cuda_arena"]) {
           const member = extractCppBlock(session, `  std::vector<Solution> ${name}(`);
           fs.writeFileSync(path.join(fixture, `${name}.inc`), member.replaceAll("std::chrono::", "fixture_clock::"));
@@ -6973,10 +6986,11 @@ int main(int argc, char** argv) {
       const executable = path.join(fixture, "octopus_dag_fault");
       try {
         fs.copyFileSync(path.join(__dirname, "native/octopus-dag-fault.cpp"), source);
+        writeEnvFlagParser(fixture);
         fs.writeFileSync(path.join(fixture, "state.inc"),
-          extractCppBlock(octopus, "  template <typename T> void free_ptr") + "\n" +
-        extractCppBlock(octopus, "  void ensure_dag(") + "\n" +
-        extractCppBlock(octopus, "  void ensure_epoch(") + "\n");
+          extractCppBlock(octopus, "  void ensure_dag(") + "\n" +
+          extractCppBlock(octopus, "  void ensure_epoch(") + "\n");
+        fs.writeFileSync(path.join(fixture, "usm.inc"), extractCppBlock(library, "class UsmPtr {") + ";\n");
         const hits = fs.readFileSync(path.join(root, "sycl/pow-hits.h"), "utf8");
         fs.writeFileSync(path.join(fixture, "result.inc"),
           hits.slice(hits.indexOf("template <typename Word = uint8_t>"), hits.indexOf("// Claim the next hit slot")) +
@@ -7230,6 +7244,7 @@ int main(int argc, char** argv) {
       const executable = path.join(fixture, "c30_async_fault");
       try {
         fs.copyFileSync(path.join(__dirname, "native/c30-async-fault.cpp"), source);
+        writeEnvFlagParser(fixture);
         fs.copyFileSync(path.join(root, "sycl/c30/types.h"), path.join(fixture, "c30-types.inc"));
         fs.copyFileSync(path.join(root, "native/job-boundary.h"), path.join(fixture, "job-boundary.inc"));
         fs.writeFileSync(path.join(fixture, "solver.inc"),
@@ -7394,7 +7409,7 @@ struct event {
 int event::queries = 0;
 }
 constexpr unsigned COMPUTE_THREADS = 1;
-static uint64_t c29_now_us() { return 0; }
+static uint64_t mom_now_us() { return 0; }
 static uint32_t c29_profile_limit() { return UINT32_MAX; }
 static uint32_t c29_trim_rounds(const sycl::device&) { return 1; }
 static uint32_t c29_seed_local_size() { return 64; }
@@ -7482,6 +7497,7 @@ int main() {
       const executable = path.join(fixture, "c29_submitted_fault");
       try {
         fs.copyFileSync(path.join(__dirname, "native/c29-submitted-fault.cpp"), source);
+        writeEnvFlagParser(fixture);
         fs.writeFileSync(path.join(fixture, "search.inc"),
           completeSearch.replace("std::async(", "TestAsync(") + "\n#include \"entry.inc\"\n");
         fs.writeFileSync(path.join(fixture, "entry.inc"), extractCppBlock(entry, "int c29("));
@@ -7599,6 +7615,7 @@ int main() {
       try {
         const source = path.join(fixture, "readback.cpp"), executable = path.join(fixture, "probe");
         fs.copyFileSync(path.join(__dirname, "native/nested-readback-lifetime.cpp"), source);
+        writeEnvFlagParser(fixture);
         const cleanupStart = library.indexOf("inline void sycl_log_cleanup_exception(");
         const cleanupEnd = library.indexOf("sycl::device get_dev(", cleanupStart);
         assert.ok(cleanupStart >= 0 && cleanupEnd > cleanupStart);
@@ -7663,6 +7680,7 @@ int main() {
       ];
       try {
         fs.copyFileSync(path.join(__dirname, "native/cache-upload-lifetime.cpp"), source);
+        writeEnvFlagParser(fixture);
         fs.writeFileSync(path.join(fixture, "cleanup.inc"), library.slice(cleanupStart, cleanupEnd));
         for (const route of routes) {
           await t.test(route.name, {concurrency: false}, () => {
@@ -7718,6 +7736,7 @@ int main() {
       try {
         const source = path.join(fixture, "readback.cpp"), executable = path.join(fixture, "probe");
         fs.copyFileSync(path.join(__dirname, "native/c29-buffer-readback.cpp"), source);
+        writeEnvFlagParser(fixture);
         const start = library.indexOf("inline void sycl_log_cleanup_exception(");
         const end = library.indexOf("sycl::device get_dev(", start);
         assert.ok(start >= 0 && end > start);
@@ -7790,7 +7809,10 @@ int main() {
       try {
         fs.writeFileSync(path.join(fixture, "selection.inc"),
           [extractCppBlock(library, "inline bool mom_parse_env_ulong("),
+            extractCppBlock(library, "inline bool mom_parse_env_u32("),
+            extractCppBlock(library, "inline std::optional<bool> mom_env_flag("),
             extractCppBlock(library, "inline unsigned sycl_default_workgroup("),
+            extractCppBlock(library, "inline unsigned sycl_env_workgroup("),
             extractCppBlock(state, "  static unsigned cooperative_workgroup("),
             extractCppBlock(state, "template <class Search>\nstatic bool selectCooperative(")].join("\n"));
         const executable = path.join(fixture, "fishhash-cooperative");
@@ -7833,6 +7855,7 @@ int main() {
       const source = path.join(fixture, "host-transfer-fault.cpp");
       try {
         fs.copyFileSync(path.join(__dirname, "native/host-transfer-fault.cpp"), source);
+        writeEnvFlagParser(fixture);
         fs.writeFileSync(path.join(fixture, "cleanup.inc"), cleanup);
         for (const route of routes) {
           await t.test(route.name, async (routeTest) => {
@@ -7928,6 +7951,7 @@ int main() {
       const source = path.join(fixture, "host-transfer-fault.cpp");
       try {
         fs.copyFileSync(path.join(__dirname, "native/host-transfer-fault.cpp"), source);
+        writeEnvFlagParser(fixture);
         fs.writeFileSync(path.join(fixture, "cleanup.inc"),
           extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
         for (const [hoo, name] of ["walahash", "hoohash"].entries()) {
@@ -8011,6 +8035,7 @@ int main() {
       const source = path.join(fixture, "host-transfer-fault.cpp");
       try {
         fs.copyFileSync(path.join(__dirname, "native/host-transfer-fault.cpp"), source);
+        writeEnvFlagParser(fixture);
         fs.writeFileSync(path.join(fixture, "cleanup.inc"),
           extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
         fs.writeFileSync(path.join(fixture, "nested-fast-readback.inc"),
@@ -8087,24 +8112,20 @@ int main() {
       };
       try {
         fs.copyFileSync(path.join(__dirname, "native/host-transfer-fault.cpp"), source);
+        writeEnvFlagParser(fixture);
         fs.writeFileSync(path.join(fixture, "cleanup.inc"),
           extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
         fs.writeFileSync(path.join(fixture, "zhash-fast-readback.inc"),
           extractCppBlock(session, "  struct FastReadback {") + ";\n");
-        const fieldsStart = session.indexOf("  FastReadback* fast_readback_ = nullptr;"),
+        fs.writeFileSync(path.join(fixture, "usm.inc"), extractCppBlock(library, "class UsmPtr {") + ";\n");
+        const fieldsStart = session.indexOf("  UsmPtr<FastReadback> fast_readback_;"),
           fieldsEnd = session.indexOf("\n#ifdef MOM_SYCL_ADAPTIVECPP_CUDA", fieldsStart);
         assert.ok(fieldsStart >= 0 && fieldsEnd > fieldsStart, "per-session host-USM members");
         fs.writeFileSync(path.join(fixture, "zhash-host-fields.inc"), session.slice(fieldsStart, fieldsEnd));
-        const allocateStart = session.indexOf("      if (device.has(sycl::aspect::usm_host_allocations)) {"),
-          allocateEnd = session.indexOf("      input_storage_ = allocate_objects", allocateStart);
+        const allocateStart = session.indexOf("    if (device.has(sycl::aspect::usm_host_allocations)) {"),
+          allocateEnd = session.indexOf("    input_storage_ = allocate_objects", allocateStart);
         assert.ok(allocateStart >= 0 && allocateEnd > allocateStart, "host-USM allocation block");
         fs.writeFileSync(path.join(fixture, "zhash-host-alloc.inc"), session.slice(allocateStart, allocateEnd));
-        fs.writeFileSync(path.join(fixture, "zhash-alloc-failure.inc"),
-          extract(session, "      free_all();\n      throw;", "    }\n  }"));
-        fs.writeFileSync(path.join(fixture, "zhash-free-ptr.inc"),
-          extractCppBlock(session, "  void free_ptr("));
-        fs.writeFileSync(path.join(fixture, "zhash-free-all.inc"),
-          extractCppBlock(session, "  void free_all() noexcept {"));
         fs.writeFileSync(path.join(fixture, "zhash-destructor.inc"),
           extractCppBlock(session, "  ~Session() {").replace("~Session()", "~ZHashUsmSession()"));
         const inputStart = session.indexOf("      std::uint64_t midstate[8];"),
@@ -8205,6 +8226,7 @@ int main() {
       const source = path.join(fixture, "host-transfer-fault.cpp");
       try {
         fs.copyFileSync(path.join(__dirname, "native/host-transfer-fault.cpp"), source);
+        writeEnvFlagParser(fixture);
         fs.writeFileSync(path.join(fixture, "cleanup.inc"),
           extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
         fs.writeFileSync(path.join(fixture, "search-result.inc"),

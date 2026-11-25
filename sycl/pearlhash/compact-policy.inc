@@ -115,12 +115,6 @@ class CompactRootPath {
     first_leaf.fill(0);
     root.fill(0);
   }
-  size_t retained_bytes() const noexcept {
-    size_t bytes = 0;
-    for (const auto& tree : {&a_, &b_})
-      for (const auto& level : *tree) bytes += level.size() * sizeof(CV);
-    return bytes;
-  }
   bool valid() const noexcept { return valid_; }
 
   // Retain the GPU-produced complete levels for a new key/shape and finish only the small top.

@@ -8,12 +8,12 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <new>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "../equihash-sycl.h"
+#include "../lib-internal.h"
 #include "session-layout.h"
 
 namespace mom_zhash {
@@ -77,13 +77,9 @@ public:
     allocate();
   }
 
-  // Drain live submissions before freeing their storage; destructor errors remain contained.
+  // Drain live submissions before the UsmPtr members free their storage.
   ~Session() {
-    try {
-      queue_.wait_and_throw();
-    } catch (...) {
-    }
-    free_all();
+    sycl_cleanup_noexcept("zhash session wait", [&] { queue_.wait_and_throw(); });
   }
 
   Session(const Session&) = delete;
@@ -144,7 +140,7 @@ public:
       stages[4] = submit_fourth_round();
 
       stages[5] = mom_equihash::submit_zero_root_round_bucketed<Spec, LaterLayout>(
-          queue_, round4_, bucket_counts_[4], candidate_roots_, zero_root_count_,
+          queue_, round4_.get(), bucket_counts_[4], candidate_roots_, zero_root_count_,
           Layout::max_candidate_roots);
       if (options_.collect_round_counts) {
         mom_equihash::submit_sum_bucket_counts<InitialLayout>(
@@ -156,9 +152,9 @@ public:
 
       mom_equihash::submit_recover_root_leaves<Spec, InitialLayout::local_bits, Round1Record,
                                                Round2Record>(
-          queue_, level0_heads_, level0_tails_, round1_heads_, round1_tails_, round2_, round3_,
-          round4_, candidate_roots_, zero_root_count_, recovered_leaves_, recovered_valid_, 0,
-          fast_candidate_roots,
+          queue_, level0_heads_, level0_tails_, round1_heads_, round1_tails_, round2_,
+          round3_.get(), round4_.get(), candidate_roots_, zero_root_count_, recovered_leaves_,
+          recovered_valid_, 0, fast_candidate_roots,
           static_cast<std::uint32_t>(InitialLayout::slot_count),
           static_cast<std::uint32_t>(LaterLayout::slot_count));
       const sycl::event verified = mom_equihash::submit_verify_recovered_leaves<Spec>(
@@ -209,9 +205,9 @@ public:
       } else {
         mom_equihash::submit_recover_root_leaves<Spec, InitialLayout::local_bits, Round1Record,
                                                  Round2Record>(
-            queue_, level0_heads_, level0_tails_, round1_heads_, round1_tails_, round2_, round3_,
-            round4_, candidate_roots_, zero_root_count_, recovered_leaves_, recovered_valid_,
-            fast_candidate_roots, report.zero_root_count - fast_candidate_roots,
+            queue_, level0_heads_, level0_tails_, round1_heads_, round1_tails_, round2_,
+            round3_.get(), round4_.get(), candidate_roots_, zero_root_count_, recovered_leaves_,
+            recovered_valid_, fast_candidate_roots, report.zero_root_count - fast_candidate_roots,
             static_cast<std::uint32_t>(InitialLayout::slot_count),
             static_cast<std::uint32_t>(LaterLayout::slot_count));
         const sycl::event tail_verified = mom_equihash::submit_verify_recovered_leaves<Spec>(
@@ -270,35 +266,38 @@ private:
                        sycl::property_list{sycl::property::queue::in_order{}});
   }
 
+  // UsmPtr members free on queue_, so they follow it; the plain pointers alias owned storage.
+  // Kernel helpers that deduce a record type from its pointer take .get().
   sycl::queue queue_;
   SessionOptions options_;
   ZHashSessionLifecycle lifecycle_;
   std::string last_error_;
-  FastReadback* fast_readback_ = nullptr;
-  std::uint8_t* host_input_ = nullptr;
+  // Optional host USM; null selects the guarded stack fallback in run().
+  UsmPtr<FastReadback> fast_readback_;
+  UsmPtr<std::uint8_t> host_input_;
 #ifdef MOM_SYCL_ADAPTIVECPP_CUDA
   bool cuda_partition_ = false;
 #endif
 
   std::uint8_t* device_header_ = nullptr;
   std::uint64_t* device_midstate_ = nullptr;
-  std::uint8_t* input_storage_ = nullptr;
-  mom_equihash::SplitRecordHead* level0_heads_ = nullptr;
-  std::uint32_t* level0_tails_ = nullptr;
-  mom_equihash::SplitRecordHead* round1_heads_ = nullptr;
-  std::uint32_t* round1_tails_ = nullptr;
-  Round2Record* round2_ = nullptr;
-  Round3Record* round3_ = nullptr;
-  Round4Record* round4_ = nullptr;
+  UsmPtr<std::uint8_t> input_storage_;
+  UsmPtr<mom_equihash::SplitRecordHead> level0_heads_;
+  UsmPtr<std::uint32_t> level0_tails_;
+  UsmPtr<mom_equihash::SplitRecordHead> round1_heads_;
+  UsmPtr<std::uint32_t> round1_tails_;
+  UsmPtr<Round2Record> round2_;
+  UsmPtr<Round3Record> round3_;
+  UsmPtr<Round4Record> round4_;
   std::array<std::uint32_t*, 5> bucket_counts_{};
-  std::uint32_t* flat_counts_ = nullptr;
+  UsmPtr<std::uint32_t> flat_counts_;
   std::uint32_t* overflow_counts_ = nullptr;
   std::uint32_t* zero_root_count_ = nullptr;
-  RootRecord* candidate_roots_ = nullptr;
+  UsmPtr<RootRecord> candidate_roots_;
   std::uint32_t* recovered_leaves_ = nullptr;
   std::uint8_t* recovered_valid_ = nullptr;
-  std::uint32_t* verified_fields_ = nullptr;
-  std::uint32_t* counts_storage_ = nullptr;
+  UsmPtr<std::uint32_t> verified_fields_;
+  UsmPtr<std::uint32_t> counts_storage_;
   std::uint32_t* bucket_counts_storage_ = nullptr;
   std::uint32_t* result_counts_storage_ = nullptr;
 
@@ -320,10 +319,8 @@ private:
 #endif
 
   template <typename T>
-  T* allocate_objects(const std::size_t count) {
-    T* const result = sycl::malloc_device<T>(count, queue_);
-    if (result == nullptr) throw std::bad_alloc();
-    return result;
+  UsmPtr<T> allocate_objects(const std::size_t count) {
+    return mom_usm_alloc<T>(queue_, count, false, "ZHash session device allocation failed");
   }
 
   // Validate memory, allocation, launch, and counter-width limits before allocating persistent arenas.
@@ -358,82 +355,43 @@ private:
         LaterLayout::slot_count >= std::numeric_limits<std::uint32_t>::max())
       throw std::runtime_error("ZHash arena slot count does not fit kernel counters");
 
-    try {
-      // Keep transfers session-owned when supported; each null allocation independently falls
-      // back to guarded stack storage. Backend errors still propagate through normal cleanup.
-      if (device.has(sycl::aspect::usm_host_allocations)) {
-        fast_readback_ = sycl::malloc_host<FastReadback>(1, queue_);
-        host_input_ = sycl::malloc_host<std::uint8_t>(input_storage_bytes, queue_);
-      }
-      input_storage_ = allocate_objects<std::uint8_t>(input_storage_bytes);
-      device_header_ = input_storage_;
-      device_midstate_ = reinterpret_cast<std::uint64_t*>(input_storage_ + midstate_offset);
-      level0_heads_ = allocate_objects<mom_equihash::SplitRecordHead>(InitialLayout::slot_count);
-      level0_tails_ = allocate_objects<std::uint32_t>(InitialLayout::slot_count);
-      round1_heads_ = allocate_objects<mom_equihash::SplitRecordHead>(InitialLayout::slot_count);
-      round1_tails_ = allocate_objects<std::uint32_t>(InitialLayout::slot_count);
-      round2_ = allocate_objects<Round2Record>(LaterLayout::slot_count);
-      round3_ = allocate_objects<Round3Record>(LaterLayout::slot_count);
-      round4_ = allocate_objects<Round4Record>(LaterLayout::slot_count);
-      counts_storage_ = allocate_objects<std::uint32_t>(counts_storage_words);
-      bucket_counts_storage_ = counts_storage_;
-      bucket_counts_[0] = bucket_counts_storage_;
-      bucket_counts_[1] = bucket_counts_[0] + InitialLayout::bucket_count;
-      bucket_counts_[2] = bucket_counts_[1] + InitialLayout::bucket_count;
-      for (unsigned round = 3; round < 5; ++round)
-        bucket_counts_[round] = bucket_counts_[round - 1] + LaterLayout::bucket_count;
-      flat_counts_ = allocate_objects<std::uint32_t>(5);
-      result_counts_storage_ = counts_storage_ + bucket_count_size;
-      overflow_counts_ = result_counts_storage_;
-      zero_root_count_ = result_counts_storage_ + 5;
-      candidate_roots_ = allocate_objects<RootRecord>(Layout::max_candidate_roots);
-      recovered_valid_ = reinterpret_cast<std::uint8_t*>(result_counts_storage_ + 6u);
-      recovered_leaves_ = reinterpret_cast<std::uint32_t*>(
-          recovered_valid_ + Layout::recovered_valid_bytes);
-      verified_fields_ = allocate_objects<std::uint32_t>(
-          Layout::max_candidate_roots * Spec::proof_indices * Spec::rounds);
-    } catch (...) {
-      free_all();
-      throw;
+    // Called only from the constructor: a throw here unwinds the members allocated so far.
+    // Keep transfers session-owned when supported; each null host allocation independently
+    // falls back to guarded stack storage. Backend errors still propagate.
+    if (device.has(sycl::aspect::usm_host_allocations)) {
+      fast_readback_ = UsmPtr<FastReadback>(sycl::malloc_host<FastReadback>(1, queue_), queue_);
+      host_input_ = UsmPtr<std::uint8_t>(
+          sycl::malloc_host<std::uint8_t>(input_storage_bytes, queue_), queue_);
     }
-  }
-
-  template <typename T>
-  // Clear one owned pointer after nonthrowing release, including partial-construction cleanup.
-  void free_ptr(T*& pointer) noexcept {
-    if (pointer != nullptr) {
-      try {
-        sycl::free(pointer, queue_);
-      } catch (...) {
-      }
-      pointer = nullptr;
-    }
-  }
-
-  // Release owned buffers and invalidate all aliases into their shared counter/header storage.
-  void free_all() noexcept {
-    free_ptr(fast_readback_);
-    free_ptr(host_input_);
-    free_ptr(input_storage_);
-    device_header_ = nullptr;
-    device_midstate_ = nullptr;
-    free_ptr(level0_heads_);
-    free_ptr(level0_tails_);
-    free_ptr(round1_heads_);
-    free_ptr(round1_tails_);
-    free_ptr(round2_);
-    free_ptr(round3_);
-    free_ptr(round4_);
-    free_ptr(counts_storage_);
-    bucket_counts_storage_ = result_counts_storage_ = nullptr;
-    // These two pointers alias counts_storage_; never free them a second time.
-    recovered_valid_ = nullptr;
-    recovered_leaves_ = nullptr;
-    bucket_counts_.fill(nullptr);
-    free_ptr(flat_counts_);
-    overflow_counts_ = zero_root_count_ = nullptr;
-    free_ptr(candidate_roots_);
-    free_ptr(verified_fields_);
+    input_storage_ = allocate_objects<std::uint8_t>(input_storage_bytes);
+    device_header_ = input_storage_;
+    device_midstate_ = reinterpret_cast<std::uint64_t*>(input_storage_ + midstate_offset);
+    level0_heads_ = allocate_objects<mom_equihash::SplitRecordHead>(InitialLayout::slot_count);
+    level0_tails_ = allocate_objects<std::uint32_t>(InitialLayout::slot_count);
+    round1_heads_ = allocate_objects<mom_equihash::SplitRecordHead>(InitialLayout::slot_count);
+    round1_tails_ = allocate_objects<std::uint32_t>(InitialLayout::slot_count);
+    round2_ = allocate_objects<Round2Record>(LaterLayout::slot_count);
+    round3_ = allocate_objects<Round3Record>(LaterLayout::slot_count);
+    round4_ = allocate_objects<Round4Record>(LaterLayout::slot_count);
+    // One counter allocation holds the bucket counts, then the contiguous result packet
+    // (overflow counts, zero-root count, valid bytes, leaves) that run() reads back at once.
+    counts_storage_ = allocate_objects<std::uint32_t>(counts_storage_words);
+    bucket_counts_storage_ = counts_storage_;
+    bucket_counts_[0] = bucket_counts_storage_;
+    bucket_counts_[1] = bucket_counts_[0] + InitialLayout::bucket_count;
+    bucket_counts_[2] = bucket_counts_[1] + InitialLayout::bucket_count;
+    for (unsigned round = 3; round < 5; ++round)
+      bucket_counts_[round] = bucket_counts_[round - 1] + LaterLayout::bucket_count;
+    flat_counts_ = allocate_objects<std::uint32_t>(5);
+    result_counts_storage_ = counts_storage_ + bucket_count_size;
+    overflow_counts_ = result_counts_storage_;
+    zero_root_count_ = result_counts_storage_ + 5;
+    candidate_roots_ = allocate_objects<RootRecord>(Layout::max_candidate_roots);
+    recovered_valid_ = reinterpret_cast<std::uint8_t*>(result_counts_storage_ + 6u);
+    recovered_leaves_ = reinterpret_cast<std::uint32_t*>(
+        recovered_valid_ + Layout::recovered_valid_bytes);
+    verified_fields_ = allocate_objects<std::uint32_t>(
+        Layout::max_candidate_roots * Spec::proof_indices * Spec::rounds);
   }
 
   // Reset attempt counters in queue order; retained arena records are bounded by the new counts.
@@ -512,7 +470,8 @@ private:
 #endif
 #ifndef MOM_SYCL_HAS_HIP
     return mom_equihash::submit_collision_round_bucketed<Spec, 4, LaterLayout, LaterLayout>(
-        queue_, round2_, bucket_counts_[2], round3_, bucket_counts_[3], overflow_counts_ + 3);
+        queue_, round2_.get(), bucket_counts_[2], round3_.get(), bucket_counts_[3],
+        overflow_counts_ + 3);
 #endif
   }
 
@@ -533,7 +492,8 @@ private:
 #endif
 #ifndef MOM_SYCL_HAS_HIP
     return mom_equihash::submit_collision_round_bucketed<Spec, 3, LaterLayout, LaterLayout>(
-        queue_, round3_, bucket_counts_[3], round4_, bucket_counts_[4], overflow_counts_ + 4);
+        queue_, round3_.get(), bucket_counts_[3], round4_.get(), bucket_counts_[4],
+        overflow_counts_ + 4);
 #endif
   }
 

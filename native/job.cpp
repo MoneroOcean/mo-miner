@@ -62,7 +62,7 @@ void Core::get_algo_params(const MessageValues& v) {
     return std::set<std::string>(keys.begin(), keys.end());
   };
   // SYCL/GPU algo params can be skipped (e.g. for CPU-only builds/tests)
-  const bool skip_sycl = std::getenv("MOM_SKIP_SYCL_ALGO_PARAMS");
+  const bool skip_sycl = mom_native_env_enabled("MOM_SKIP_SYCL_ALGO_PARAMS");
   if (skip_sycl) {
     send_msg("algo_params", cpu_only_algo_params(
       MAX_CN_CPU_WAYS, cpu_sockets, cpu_threads, cpu_l3cache, keys2set(cpu_name2algo)

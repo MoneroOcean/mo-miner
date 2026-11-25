@@ -66,7 +66,7 @@ static size_t gen_leaf(char which, uint32_t seed, size_t leaf, int m, int n, int
   const size_t total = checked_elements(which == 'A' ? m : n, k, "PlainProof matrix");
   const size_t num_leaves = checked_chunk_count(total, "PlainProof matrix");
   if (leaf >= num_leaves)
-    throw std::string("Invalid pearlhash PlainProof leaf");
+    throw std::string("Invalid PearlHash PlainProof leaf");
   const size_t offset = leaf * 1024;
   const size_t len = std::min(size_t{1024}, total - offset);
   const uint32_t tot = static_cast<uint32_t>(checked_elements(m, k, "M*K PlainProof"));
@@ -106,7 +106,7 @@ static std::vector<std::vector<CV>> build_layers(char which, uint32_t seed, int 
                                                  bool positive_inputs = false,
                                                  bool seed_prefix_inputs = false) {
   if (leaves && leaves->size() != static_cast<size_t>(numLeaves))
-    throw std::string("Invalid pearlhash PlainProof cached leaf count");
+    throw std::string("Invalid PearlHash PlainProof cached leaf count");
   std::vector<CV> l0;
   if (leaves) {
     l0 = *leaves;
@@ -163,12 +163,12 @@ static void ser_matrix_proof(std::vector<uint8_t>& out, char which, uint32_t see
   size_t expected = num_leaves_size, level_count = 0;
   do {
     if (level_count >= layers.size() || layers[level_count++].size() != expected)
-      throw std::string("Invalid pearlhash PlainProof cached tree");
+      throw std::string("Invalid PearlHash PlainProof cached tree");
     if (expected <= 2) break;
     expected = expected / 2 + expected % 2;
   } while (true);
   if (level_count != layers.size())
-    throw std::string("Invalid pearlhash PlainProof cached tree depth");
+    throw std::string("Invalid PearlHash PlainProof cached tree depth");
   uint8_t root[32];
   {
     // Parent layers already exist for the openings; only their final root remains to hash.
@@ -182,7 +182,7 @@ static void ser_matrix_proof(std::vector<uint8_t>& out, char which, uint32_t see
     const size_t first = row_start / 1024;
     const size_t last = (row_end - 1) / 1024;
     if (last >= num_leaves_size || last > static_cast<size_t>(std::numeric_limits<int>::max()))
-      throw std::string("Invalid pearlhash PlainProof row leaf range");
+      throw std::string("Invalid PearlHash PlainProof row leaf range");
     for (size_t i = first; i <= last; i++)
       leafset.insert(static_cast<int>(i));
   }

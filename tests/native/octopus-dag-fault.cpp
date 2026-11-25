@@ -6,8 +6,11 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include "mom_env_flag.inc"  // the production on/off switch parser (sycl/lib-internal.h)
 
 struct Counters {
   int allocations = 0, frees = 0, builds = 0, waits = 0, points = 0;
@@ -64,6 +67,8 @@ struct queue {
   }
 };
 static void free(void* pointer, const queue&) {
+  if (pointer == &cache_storage)
+    return; // The fixture's light cache is static storage.
   require(pointer == &candidate_storage, "freed another resource");
   if (pending_build)
     ++counts.free_before_drain;
@@ -72,6 +77,18 @@ static void free(void* pointer, const queue&) {
 }
 
 #include "cleanup.inc"
+#include "usm.inc"
+
+// Production mom_usm_alloc reports a null allocation by throwing its failure text.
+template <typename T>
+static UsmPtr<T> mom_usm_alloc(sycl::queue& queue, size_t, bool, const char* failure) {
+  ++counts.allocations;
+  if (mode >= 3 && mode <= 5)
+    inject();
+  if (mode == 2)
+    throw std::string(failure);
+  return UsmPtr<T>(reinterpret_cast<T*>(&candidate_storage), queue);
+}
 
 constexpr uint32_t HASH_LEN = 32, CACHE_NODE_WORDS = 16, EPOCH_LENGTH = 1U << 19, GPU_MAX_HITS = 15;
 #include "result.inc"
@@ -118,20 +135,14 @@ public:
   uint8_t header_storage[HASH_LEN]{}, target_storage[HASH_LEN]{};
   uint8_t* header = header_storage;
   uint8_t* target = target_storage;
-  uint32_t* cache = &cache_storage;
-  uint32_t* dag = nullptr;
+  UsmPtr<uint32_t> cache{&cache_storage, queue};
+  UsmPtr<uint32_t> dag;
   uint32_t* points = &cache_storage;
   Result result_storage{37, {77}, {}};
   Result* result = &result_storage;
   std::array<uint8_t, HASH_LEN> target_copy{};
   std::mutex mutex;
 
-  template <typename T> T* allocate(size_t) {
-    ++counts.allocations;
-    if (mode >= 3 && mode <= 5)
-      inject();
-    return mode == 2 ? nullptr : reinterpret_cast<T*>(&candidate_storage);
-  }
   bool wants_full_dag() const {
     ++counts.queries;
     if (mode == 10)
@@ -236,7 +247,7 @@ static void run() {
             counts.allocations == failed_allocations + 1 && counts.queries == 2 &&
             counts.builds == 3 && counts.waits == 3 &&
             counts.light == 0 && counts.full == 1, "same-epoch retry skipped required DAG build");
-    state.free_ptr(state.dag);
+    state.dag.reset();
     require(counts.frees == failed_allocations + 1,
             "successful retry DAG was not released exactly once");
 
@@ -262,8 +273,8 @@ static void run() {
     const int allocations = counts.allocations;
     require(call(output, &nonce) == 1 && counts.allocations == allocations && counts.queries == 1,
             "completed/unavailable DAG is no longer cached");
-    state.free_ptr(state.dag);
-    state.free_ptr(state.dag);
+    state.dag.reset();
+    state.dag.reset();
     require(counts.frees == (full ? 1 : 0), "DAG ownership was released twice");
   }
   require(!pending_build && counts.free_before_drain == 0, "DAG work outlived its allocation");

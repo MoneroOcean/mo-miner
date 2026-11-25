@@ -158,7 +158,6 @@ public:
   void reset() {
     status_ = SessionStatus::idle;
     stage_ = 0;
-    flat_count_ = 0;
     overflow_count_ = 0;
     root_count_ = 0;
     zero_root_count_ = 0;
@@ -183,7 +182,6 @@ public:
   // Record a materialized round total and make oversized output terminal for this attempt.
   bool flat_output(const std::uint32_t count) {
     if (!running() || stage_ == 0 || stage_ > 5) return false;
-    flat_count_ = count;
     if (count > capacity_) return fail_capacity(count - static_cast<std::uint32_t>(capacity_));
     return true;
   }
@@ -225,7 +223,6 @@ public:
   SessionStatus status() const { return status_; }
   unsigned stage() const { return stage_; }
   std::size_t capacity() const { return capacity_; }
-  std::uint32_t flat_count() const { return flat_count_; }
   std::uint32_t overflow_count() const { return overflow_count_; }
   std::uint32_t root_count() const { return root_count_; }
   std::uint32_t zero_root_count() const { return zero_root_count_; }
@@ -241,7 +238,6 @@ private:
   std::size_t capacity_;
   SessionStatus status_ = SessionStatus::idle;
   unsigned stage_ = 0;
-  std::uint32_t flat_count_ = 0;
   std::uint32_t overflow_count_ = 0;
   std::uint32_t root_count_ = 0;
   std::uint32_t zero_root_count_ = 0;

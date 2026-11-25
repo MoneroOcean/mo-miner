@@ -413,7 +413,7 @@ void keccak32(uint64_t* const s) {
 
 // Select native or paired Keccak according to backend lowering and the launch specialization.
 template <bool IntelNative64 = false> void keccak(uint64_t* const s) {
-#if defined(__NVPTX__) && !defined(MOM_CNGPU_K32)
+#if defined(__NVPTX__)
   keccak64<false>(s);
 #elif !defined(MOM_SYCL_ADAPTIVECPP) && !defined(MOM_SYCL_PORTABLE_OPENCL)
   if constexpr (IntelNative64)

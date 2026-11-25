@@ -28,18 +28,17 @@ public:
   // the noinline reference (which ships correct on every device). DAG-gen always uses noinline.
   bool use_inline_pair() {
     if (inline_pair_ok < 0) {
-      unsigned long forced = 0;
-      if (mom_parse_env_ulong("MOM_ETCHASH_FORCE_NOINLINE", forced) && forced) {
+      if (mom_env_flag("MOM_ETCHASH_FORCE_NOINLINE").value_or(false)) {
         inline_pair_ok = 0;
         std::fprintf(
             stderr, "Etchash: MOM_ETCHASH_FORCE_NOINLINE set -> using safe noinline search path\n");
-      } else if (mom_parse_env_ulong("MOM_ETCHASH_FORCE_INLINE", forced) && forced) {
+      } else if (mom_env_flag("MOM_ETCHASH_FORCE_INLINE").value_or(false)) {
         inline_pair_ok = 1;
         std::fprintf(stderr,
                      "Etchash: MOM_ETCHASH_FORCE_INLINE set -> using fast inlined search path\n");
       } else {
         inline_pair_ok = probe_inline_pair() ? 1 : 0;
-        if (!inline_pair_ok || std::getenv("MOM_ETCHASH_SELFTEST_LOG"))
+        if (!inline_pair_ok || mom_env_flag("MOM_ETCHASH_SELFTEST_LOG").value_or(false))
           std::fprintf(stderr,
                        "Etchash: inlined pair-Keccak self-test %s -> using %s search path\n",
                        inline_pair_ok ? "passed" : "FAILED (IGC miscompile)",

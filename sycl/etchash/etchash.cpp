@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cinttypes>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -43,12 +42,6 @@ using namespace mom_etchash;
 constexpr uint64_t ETCHASH_PORTABLE_TEST_CACHE_BYTES = 16u * 1024u;
 constexpr uint64_t ETCHASH_PORTABLE_TEST_DAG_BYTES = 80u * 1024u;
 
-// Admit bounded dimensions only for explicitly opted-in CPU or integrated-GPU correctness tests.
-static bool etchash_portable_test(const bool is_test, const bool is_benchmark,
-                                  const sycl::device& device) {
-  return mom_compact_correctness_test(is_test, is_benchmark, device);
-}
-
 // Resolve epochs and search the matching DAG with the verified Keccak path.
 int etchash(const unsigned, const uint32_t block_height, const uint8_t* const input,
             const unsigned input_size, uint8_t* const output, uint8_t* const mix_hash,
@@ -56,7 +49,8 @@ int etchash(const unsigned, const uint32_t block_height, const uint8_t* const in
             const unsigned intensity, const bool is_test, const bool is_benchmark,
             const std::string& dev_str) {
   if (!input || !output || !mix_hash || !pnonce || !target || input_size < 40 || !intensity)
-    throw std::string("Etchash requires input, output, target, nonce, and nonzero intensity");
+    throw std::string("Etchash requires input, output, mix hash, nonce, target, a header of at "
+                      "least 40 bytes, and nonzero intensity");
 
   State& state = persistentDeviceState<State>(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
@@ -64,7 +58,7 @@ int etchash(const unsigned, const uint32_t block_height, const uint8_t* const in
   uint32_t epoch = 0;
   uint32_t seed_epoch = 0;
   state.resolve_epochs(block_height, seed_hash, epoch, seed_epoch);
-  const bool compact_test = etchash_portable_test(is_test, is_benchmark, state.device);
+  const bool compact_test = mom_compact_correctness_test(is_test, is_benchmark, state.device);
   const uint64_t cache_bytes = compact_test ? ETCHASH_PORTABLE_TEST_CACHE_BYTES : cache_sizes[epoch];
   const uint64_t dag_bytes = compact_test ? ETCHASH_PORTABLE_TEST_DAG_BYTES : dag_sizes[epoch];
   state.ensure_epoch(epoch, seed_epoch, cache_bytes, dag_bytes, !is_benchmark);

@@ -1307,12 +1307,13 @@ public:
                   const uint64_t first_nonce, const uint8_t target[32], const uint32_t count,
                   const unsigned extra_bytes, uint64_t found_nonces[SearchResult::kCapacity]) {
     using namespace sycl_pipeline;
-    const bool stats = std::getenv("MOM_NEXAPOW_STATS") && searches_++ == 1u;
-    const char* split_hash_value = std::getenv("MOM_NEXAPOW_SPLIT_HASH");
-    const bool split_hash = split_hash_value ? std::strcmp(split_hash_value, "0")
-                                             : !sycl_is_level_zero_gpu(queue.get_device());
-    const char* split_curve_value = std::getenv("MOM_NEXAPOW_SPLIT_CURVE_PRODUCTS");
-    const bool split_curve = !split_curve_value || std::strcmp(split_curve_value, "0");
+    // Diagnostic: time each stage of the second search (the first one includes setup).
+    const bool stats = mom_env_flag("MOM_NEXAPOW_STATS").value_or(false) && searches_++ == 1u;
+    // Diagnostic overrides of the kernel split; Level Zero defaults to the fused hash stage.
+    const std::optional<bool> split_hash_override = mom_env_flag("MOM_NEXAPOW_SPLIT_HASH");
+    const bool split_hash = split_hash_override ? *split_hash_override
+                                                : !sycl_is_level_zero_gpu(queue.get_device());
+    const bool split_curve = mom_env_flag("MOM_NEXAPOW_SPLIT_CURVE_PRODUCTS").value_or(true);
     auto last = std::chrono::steady_clock::now();
     const auto mark = [&](const char* stage) {
       if (!stats)

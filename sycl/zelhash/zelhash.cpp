@@ -90,7 +90,7 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   // is_test path: the default runs the gen-kernel cross-check (gen-rows dump). Setting
   // MOM_ZELHASH_SOLVE switches it to the full Wagner solve so the standalone checker can assert the
   // block-400000 solution is found. (Mining, !is_test, always runs the solver.)
-  const bool solve_in_test = is_test && std::getenv("MOM_ZELHASH_SOLVE") != nullptr;
+  const bool solve_in_test = is_test && mom_env_flag("MOM_ZELHASH_SOLVE").value_or(false);
 
   if (is_test && !solve_in_test) {
     // Generation check: run the naive gen kernel, then the optimized sub-group-scan kernel, and confirm they match
@@ -134,7 +134,7 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   // ---- Full Wagner solve over the gen output for this exact 140-byte header. ----
   // Profiling enables verbose counters and per-stage waits; keep both off during ordinary mining
   // and throughput measurements. Full-solve tests retain their diagnostics.
-  static const bool prof = std::getenv("MOM_ZELHASH_PROF") != nullptr;
+  static const bool prof = mom_env_flag("MOM_ZELHASH_PROF").value_or(false);
   const bool log = is_test || prof;
   state.ensure_arenas(log);
   std::memset(solution_out, 0, SMALL_BLOB_SOL_LEN);
@@ -144,10 +144,7 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   // A fixed-stage CUDA chain avoids redundant event waits: it is essential on Windows and gives a
   // smaller repeatable gain on Linux with both supported CUDA compilers. Linux HIP instead loses
   // about 1%, and generic OpenCL retains its established waits. Keep a diagnostic opt-out.
-  static const bool cuda_async_enabled = [] {
-    const char* value = std::getenv("MOM_ZELHASH_CUDA_ASYNC");
-    return !value || (std::strcmp(value, "0") && std::strcmp(value, "false"));
-  }();
+  static const bool cuda_async_enabled = mom_env_flag("MOM_ZELHASH_CUDA_ASYNC").value_or(true);
 #if defined(_WIN32)
   // Windows event completion has high host/driver overhead on the measured Level Zero and HIP
   // backends. CUDA gains over 60% with DPC++ and AdaptiveCpp after exact proofs on both.
@@ -343,7 +340,7 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   }
 
   // Count distinct proofs before the target filter so a zero-target benchmark still measures Sol/s.
-  static const bool perf_log = std::getenv("MOM_ZELHASH_PERF") != nullptr;
+  static const bool perf_log = mom_env_flag("MOM_ZELHASH_PERF").value_or(false);
   if (perf_log && !is_test) {
     state.solutionRate.record(distinct_count, [&](double solutionsPerSecond, double solvesPerSecond) {
       std::fprintf(stderr, "[zelhash] %.2f Sol/s, %.2f solve/s (%s)\n", solutionsPerSecond,

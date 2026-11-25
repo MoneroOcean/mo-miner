@@ -9,7 +9,6 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <cinttypes>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -29,6 +28,7 @@
 
 #include "../lib-internal.h"
 #include "../../native/consts.h"
+#include "../../native/job-boundary.h"
 #include "../../xmrig/3rdparty/libethash/ethash.h"
 #include "../../xmrig/3rdparty/libethash/data_sizes.h"
 
@@ -45,20 +45,9 @@ namespace mom_kawpow {
 constexpr uint64_t KAWPOW_PORTABLE_TEST_CACHE_BYTES = KAWPOW_CACHE_WORDS * sizeof(uint32_t);
 constexpr uint64_t KAWPOW_PORTABLE_TEST_DAG_BYTES = 80u * 1024u;
 
-static bool kawpow_portable_test(const bool is_test, const bool is_benchmark,
-                                 const sycl::device& device) {
-  return mom_compact_correctness_test(is_test, is_benchmark, device);
-}
-
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void kawpow_cleanup_states() noexcept {
-  try {
-    persistentDeviceStates<State>().clear();
-  } catch (const std::exception& error) {
-    std::fprintf(stderr, "kawpow: ordered SYCL cleanup failed: %s\n", error.what());
-  } catch (...) {
-    std::fprintf(stderr, "kawpow: ordered SYCL cleanup failed\n");
-  }
+  clearPersistentDeviceStates<State>("kawpow");
 }
 
 } // namespace mom_kawpow
@@ -79,10 +68,11 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
                        const unsigned intensity, const bool is_test, const bool is_benchmark,
                        const std::string& dev_str) {
   if (!input || !output || !mix_hash || !pnonce || input_size < 40 || !intensity)
-    throw std::string("KawPow requires input, output, nonce, and nonzero intensity");
+    throw std::string("KawPow requires input, output, mix hash, nonce, a header of at least 40 "
+                      "bytes, and nonzero intensity");
 
   const bool loop_stats = kawpow_loop_stats();
-  const uint64_t t_enter = loop_stats ? kawpow_now_us() : 0;
+  const uint64_t t_enter = loop_stats ? mom_now_us() : 0;
 
   SealParams seal_params{variant.seal, {}};
   for (unsigned i = 0; i < 15; ++i)
@@ -114,7 +104,7 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
   // MeowPow epoch-110 "dag change" (Meowcoin core create_epoch_context): for epoch >= dagchange_epoch
   // the dataset AND cache SIZES use a scaled epoch (epoch*4), while the keccak SEED keeps the real
   // epoch. size_epoch == epoch for the other variants and for MeowPow below the fork.
-  const bool compact_test = kawpow_portable_test(is_test, is_benchmark, state.device);
+  const bool compact_test = mom_compact_correctness_test(is_test, is_benchmark, state.device);
   const uint32_t size_epoch =
       (variant.dagchange_epoch && epoch >= variant.dagchange_epoch) ? epoch * 4 : epoch;
   if (size_epoch >= 2048)
@@ -133,15 +123,15 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
                  ? chfast_cache_bytes(size_epoch, variant.chfast_cache_init_items,
                                       variant.chfast_cache_growth_items)
                  : cache_sizes[epoch]);
-  const uint64_t t_state = loop_stats ? kawpow_now_us() : 0;
+  const uint64_t t_state = loop_stats ? mom_now_us() : 0;
   state.ensure_epoch(epoch, cache_bytes, dag_bytes, !is_benchmark);
-  const uint64_t t_epoch = loop_stats ? kawpow_now_us() : 0;
+  const uint64_t t_epoch = loop_stats ? mom_now_us() : 0;
   state.ensure_period(period);
 
   uint64_t start_nonce = 0;
   std::memcpy(&start_nonce, input + 32, sizeof(start_nonce));
   uint32_t search_intensity = intensity;
-  if (search_intensity > std::numeric_limits<uint32_t>::max() - (state.workgroup - 1))
+  if (!mom::job_boundary::padded_u32_range_fits(search_intensity, state.workgroup))
     throw std::string("KawPow intensity is too large");
   const size_t global_size =
       mom_round_up_size(std::max(search_intensity, state.workgroup), state.workgroup);
@@ -161,8 +151,8 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
   const DagLoad* const d_dag_load = reinterpret_cast<const DagLoad*>(state.dag.get());
   KawpowResult* const d_result = state.result;
 
-  // Capability/driver policy selects subgroup or local-memory exchange. Explicit overrides keep
-  // their existing meaning; subgroup exchange still requires a complete ProgPoW team.
+  // Capability/driver policy selects subgroup or local-memory exchange. MOM_KAWPOW_EXCHANGE=sg or
+  // slm overrides it; subgroup exchange still requires a complete ProgPoW team.
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
   const char* const exchange_env = std::getenv("MOM_KAWPOW_EXCHANGE");
   bool use_sg = state.default_subgroup_exchange;
@@ -183,11 +173,11 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
     // runs at sub-group=16 on Intel and natively at warp=32 on CUDA (reqd_sub_group_size dropped here).
     // The per-period ProgPoW program is folded to constants: Intel via SYCL-2020 specialization
     // constants + kernel_bundle; CUDA via a runtime source-compiled kernel (jit.inc).
-    const uint64_t t_io = loop_stats ? kawpow_now_us() : 0;
+    const uint64_t t_io = loop_stats ? mom_now_us() : 0;
     // A benchmark never crosses a ProgPoW period. Avoid compiling the unused next-period CUDA
     // kernel: the worker otherwise waits for that background compile during shutdown.
     state.ensure_period_bundle(period, epoch, dag_mod, !is_benchmark);
-    const uint64_t t_bundle = loop_stats ? kawpow_now_us() : 0;
+    const uint64_t t_bundle = loop_stats ? mom_now_us() : 0;
     sycl::event search_event;
 #if defined(MOM_SYCL_HAS_CUDA)
     // Must match build_period_bundle's choice: launch the JIT kernel iff that path was selected.
@@ -291,7 +281,7 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
       });
     }
     if (loop_stats) {
-      const uint64_t t_submit = kawpow_now_us();
+      const uint64_t t_submit = mom_now_us();
       const uint64_t pre_us = t_submit - t_enter;
       if (pre_us > 50000)
         fprintf(stderr,

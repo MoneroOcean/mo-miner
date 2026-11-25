@@ -165,22 +165,18 @@ static bool pearlhash_positive_inputs(const sycl::device& device, const bool nat
 
 // Release device owners in runtime-safe order, retaining only the documented Windows CPU ICD exception.
 void pearlhash_cleanup_states() noexcept {
-  try {
 #if defined(_WIN32)
-    // Intel's standalone Windows CPU OpenCL ICD can fault after a successful PearlHash result while
-    // DPC++ destroys this algorithm's shared-USM allocation/queue graph. The state registry itself
-    // is deliberately heap-owned and has no process-exit destructor, so retain only CPU states and
-    // let process teardown reclaim them. Discrete GPU states still require ordered cleanup (notably
-    // AdaptiveCpp/CUDA, which otherwise reports cudaErrorCudartUnloading) and are erased normally.
-    persistentDeviceStates<State>().clear([](const auto& entry) {
-      return !entry.second->queue.get_device().is_cpu();
-    });
+  // Intel's standalone Windows CPU OpenCL ICD can fault after a successful PearlHash result while
+  // DPC++ destroys this algorithm's shared-USM allocation/queue graph. The state registry itself
+  // is deliberately heap-owned and has no process-exit destructor, so retain only CPU states and
+  // let process teardown reclaim them. Discrete GPU states still require ordered cleanup (notably
+  // AdaptiveCpp/CUDA, which otherwise reports cudaErrorCudartUnloading) and are erased normally.
+  clearPersistentDeviceStates<State>("pearlhash", [](const auto& entry) {
+    return !entry.second->queue.get_device().is_cpu();
+  });
 #else
-    persistentDeviceStates<State>().clear();
+  clearPersistentDeviceStates<State>("pearlhash");
 #endif
-  } catch (...) {
-    std::fprintf(stderr, "pearlhash: ordered SYCL cleanup failed\n");
-  }
 }
 
 // One seeded NoisyGEMM attempt per call (seed = *pseed). Returns 1 on a winning tile, writes the
@@ -196,7 +192,7 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
   g_pf.leaves_a.clear();
   g_pf.leaves_b.clear();
   if (!input || !pseed || input_size < 76)
-    throw std::string("Bad pearlhash input length (need 76-byte header)");
+    throw std::string("Bad PearlHash input length (need 76-byte header)");
   if (!is_test && !target)
     throw std::string("PearlHash target is required outside test mode");
   constexpr unsigned max_dimension =
@@ -207,7 +203,7 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
   const int k = static_cast<int>(requested_k);
   const int rank = static_cast<int>(requested_rank);
   if (cert_version != 3)
-    throw std::string("Unsupported pearlhash certificate version");
+    throw std::string("Unsupported PearlHash certificate version");
   if (rank < 128)
     throw std::string("PearlHash certificate V3 requires rank >= 128");
   // M arrives as the worker's explicit primary tuning value; N can be selected independently. Native HIP
@@ -221,12 +217,12 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
   if (!mom::job_boundary::valid_pearlhash_shape(
           static_cast<uint64_t>(m), static_cast<uint64_t>(n), static_cast<uint64_t>(k),
           static_cast<uint64_t>(rank)))
-    throw std::string("Invalid pearlhash M/N/K/rank profile");
+    throw std::string("Invalid PearlHash M/N/K/rank profile");
   (void)pearlhash_attempt_hashes(intensity, requested_n, requested_k, requested_rank);
 
   // Device state is acquired only after all input/profile validation. Once the state is valid, clear
   // the prior fixed-B snapshot before any route, allocation, producer, or proof operation can throw.
-  State& st = state_for(dev_str);
+  State& st = persistentDeviceState<State>(dev_str);
   std::lock_guard<std::mutex> lock(st.mutex);
   const bool prior_fixed_b_valid = st.fixed_b_valid;
   const uint32_t prior_fixed_b_seed = st.fixed_b_seed;
@@ -502,8 +498,8 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
                                               .count());
     st.wait_ema_us = st.wait_ema_us == 0.0 ? us : st.wait_ema_us * 0.8 + us * 0.2;
   }
-  if (std::getenv(
-          "MOM_PEARLHASH_CHK")) // cross-validation: same A'/B' -> identical chk on every search path
+  // Cross-validation: the same A'/B' must give an identical chk on every search path.
+  if (mom_env_flag("MOM_PEARLHASH_CHK").value_or(false))
     std::fprintf(stderr, "PEARLHASH_CHK dev=%s seed=%u chk=%08x\n", dev_str.c_str(),
                  (uint32_t)*pseed, b.result->chk);
   if (compact_mode && !reuse_fixed_b) {
@@ -599,7 +595,7 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
       if (claim.proof.empty())
         throw std::string("Invalid compact PearlHash winning proof");
     }
-    if (std::getenv("MOM_PEARLHASH_STATS"))
+    if (mom_env_flag("MOM_PEARLHASH_STATS").value_or(false))
       std::fprintf(stderr,"PEARLHASH_SYCL_STATS proof=%.3fms\n",
                    std::chrono::duration<double,std::milli>(
                        std::chrono::steady_clock::now()-proof_start).count());
@@ -644,7 +640,7 @@ const char* pearlhash_claim(const unsigned index, uint8_t jackpot[32], uint32_t*
         g_pf.positive_inputs, &g_pf.b_seed);
     if (claim.proof.empty())
       return nullptr;
-    if (std::getenv("MOM_PEARLHASH_STATS"))
+    if (mom_env_flag("MOM_PEARLHASH_STATS").value_or(false))
       std::fprintf(stderr, "PEARLHASH_SYCL_STATS proof=%.3fms\n",
                    std::chrono::duration<double, std::milli>(
                        std::chrono::steady_clock::now() - proof_start).count());

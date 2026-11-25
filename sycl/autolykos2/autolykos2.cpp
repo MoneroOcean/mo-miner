@@ -3,7 +3,6 @@
 #include <sycl/sycl.hpp>
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -36,13 +35,6 @@ inline uint32_t calc_n(const uint32_t height) {
   return n;
 }
 
-// Monotonic microseconds for pipeline selection and AUTOLYKOS2_PROFILE timing.
-static uint64_t now_us() {
-  return std::chrono::duration_cast<std::chrono::microseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-
 #include "state.inc"
 
 // Release device state before the compiler runtime unloads without escaping exceptions.
@@ -72,7 +64,8 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
                const uint8_t* const target, const unsigned intensity, const bool is_test,
                const bool is_benchmark, const std::string& dev_str) {
   if (!input || !output || !pnonce || !target || input_size < 40 || !intensity)
-    throw std::string("Autolykos2 requires input, output, target, nonce, and nonzero intensity");
+    throw std::string("Autolykos2 requires input, output, nonce, target, a header of at least 40 "
+                      "bytes, and nonzero intensity");
 
   State& state = persistentDeviceState<State>(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
@@ -110,23 +103,27 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
   // profiles share this result buffer between the split-table and monolithic paths.
   PowHits<>* const d_result = mom_sycl_portable_opencl ? nullptr : state.result;
   const uint32_t local_size = state.workgroup;
-  const bool profile = std::getenv("MOM_AUTOLYKOS2_PROFILE") != nullptr;
+  // Diagnostic: log split-search stage timings (this also pins the CUDA pipeline choice).
+  const bool profile = mom_env_flag("MOM_AUTOLYKOS2_PROFILE").value_or(false);
 
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
-  bool split_table = State::autolykos_split_table();
+  // Split search defaults on; MOM_AUTOLYKOS2_SPLIT is a diagnostic override that also pins the
+  // CUDA pipeline choice instead of timing both.
+  const std::optional<bool> split_override = mom_env_flag("MOM_AUTOLYKOS2_SPLIT");
+  bool split_table = split_override.value_or(true);
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
   const bool auto_pipeline = AutolykosPipelineSelection::eligible(
-      mom_is_cuda(state.device), d_table != nullptr, is_test,
-      std::getenv("MOM_AUTOLYKOS2_SPLIT") != nullptr, profile);
+      mom_is_cuda(state.device), d_table != nullptr, is_test, split_override.has_value(), profile);
   split_table = state.pipeline_selection.select(n_len, effective_intensity, local_size,
                                                auto_pipeline, split_table);
-  const uint64_t pipeline_started = auto_pipeline && state.pipeline_selection.phase < 6 ? now_us() : 0;
+  const uint64_t pipeline_started =
+      auto_pipeline && state.pipeline_selection.phase < 6 ? mom_now_us() : 0;
 #endif
   if (d_table && !is_test && split_table) {
     state.ensure_bhashes(effective_intensity);
     uint32_t* const d_bhashes = state.bhashes;
 
-    const uint64_t profile_t0 = profile ? now_us() : 0;
+    const uint64_t profile_t0 = profile ? mom_now_us() : 0;
     sycl::event index_event = q.submit([&](sycl::handler& h) {
       h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
                      [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
@@ -147,7 +144,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
 
     if (profile)
       sycl_wait_and_throw(index_event, state.device);
-    const uint64_t profile_t1 = profile ? now_us() : 0;
+    const uint64_t profile_t1 = profile ? mom_now_us() : 0;
     const bool subgroup_coop = (mom_is_hip(state.device) || mom_is_cuda(state.device)) &&
                                State::autolykos_subgroup_coop();
     const uint32_t verify_count = subgroup_coop &&
@@ -365,7 +362,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
       std::fprintf(stderr, "Autolykos2 subgroup sums verified for %u nonces\n", verify_count);
     }
     if (profile) {
-      const uint64_t profile_t2 = now_us();
+      const uint64_t profile_t2 = mom_now_us();
       std::fprintf(stderr,
                    "AUTOLYKOS2_PROFILE split%s intensity=%u local=%u index=%.3fms search=%.3fms "
                    "total=%.3fms\n",
@@ -381,14 +378,14 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
       const int found = mom_take_pow_hits(*state.result, output, pnonce);
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
       if (pipeline_started)
-        state.pipeline_selection.observe(static_cast<double>(now_us() - pipeline_started));
+        state.pipeline_selection.observe(static_cast<double>(mom_now_us() - pipeline_started));
 #endif
       return found;
     }
   }
 #endif
 
-  const uint64_t profile_t0 = profile ? now_us() : 0;
+  const uint64_t profile_t0 = profile ? mom_now_us() : 0;
   sycl::event search_event;
 #if defined(MOM_SYCL_PORTABLE_OPENCL)
   search_event = q.submit([&](sycl::handler& h) {
@@ -521,7 +518,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
 #endif
   sycl_wait_and_throw(search_event, state.device);
   if (profile) {
-    const uint64_t profile_t1 = now_us();
+    const uint64_t profile_t1 = mom_now_us();
     std::fprintf(stderr, "AUTOLYKOS2_PROFILE single intensity=%u local=%u total=%.3fms table=%u\n",
                  effective_intensity, local_size,
                  static_cast<double>(profile_t1 - profile_t0) / 1000.0, d_table ? 1U : 0U);
@@ -544,7 +541,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
   const int found = mom_take_pow_hits(*state.result, output, pnonce);
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
   if (pipeline_started)
-    state.pipeline_selection.observe(static_cast<double>(now_us() - pipeline_started));
+    state.pipeline_selection.observe(static_cast<double>(mom_now_us() - pipeline_started));
 #endif
   return found;
 #endif

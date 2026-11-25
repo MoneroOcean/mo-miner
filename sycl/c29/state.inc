@@ -32,15 +32,6 @@ const constexpr uint32_t MAX_TRIMMED_EDGE_COUNT = 128 * COMPUTE_THREADS, DEFAULT
 const constexpr uint32_t EDGE_BLOCK_MASK = EDGE_BLOCK_SIZE - 1, NUM_EDGES = mom_c29::kNumEdges,
                          EDGE_MASK = NUM_EDGES - 1;
 
-// Accept a positive bounded tuning value, otherwise preserve the established default.
-static uint32_t c29_env_u32(const char* name, const uint32_t default_value) {
-  unsigned long parsed = 0;
-  if (!mom_parse_env_ulong(name, parsed) || parsed == 0 ||
-      parsed > std::numeric_limits<uint32_t>::max())
-    return default_value;
-  return static_cast<uint32_t>(parsed);
-}
-
 enum class C29ProfileMode { disabled, host, device };
 
 // Sample once: "host" measures submission/readback without changing queue properties or retaining
@@ -70,7 +61,8 @@ static uint32_t c29_profile_limit() {
 // Restrict the seed workgroup override to the kernel's supported launch sizes.
 uint32_t c29_seed_local_size() {
   static const uint32_t v = []() {
-    const uint32_t r = c29_env_u32("MOM_C29_SEED_LOCAL_SIZE", DEFAULT_SEED_LOCAL_SIZE);
+    uint32_t r = DEFAULT_SEED_LOCAL_SIZE;
+    mom_parse_env_u32("MOM_C29_SEED_LOCAL_SIZE", r);
     return (r == 64u || r == 128u || r == 256u) ? r : DEFAULT_SEED_LOCAL_SIZE;
   }();
   return v;
@@ -79,7 +71,8 @@ uint32_t c29_seed_local_size() {
 // Restrict per-item seed work to the supported divisors of the edge space.
 uint32_t c29_seed_blocks_per_item() {
   static const uint32_t v = []() {
-    const uint32_t r = c29_env_u32("MOM_C29_SEED_BLOCKS", DEFAULT_SEED_BLOCKS);
+    uint32_t r = DEFAULT_SEED_BLOCKS;
+    mom_parse_env_u32("MOM_C29_SEED_BLOCKS", r);
     return (r == 4u || r == 8u || r == 16u || r == 32u) ? r : DEFAULT_SEED_BLOCKS;
   }();
   return v;
@@ -96,12 +89,6 @@ static uint32_t c29_trim_rounds(const sycl::device& device) {
 #endif
 }
 
-static uint64_t c29_now_us() {
-  return std::chrono::duration_cast<std::chrono::microseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-
 struct C29ProfileEvent {
   const char* name;
   sycl::event event;
@@ -115,7 +102,7 @@ struct C29Profile {
   // Sample a bounded number of graphs across callers; profiling never changes graph parameters.
   C29Profile(const unsigned job_ref, const uint64_t nonce, const unsigned proof_size,
              const sycl::device& device)
-      : enabled(false), start_us(c29_now_us()), last_us(start_us) {
+      : enabled(false), start_us(mom_now_us()), last_us(start_us) {
     static std::atomic<uint32_t> profiled_graphs{0};
     enabled = c29_profile_mode() != C29ProfileMode::disabled &&
               profiled_graphs.fetch_add(1, std::memory_order_relaxed) < c29_profile_limit();
@@ -137,7 +124,7 @@ struct C29Profile {
     if (!enabled)
       return;
 
-    const uint64_t now_us = c29_now_us();
+    const uint64_t now_us = mom_now_us();
     std::printf("[c29-profile] host %-28s %.3f ms\n", name, (now_us - last_us) / 1000.0);
     last_us = now_us;
   }
@@ -175,7 +162,7 @@ struct C29Profile {
     if (!enabled)
       return;
 
-    const uint64_t now_us = c29_now_us();
+    const uint64_t now_us = mom_now_us();
     std::printf("[c29-profile] graph end trimmed=%u host_total=%.3f ms\n", trimmed_edges,
                 (now_us - start_us) / 1000.0);
   }
@@ -273,11 +260,6 @@ struct C29State {
     search_futures.clear();
   }
 };
-
-static C29State& c29_state(const std::string& dev_str) {
-  return persistentDeviceStates<C29State>().get(dev_str,
-      [&] { return std::make_unique<C29State>(dev_str); });
-}
 
 // Destroy persistent device states through the ordered cleanup path without throwing at shutdown.
 void c29_cleanup_states() noexcept {

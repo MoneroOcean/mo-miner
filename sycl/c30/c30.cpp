@@ -105,8 +105,8 @@ struct DeviceMemory {
     const std::uint64_t max_alloc = device.get_info<sycl::info::device::max_mem_alloc_size>();
     if (!mom_has_usm_device(device))
       throw std::runtime_error("c30 requires device USM");
-    const char* const force_low_memory = std::getenv("MOM_C30_FORCE_LOW_MEMORY");
-    low_memory = (force_low_memory && force_low_memory[0] != '0') ||
+    // Diagnostic: exercise the low-memory graph layout on a device that could hold the full one.
+    low_memory = mom_env_flag("MOM_C30_FORCE_LOW_MEMORY").value_or(false) ||
                  max_alloc < kMaxEdgeArrayBytes ||
                  global_bytes < kRequiredDeviceBytes + kSafetyReserve ||
                  mom_intel_eu_simd_width(device) == 8;
@@ -278,7 +278,8 @@ struct Solver {
   // Trim one graph, find a host cycle, then recover and verify exact sorted nonces before hashing.
   std::optional<Solution> solve(const Job& job) {
     using Clock = std::chrono::steady_clock;
-    const bool profile = std::getenv("MOM_C30_PROFILE") != nullptr;
+    // Diagnostic: report per-stage solve timings.
+    const bool profile = mom_env_flag("MOM_C30_PROFILE").value_or(false);
     auto stage = Clock::now();
     const auto report = [&](const char* label) {
       if (profile)
@@ -289,6 +290,7 @@ struct Solver {
     report("allocation");
     const host::SipKey host_key = host::graph_key(job.header, job.nonce);
     const C30DeviceKey key{host_key.k0, host_key.k1, host_key.k2, host_key.k3};
+    // Tuning overrides: the trim round count (64..512) and the first round of sparse trimming.
     unsigned trim_rounds = kDefaultTrimRounds;
     unsigned long requested = 0;
     if (mom_parse_env_ulong("MOM_C30_TRIM_ROUNDS", requested)) {
@@ -454,11 +456,6 @@ struct C30State {
   }
 };
 
-C30State& c30_state(const std::string& dev_str) {
-  return persistentDeviceStates<C30State>().get(dev_str,
-      [&] { return std::make_unique<C30State>(dev_str); });
-}
-
 // Check four block-boundary endpoints on device without allocating the full C30 graph.
 int c30_portable_test(const mom_c30::Job& job, std::uint8_t* output, const std::string& dev_str) {
   sycl::queue queue(get_dev(dev_str), sycl::property::queue::in_order{});
@@ -517,9 +514,10 @@ int c30(unsigned, const unsigned proof_size, const std::uint8_t* input, const un
       job.nonce |= static_cast<std::uint64_t>(input[32 + i]) << (8 * i);
   } else
     job.nonce = *nonce;
-  if (std::getenv("MOM_C30_TEST_EDGE"))
+  // MOM_C30_TEST_EDGE selects the bounded edge-endpoint test instead of a full solve.
+  if (mom_env_flag("MOM_C30_TEST_EDGE").value_or(false))
     return c30_portable_test(job, output, dev_str);
-  C30State& state = c30_state(dev_str);
+  C30State& state = persistentDeviceState<C30State>(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   const std::optional<mom_c30::Solution> solution = state.solver.solve(job);
   if (!solution)

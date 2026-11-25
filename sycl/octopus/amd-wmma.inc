@@ -160,7 +160,8 @@ extern "C" __global__ void octopus_wmma(const signed char* A, const signed char*
 static sycl::event octopus_amd_gemm(sycl::queue& queue, OctopusAmdWmma& wmma,
                                     const int8_t* a, const int8_t* b, int32_t* c,
                                     bool& logged) {
-  if (!logged && std::getenv("MOM_OCTOPUS_AMD_WMMA_LOG")) {
+  // Diagnostic: confirm once that the WMMA route is active.
+  if (!logged && mom_env_flag("MOM_OCTOPUS_AMD_WMMA_LOG").value_or(false)) {
     std::fprintf(stderr, "Octopus gfx12 WMMA active\n");
     logged = true;
   }

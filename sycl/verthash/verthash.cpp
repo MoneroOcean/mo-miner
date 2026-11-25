@@ -181,11 +181,8 @@ private:
 // Keep compact correctness fixtures separate from the official dataset registry key.
 static State& state_for(const std::string& dev_str, const bool is_test,
                         const bool is_benchmark) {
-  const char* const configured = std::getenv("MOM_SYCL_PORTABLE_TEST");
-  const bool requested = is_test && !is_benchmark && configured &&
-                         std::strcmp(configured, "1") == 0;
   // Resolve the device only for an explicitly requested correctness fixture.
-  const bool compact = requested &&
+  const bool compact = is_test && !is_benchmark && mom_portable_test_requested() &&
                        mom_compact_correctness_test(is_test, is_benchmark, get_dev(dev_str));
   const std::string key = dev_str + (compact ? "\x1f" "compact-test" : "\x1f" "full");
   return persistentDeviceStates<State>().get(key,

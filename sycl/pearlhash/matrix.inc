@@ -3,11 +3,11 @@ using pearlhash_b3::b3;
 // Validate positive matrix dimensions and checked host-size multiplication before allocation.
 static size_t checked_elements(const int rows, const int columns, const char* const name) {
   if (rows <= 0 || columns <= 0)
-    throw std::string("Invalid pearlhash ") + name + " dimensions";
+    throw std::string("Invalid PearlHash ") + name + " dimensions";
   const size_t row_count = static_cast<size_t>(rows);
   const size_t column_count = static_cast<size_t>(columns);
   if (row_count > std::numeric_limits<size_t>::max() / column_count)
-    throw std::string("Invalid pearlhash ") + name + " dimensions";
+    throw std::string("Invalid PearlHash ") + name + " dimensions";
   return row_count * column_count;
 }
 
@@ -15,7 +15,7 @@ static size_t checked_elements(const int rows, const int columns, const char* co
 static size_t checked_chunk_count(const size_t bytes, const char* const name) {
   const size_t chunks = bytes / 1024 + (bytes % 1024 != 0);
   if (chunks > static_cast<size_t>(std::numeric_limits<int>::max()))
-    throw std::string("Invalid pearlhash ") + name + " chunk count";
+    throw std::string("Invalid PearlHash ") + name + " chunk count";
   return chunks;
 }
 

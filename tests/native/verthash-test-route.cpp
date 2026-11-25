@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -77,13 +78,19 @@ static void configure_env(const char* const value) {
 #endif
 }
 
+// MOM_SYCL_PORTABLE_TEST uses the shared on/off rule: empty, "0", "false" and "off" stay off.
+static bool requested(const char* const env) {
+  return env && *env && std::strcmp(env, "0") != 0 && std::strcmp(env, "false") != 0 &&
+         std::strcmp(env, "off") != 0;
+}
+
 static bool expected_compact(const bool cpu, const bool integrated, const bool is_test,
                              const bool is_benchmark, const char* const env) {
-  return (cpu || integrated) && is_test && !is_benchmark && env && std::strcmp(env, "1") == 0;
+  return (cpu || integrated) && is_test && !is_benchmark && requested(env);
 }
 
 static void test_admission_matrix() {
-  constexpr const char* environments[] = {nullptr, "0", "1", "true"};
+  constexpr const char* environments[] = {nullptr, "0", "false", "1", "2", "true"};
   for (const char* const env : environments)
     for (const bool cpu : {false, true})
       for (const bool integrated : {false, true})
@@ -99,7 +106,7 @@ static void test_admission_matrix() {
                         expected_compact(cpu, integrated, is_test, is_benchmark, env),
                     "bounded Verthash admission mismatch");
             require(fixture_device_queries == before_queries +
-                        ((is_test && !is_benchmark && env && std::strcmp(env, "1") == 0) ? 1u : 0u),
+                        ((is_test && !is_benchmark && requested(env)) ? 1u : 0u),
                     "unexpected device query for inactive Verthash test switch");
           }
 }

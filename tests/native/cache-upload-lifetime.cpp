@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -72,6 +73,7 @@ struct queue {
 
 static sycl::queue* active_queue = nullptr;
 
+#include "mom_env_flag.inc"  // the production on/off switch parser (sycl/lib-internal.h)
 #include "cleanup.inc"
 
 static void require(const bool condition, const char* const message) {

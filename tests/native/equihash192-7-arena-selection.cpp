@@ -4,10 +4,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
+#include "mom_env_flag.inc"  // the production on/off switch parser (sycl/lib-internal.h)
 
 namespace fixture_clock {
 static double seconds;
@@ -168,7 +171,12 @@ static void run_checks() {
   expect_calls(non_cuda, {0});
   for (const auto* name : {"MOM_EQUIHASH192_7_PROFILE", "MOM_EQUIHASH192_7_RETRY_ARENA",
                            "MOM_EQUIHASH192_7_HYBRID_ARENA"}) {
-    setenv(name, "0", 1); // These diagnostic flags are intentionally presence-sensitive.
+    setenv(name, "0", 1); // mom_env_flag: "0" leaves the automatic layout choice in place.
+    Session<> off;
+    off.queue_.device.cuda = false;
+    off.run_with_cache<false>(header);
+    expect_calls(off, {0});
+    setenv(name, "1", 1);
     Session<> diagnostic;
     diagnostic.run_with_cache<false>(header);
     const int expected = std::string(name).find("HYBRID") != std::string::npos ? 2 :

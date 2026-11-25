@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -120,17 +121,18 @@ static void free(void* pointer, queue&) {
 }
 }
 
+// Declared before cleanup.inc, whose MOM_SYCL_CLEANUP_DEBUG check reads it.
+static std::optional<bool> mom_env_flag(const char* name) {
+  if ((scenario == 13 && std::strcmp(name, "MOM_ETCHASH_FORCE_NOINLINE") == 0) ||
+      (scenario == 14 && std::strcmp(name, "MOM_ETCHASH_FORCE_INLINE") == 0))
+    return true;
+  return std::nullopt;
+}
 #include "cleanup.inc"
 static void sycl_wait_and_throw(sycl::event event, sycl::device) {
   if ((scenario == 7 && event.probe) || (scenario == 9 && event.probe == 1) ||
       ((scenario == 11 || scenario == 12) && event.probe == 2))
     inject();
-}
-static bool mom_parse_env_ulong(const char* name, unsigned long& value) {
-  const bool forced = (scenario == 13 && std::strcmp(name, "MOM_ETCHASH_FORCE_NOINLINE") == 0) ||
-      (scenario == 14 && std::strcmp(name, "MOM_ETCHASH_FORCE_INLINE") == 0);
-  value = forced ? 1 : 0;
-  return forced;
 }
 template <bool Inline>
 static sycl::event submit_etchash_search_gpu(sycl::queue&, const uint8_t*, uint64_t,

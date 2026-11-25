@@ -5,8 +5,6 @@ typedef unsigned char      uint8_t;
 typedef signed char        int8_t;
 typedef unsigned int       uint32_t;
 typedef unsigned long long uint64_t;
-#define PEARLHASH_WAVE64
-#define PEARLHASH_PACK_K32_W64
 typedef int v2i __attribute__((ext_vector_type(2)));
 typedef int v8i __attribute__((ext_vector_type(4)));
 

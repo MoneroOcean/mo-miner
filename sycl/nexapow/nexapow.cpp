@@ -199,12 +199,14 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
     throw std::string("nexapow host vector mismatch");
   return hits;
 #else
-  const bool staged_test = is_test && env_enabled("MOM_NEXAPOW_STAGED_TEST");
-  const bool staged_required = staged_test || env_enabled("MOM_NEXAPOW_STAGED_REQUIRE");
+  // Validation knobs: test or require the staged GPU search instead of the recorded/host routes.
+  const bool staged_test = is_test && mom_env_flag("MOM_NEXAPOW_STAGED_TEST").value_or(false);
+  const bool staged_required =
+      staged_test || mom_env_flag("MOM_NEXAPOW_STAGED_REQUIRE").value_or(false);
   // CPU CI runs the existing one-nonce SYCL ECC/search fallback, not just the SHA probe plus
   // host ECC. This test-only route avoids the multi-GiB staged table without changing mining.
   const bool portable_cpu_test = is_test && !is_benchmark && state.device.is_cpu() &&
-                                 env_enabled("MOM_SYCL_PORTABLE_TEST");
+                                 mom_portable_test_requested();
   if (portable_cpu_test && staged_required)
     throw std::string("NexaPoW monolithic CPU test conflicts with required staged search");
   if (recorded_test && !staged_test && !portable_cpu_test) {
@@ -217,7 +219,7 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
 
   std::string reason;
   if (!portable_cpu_test && state.portable.ensure(state.queue, state.device, &reason)) {
-    if (env_enabled("MOM_NEXAPOW_STAGED_LOG") && !state.staged_logged) {
+    if (mom_env_flag("MOM_NEXAPOW_STAGED_LOG").value_or(false) && !state.staged_logged) {
       std::fprintf(
           stderr,
           "NexaPoW staged SYCL active (field=%s, table=%s, points=%u, bytes=%llu, count=%u)\n",

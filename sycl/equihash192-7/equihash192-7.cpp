@@ -137,7 +137,8 @@ int equihash192_7(unsigned, std::uint32_t, const std::uint8_t* input, const unsi
       input_size != Spec::header_length || intensity != 1)
     throw std::string(
       "equihash192_7 requires input, output, a mining target, a 140-byte header, and intensity 1");
-  if (is_test && std::getenv("MOM_EQUIHASH192_7_SOLVE") == nullptr)
+  // Test mode checks generation unless MOM_EQUIHASH192_7_SOLVE requests the full solve.
+  if (is_test && !mom_env_flag("MOM_EQUIHASH192_7_SOLVE").value_or(false))
     return mom_equihash192_7::run_generation_test(device_name, input, solution_out);
   auto& state = persistentDeviceState<mom_equihash192_7::State>(device_name);
   std::lock_guard<std::mutex> lock(state.mutex);

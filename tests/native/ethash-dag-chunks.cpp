@@ -79,11 +79,10 @@ static void sycl_wait_and_throw(sycl::event, const sycl::device&) {
   if (fail_wait && std::count(trace.begin(), trace.end(), 'W') == fail_wait)
     throw std::runtime_error("submitted DAG fault");
 }
-static unsigned sycl_default_workgroup(const sycl::device&, std::initializer_list<unsigned>,
-                                       const unsigned preferred) {
+static unsigned sycl_env_workgroup(const sycl::device&, const char*, std::initializer_list<unsigned>,
+                                   const unsigned preferred) {
   return preferred;
 }
-static bool sycl_workgroup_fits(const sycl::device&, const unsigned size) { return size <= 256; }
 #include "unsigned-env.inc"
 struct ethash_h256_t {
   uint8_t bytes[32];

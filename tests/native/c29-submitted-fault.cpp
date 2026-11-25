@@ -10,12 +10,14 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "mom_env_flag.inc"  // the production on/off switch parser (sycl/lib-internal.h)
 
 static int mode, proof_size, owner;
 static int calls, seeds, trims, waits, copies, thread_attempts, threads, errors, clears;
@@ -147,7 +149,8 @@ struct C29State {
   std::mutex mutex;
 };
 static C29State* active;
-static C29State& c29_state(const std::string& dev) {
+template <typename State>
+static State& persistentDeviceState(const std::string& dev) {
   require(dev == "fixture", "device binding changed");
   return *active;
 }

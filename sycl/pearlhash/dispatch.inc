@@ -18,8 +18,9 @@ attempt(sycl::queue& q, Buffers& b, uint32_t seed, int m, int n, int k, int rank
   // A second producer queue belongs only to HIP; CUDA/portable preparation stays on q.
   if (!hip || (hip_prep_queue && !mom_is_hip(device)))
     hip_prep_queue = nullptr;
+  // Diagnostic: MOM_PEARLHASH_STATS times the first few searches' stages.
   static thread_local unsigned stats_attempts = 0;
-  const bool stats = std::getenv("MOM_PEARLHASH_STATS") && stats_attempts++ < 3;
+  const bool stats = mom_env_flag("MOM_PEARLHASH_STATS").value_or(false) && stats_attempts++ < 3;
   auto stats_last = std::chrono::steady_clock::now();
   auto mark = [&](const char* stage) {
     if (!stats)
@@ -69,7 +70,8 @@ attempt(sycl::queue& q, Buffers& b, uint32_t seed, int m, int n, int k, int rank
 #if !defined(MOM_SYCL_ADAPTIVECPP_CUDA)
   (void)cuda_f16;
 #endif
-  const bool dbg = validate_native || std::getenv("MOM_PEARLHASH_CHK") != nullptr;
+  // MOM_PEARLHASH_CHK cross-validates the search checksum on every path (diagnostic).
+  const bool dbg = validate_native || mom_env_flag("MOM_PEARLHASH_CHK").value_or(false);
   [[maybe_unused]] const bool try_jit = backend == "auto" || backend == "native";
   [[maybe_unused]] const bool tuned_sycl = try_jit || backend == "sycl-native";
 #if defined(MOM_SYCL_HAS_CUDA)
@@ -84,8 +86,9 @@ attempt(sycl::queue& q, Buffers& b, uint32_t seed, int m, int n, int k, int rank
     if (!tuned_sycl || is_cuda)
       return 0u;
     try {
+      // MOM_PEARLHASH_ESIMD also admits Intel OpenCL devices to the ESIMD route (diagnostic).
       const bool supported_backend = sycl_is_level_zero_gpu(device) ||
-          (mom_is_opencl(device) && std::getenv("MOM_PEARLHASH_ESIMD") != nullptr);
+          (mom_is_opencl(device) && mom_env_flag("MOM_PEARLHASH_ESIMD").value_or(false));
       // Integrated Intel GPUs can lack the LSC prefetch used by this search even with matrix support.
       const bool discrete_gpu = device.is_gpu() && !is_integrated_gpu(device);
       const bool intel_matrix = discrete_gpu && device.has(sycl::aspect::ext_intel_matrix);

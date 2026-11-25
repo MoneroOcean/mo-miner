@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <exception>
 #include <stdexcept>
@@ -18,12 +19,20 @@
 
 using MessageValues = std::map<std::string, std::string>;
 
+// On/off environment switch with the rule of sycl/lib-internal.h mom_env_flag, which native code
+// cannot include (the CPU Core builds without SYCL): unset, empty, "0", "false" and "off" are off.
+static bool mom_native_env_enabled(const char* const name) {
+  const char* const value = std::getenv(name);
+  return value && *value && std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0 &&
+         std::strcmp(value, "off") != 0;
+}
+
 // MOM_DEBUG_STARTUP trace line "<message><detail>" for diagnosing worker startup and message
 // hangs. The variable is read once, and callers pass dynamic text as `detail` so that no string
 // is built when tracing is off (send_msg runs on every hashrate and share message).
 static void debug_async_worker(const std::string_view message,
                                const std::string_view detail = {}) {
-  static const bool enabled = std::getenv("MOM_DEBUG_STARTUP") != nullptr;
+  static const bool enabled = mom_native_env_enabled("MOM_DEBUG_STARTUP");
   if (!enabled) {
     return;
   }

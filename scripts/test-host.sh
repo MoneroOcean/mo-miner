@@ -90,8 +90,8 @@ extract_cpp beam_generic_flush.inc sycl/beamhash3/generic-solver.inc \
   '            for (unsigned r = warp_id; r < lsz; r += wg_warps) {'
 build_run beam-scatter -UNDEBUG -I "$out" "$root/tests/native/beam-scatter.cpp"
 extract_cpp beam_workgroup_helpers.inc sycl/lib-internal.h 'inline bool mom_parse_env_ulong(' \
-  'inline bool sycl_local_memory_fits(' 'inline bool sycl_workgroup_fits(' \
-  'inline unsigned sycl_default_workgroup('
+  'inline std::optional<bool> mom_env_flag(' 'inline bool sycl_local_memory_fits(' \
+  'inline bool sycl_workgroup_fits(' 'inline unsigned sycl_default_workgroup('
 extract_cpp beamhash3_workgroup.inc sycl/beamhash3/layout.inc 'inline bool beam_compact_enabled(' \
   'unsigned beamhash3_workgroup('
 build_run beamhash3-admission -UNDEBUG -I "$out" "$root/tests/native/beamhash3-admission.cpp"
@@ -144,6 +144,7 @@ extract_conditional '#define MOM_ZELHASH_INTEL_LARGE_GRF' sycl/zelhash/zelhash.c
   > "$out/$geometry/zelhash_generator_guard.inc"
 extract_cpp "$geometry/zelhash_generator_dispatch.inc" sycl/zelhash/generation.inc \
   'static sycl::event submit_gen_fill('
+extract_cpp "$geometry/env_flag.inc" sycl/lib-internal.h 'inline std::optional<bool> mom_env_flag('
 extract_cpp "$geometry/c30_device_memory.inc" sycl/c30/c30.cpp 'struct DeviceMemory {'
 printf ';\n' >> "$out/$geometry/c30_device_memory.inc"
 extract_cpp "$geometry/kawpow_exchange_policy.inc" sycl/kawpow/state.inc \

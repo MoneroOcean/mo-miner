@@ -106,23 +106,13 @@ struct State {
 #else
             64;
 #endif
-    const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, preferred);
-    return env_workgroup(dev, "MOM_AUTOLYKOS2_WORKGROUP", fallback);
+    // intensity.inc admits the same override set when it sizes the batch.
+    return sycl_env_workgroup(dev, "MOM_AUTOLYKOS2_WORKGROUP", {32, 64, 128, 256}, preferred);
   }
 
   // Tune prehash independently of the search workgroup within supported device limits.
   static unsigned autolykos_prehash_workgroup(const sycl::device& dev) {
-    const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, 64);
-    return env_workgroup(dev, "MOM_AUTOLYKOS2_PREHASH_WORKGROUP", fallback);
-  }
-
-  // Accept an env override only if it is one of the supported workgroup sizes.
-  static unsigned env_workgroup(const sycl::device& dev, const char* name, const unsigned fallback) {
-    uint32_t parsed = 0;
-    if (mom_parse_env_u32(name, parsed) && (parsed == 32 || parsed == 64 || parsed == 128 || parsed == 256) &&
-        sycl_workgroup_fits(dev, static_cast<unsigned>(parsed)))
-      return parsed;
-    return fallback;
+    return sycl_env_workgroup(dev, "MOM_AUTOLYKOS2_PREHASH_WORKGROUP", {32, 64, 128, 256}, 64);
   }
 
   // Unlike the kawpow DAG chunking this defaults on: at live N the monolithic build is one
@@ -141,28 +131,16 @@ struct State {
     return mom_parse_env_u32("MOM_AUTOLYKOS2_VERIFY_TABLE", parsed) && parsed <= 2 ? parsed : 1;
   }
 
-  // Keep split search enabled unless a diagnostic override starts with zero.
-  static bool autolykos_split_table() {
-    const char* const value = std::getenv("MOM_AUTOLYKOS2_SPLIT");
-    return !(value && value[0] == '0');
-  }
-
   // CUDA/HIP path: eight lanes own one 256-bit accumulator. This lowers the scalar kernel's register
   // footprint and turns every random table row into one contiguous 32-byte subgroup transaction.
-  // The old HIP-only variable remains an alias for existing diagnostic scripts.
+  // gpu-tuning.js search_mode writes MOM_AUTOLYKOS2_SUBGROUP_COOP; it defaults on.
   static bool autolykos_subgroup_coop() {
-    const char* value = std::getenv("MOM_AUTOLYKOS2_SUBGROUP_COOP");
-    if (!value)
-      value = std::getenv("MOM_AUTOLYKOS2_HIP_COOP");
-    return !value || (std::strcmp(value, "0") && std::strcmp(value, "false"));
+    return mom_env_flag("MOM_AUTOLYKOS2_SUBGROUP_COOP").value_or(true);
   }
 
-  // Opt into one scalar/cooperative cross-check per state, including the legacy HIP alias.
+  // Diagnostic opt-in: cross-check one scalar/cooperative search per state.
   static bool autolykos_subgroup_coop_verify() {
-    const char* value = std::getenv("MOM_AUTOLYKOS2_SUBGROUP_COOP_VERIFY");
-    if (!value)
-      value = std::getenv("MOM_AUTOLYKOS2_HIP_COOP_VERIFY");
-    return value && (!std::strcmp(value, "1") || !std::strcmp(value, "true"));
+    return mom_env_flag("MOM_AUTOLYKOS2_SUBGROUP_COOP_VERIFY").value_or(false);
   }
 
   // Allocate shared hits lazily; portable builds instead retain per-nonce buffer results.
@@ -207,9 +185,9 @@ struct State {
     } else {
       if (is_test || device.is_cpu())
         return false;
-      const char* const value = std::getenv("MOM_AUTOLYKOS2_TABLE");
-      if (value)
-        return value[0] != '0'; // Preserve the explicit diagnostic force-on/force-off behavior.
+      // Diagnostic override: force the precomputed table on or off.
+      if (const std::optional<bool> forced = mom_env_flag("MOM_AUTOLYKOS2_TABLE"))
+        return *forced;
       if (!mom_has_usm_device(device))
         return false;
 
@@ -343,7 +321,8 @@ struct State {
 
     table_height = height;
     table_n = n_len;
-    if (should_log || std::getenv("MOM_LOOP_STATS")) {
+    // MOM_LOOP_STATS (host phase diagnostics) also logs every table build.
+    if (should_log || mom_env_flag("MOM_LOOP_STATS").value_or(false)) {
       char elapsed[32];
       mom_format_duration_ms(elapsed, sizeof(elapsed), mom_now_ms() - start_ms);
       std::fprintf(stderr, "Autolykos2 table for height %u N %u calculated (%s)\n", height, n_len,

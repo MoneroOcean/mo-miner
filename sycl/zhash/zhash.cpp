@@ -104,7 +104,8 @@ public:
 
   static SessionOptions options() {
     SessionOptions value;
-    value.collect_stage_times = std::getenv("MOM_ZHASH_PROFILE") != nullptr;
+    // Diagnostic: collect per-stage solve timings.
+    value.collect_stage_times = mom_env_flag("MOM_ZHASH_PROFILE").value_or(false);
     return value;
   }
 
@@ -241,7 +242,8 @@ int zhash(unsigned, std::uint32_t, const std::uint8_t* input, const unsigned inp
       input_size != mom_zhash::ZHashSpec::header_length || intensity != 1)
     throw std::string(
       "zhash requires input, output, a mining target, a 140-byte header, and intensity 1");
-  if (is_test && std::getenv("MOM_ZHASH_SOLVE") == nullptr)
+  // Test mode checks generation unless MOM_ZHASH_SOLVE requests the full solve.
+  if (is_test && !mom_env_flag("MOM_ZHASH_SOLVE").value_or(false))
     return mom_zhash::run_generation_test(device_name, input, solution_out);
   auto& state = persistentDeviceState<mom_zhash::State>(device_name);
   std::lock_guard<std::mutex> lock(state.mutex);
@@ -250,8 +252,9 @@ int zhash(unsigned, std::uint32_t, const std::uint8_t* input, const unsigned inp
   std::chrono::steady_clock::time_point run_start;
   if (state.profile)
     run_start = std::chrono::steady_clock::now();
+  // MOM_ZHASH_RETRY_TEST forces the safe-layout retry in tests to compare both schedules.
   auto report = state.run(
-      header, is_test && std::getenv("MOM_ZHASH_RETRY_TEST") != nullptr);
+      header, is_test && mom_env_flag("MOM_ZHASH_RETRY_TEST").value_or(false));
   if (state.profile && state.profile_reports++ < 8) {
     const auto run_end = std::chrono::steady_clock::now();
     const double wall_ms = std::chrono::duration<double, std::milli>(run_end - run_start).count();

@@ -197,6 +197,7 @@ static const std::string& kawpow_device_src() {
     if (device_source.empty() || keccak_source.empty())
       throw std::string("kawpow JIT: missing embedded device/keccak source");
 #else
+    // MOM_KAWPOW_DEVICE_INC names an explicit device.inc before the module-relative candidates.
     const char* const env = std::getenv("MOM_KAWPOW_DEVICE_INC");
     const std::string dir = kawpow_module_dir();
     const std::string candidates[] = {

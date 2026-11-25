@@ -20,10 +20,8 @@ public:
                   std::rethrow_exception(error);
               }),
               sycl::property_list{sycl::property::queue::in_order{}}),
-        profile([] {
-          const char* configured = std::getenv("MOM_XELISHASHV3_PROFILE");
-          return configured && *configured && std::strcmp(configured, "0") != 0;
-        }()) {
+        // Diagnostic: report per-stage search timings.
+        profile(mom_env_flag("MOM_XELISHASHV3_PROFILE").value_or(false)) {
     if (!xelishashv3_supported(device))
       throw std::string("xelishashv3 requires SYCL device USM");
     const char* const failure = "Can't allocate xelishashv3 buffers";

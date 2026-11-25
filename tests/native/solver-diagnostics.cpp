@@ -3,7 +3,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <vector>
+#include "mom_env_flag.inc"  // the production on/off switch parser (sycl/lib-internal.h)
 
 static unsigned copies, waits, reports;
 static std::size_t bytes;

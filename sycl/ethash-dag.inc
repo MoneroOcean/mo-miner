@@ -33,22 +33,7 @@ inline void upload_ethash_light_cache(sycl::queue& queue, const sycl::device& de
 
 // DAG generation workgroup: an `env` override must be a supported size that fits the device.
 inline unsigned ethash_dag_workgroup(const sycl::device& dev, const char* const env) {
-  const unsigned fallback =
-      sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
-  unsigned long parsed = 0;
-  if (!mom_parse_env_ulong(env, parsed))
-    return fallback;
-  switch (parsed) {
-  case 32:
-  case 64:
-  case 128:
-  case 256:
-  case 512:
-    if (sycl_workgroup_fits(dev, static_cast<unsigned>(parsed)))
-      return static_cast<unsigned>(parsed);
-    break;
-  }
-  return fallback;
+  return sycl_env_workgroup(dev, env, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
 }
 
 // Apply the shared Ethash dataset-node transform used by both full-DAG builds and light searches.

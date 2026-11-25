@@ -147,7 +147,8 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
   individual_work(input, prePow);
   std::memcpy(state.prePow, prePow, 4 * sizeof(uint64_t));
 
-  const bool solve_in_test = is_test && std::getenv("MOM_BEAMHASH3_SOLVE") != nullptr;
+  // Test mode dumps generated rows unless MOM_BEAMHASH3_SOLVE requests the full Wagner solve.
+  const bool solve_in_test = is_test && mom_env_flag("MOM_BEAMHASH3_SOLVE").value_or(false);
 
   if (is_test && !solve_in_test) {
     // Dump the first BEAMHASH3_TEST_ROWS raw 448-bit leaf rows.
@@ -166,7 +167,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
 
   // ---- Full Wagner solve. ----
   // Per-solve reports are test/profiling diagnostics, not ordinary mining output.
-  static const bool prof = std::getenv("MOM_BEAMHASH3_PROF") != nullptr;
+  static const bool prof = mom_env_flag("MOM_BEAMHASH3_PROF").value_or(false);
   const bool log = is_test || prof;
   const unsigned wg = beamhash3_workgroup(state.device);
   if (!wg)
@@ -185,14 +186,14 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
   // This closes a large Windows driver-wait gap; Linux keeps its count-sized scatter because the
   // production AdaptiveCpp path gains less than 1%. Profiling stays synchronous.
   const bool async_fused = !cuda_layout && !prof;
-  static const bool cuda_async_enabled = [] {
-    const char* value = std::getenv("MOM_BEAMHASH3_CUDA_ASYNC");
 #if defined(_WIN32)
-    return !value || (std::strcmp(value, "0") && std::strcmp(value, "false"));
+  constexpr bool cuda_async_default = true;
 #else
-    return value && std::strcmp(value, "0") && std::strcmp(value, "false");
+  constexpr bool cuda_async_default = false;
 #endif
-  }();
+  // Diagnostic override of the per-OS default above.
+  static const bool cuda_async_enabled =
+      mom_env_flag("MOM_BEAMHASH3_CUDA_ASYNC").value_or(cuda_async_default);
   const bool async_cuda = cuda_layout && !prof && cuda_async_enabled;
   const bool async_pipeline = async_fused || async_cuda;
   sycl::event fused_tail;
@@ -242,11 +243,9 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
       compact_stage_start = now;
     };
 #if defined(MOM_BEAMHASH3_ESIMD)
-    const char* esimd_seed_configured = std::getenv("MOM_BEAMHASH3_ESIMD");
-    const bool use_esimd_seed =
-        sycl_is_level_zero_gpu(state.device) &&
-        (!esimd_seed_configured ||
-         (std::strcmp(esimd_seed_configured, "0") && std::strcmp(esimd_seed_configured, "false")));
+    // MOM_BEAMHASH3_ESIMD=0 is a diagnostic opt-out of the ESIMD compact seed kernel.
+    const bool use_esimd_seed = sycl_is_level_zero_gpu(state.device) &&
+                                mom_env_flag("MOM_BEAMHASH3_ESIMD").value_or(true);
 #endif
     q.memset(state.compact_ns[0], 0, (size_t)compact_nbuckets(0) * sizeof(uint32_t));
 #if defined(MOM_BEAMHASH3_ESIMD)
@@ -318,6 +317,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
     unsigned scatter_wg = sycl_default_workgroup(
         state.device, {16, 32, 64, 128}, 128, 0, GENERIC_SCATTER_LOCAL_BYTES_PER_ITEM);
     {
+      // gpu-tuning.js scatter_workgroup; an override must still fit local memory.
       unsigned long parsed = 0;
       if (mom_parse_env_ulong("MOM_BEAMHASH3_SCATTER_WG", parsed) && parsed >= 16) {
         const unsigned override =
@@ -536,7 +536,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
     // MOM_BEAMHASH3_FORCE_SUBMIT: bypass the difficulty filter and emit the single best (lowest-hash)
     // distinct solution. A debug aid to exercise the live JSON-RPC `solution` submit ABI end-to-end on
     // a hard network difficulty (the pool will low-diff-reject it, which still proves the wire path).
-    static const bool force_submit = std::getenv("MOM_BEAMHASH3_FORCE_SUBMIT") != nullptr;
+    static const bool force_submit = mom_env_flag("MOM_BEAMHASH3_FORCE_SUBMIT").value_or(false);
     const uint8_t* forced = nullptr;
     if (force_submit && !is_test && !is_benchmark && !seen.empty()) {
       size_t best = 0;

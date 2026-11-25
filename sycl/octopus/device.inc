@@ -1,12 +1,6 @@
 // Octopus consensus math and lane-level hashing; included inside mom_octopus.
 static std::atomic<uint64_t> next_points_version{1};
 #ifdef MOM_OCTOPUS_HAS_SYCL_NATIVE
-// Native matrix search is opt-in: only a nonempty value other than literal 0 requests it.
-static bool sycl_native_requested() {
-  const char* configured = std::getenv("MOM_OCTOPUS_SYCL_NATIVE");
-  return configured && *configured && std::strcmp(configured, "0") != 0;
-}
-
 // Admit only supported Intel/CUDA/HIP matrix hardware; all other devices retain the portable route.
 static bool native_matrix_supported(sycl::queue& queue) {
 #if defined(OCTOPUS_ESIMD)

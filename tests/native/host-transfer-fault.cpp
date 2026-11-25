@@ -7,8 +7,10 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 static void require(bool condition, const char* message) {
@@ -132,7 +134,11 @@ inline void free(void* pointer, queue&) noexcept {
 #endif
 }
 
+#include "mom_env_flag.inc"  // the production on/off switch parser (sycl/lib-internal.h)
 #include "cleanup.inc"
+#if defined(MOM_ZHASH_USM_FIXTURE)
+#include "usm.inc"
+#endif
 
 #if !defined(MOM_MATRIX_FIXTURE) && !defined(MOM_NESTED_FIXTURE) && \
     !defined(MOM_ZHASH_USM_FIXTURE)
@@ -337,18 +343,12 @@ struct ZHashUsmSession {
   }
 #include "zhash-destructor.inc"
 
+  // Production allocate() runs in the constructor, so a throw here unwinds like the members do
+  // when this fixture leaves scope.
   void allocate_host() {
     const sycl::device device{host_usm_available};
-    try {
 #include "zhash-host-alloc.inc"
-    } catch (...) {
-#include "zhash-alloc-failure.inc"
-    }
   }
-
-#include "zhash-free-ptr.inc"
-
-#include "zhash-free-all.inc"
 
   void seed_packet(const std::uint32_t seed) {
     std::memset(device_packet_.data(), 0x5a, device_packet_.size());
@@ -576,11 +576,12 @@ int main(int argc, char** argv) {
         bool failed = false;
         try { session.allocate_host(); }
         catch (const std::bad_alloc&) { failed = true; }
-        require(failed && host_free_calls == 1 && live_host_allocations.empty() &&
-                    session.fast_readback_ == nullptr && session.host_input_ == nullptr,
-                "partial host allocation did not release and clear its first buffer");
+        require(failed && host_free_calls == 0 && live_host_allocations.size() == 1 &&
+                    session.fast_readback_ != nullptr && session.host_input_ == nullptr,
+                "partial host allocation lost or freed its first buffer early");
       }
-      require(host_free_calls == 1, "destructor repeated partial-allocation cleanup");
+      require(host_free_calls == 1 && live_host_allocations.empty(),
+              "partial host allocation was not freed exactly once on unwind");
     } else if (mode == "input-fault") {
       host_usm_available = false;
       ZHashUsmSession session;

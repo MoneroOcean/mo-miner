@@ -7,27 +7,6 @@
 
 #include "pow-intensity.h"
 
-// Accept only supported, device-admissible workgroup sizes; malformed overrides use the heuristic.
-static unsigned parse_pow_workgroup_override(const sycl::device& dev, const char* const env_name,
-                                             const unsigned fallback_override) {
-  const unsigned preferred = fallback_override ? fallback_override : (dev.is_cpu() ? 128 : 256);
-  const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, preferred);
-  unsigned long parsed = 0;
-  if (!mom_parse_env_ulong(env_name, parsed))
-    return fallback;
-  switch (parsed) {
-  case 32:
-  case 64:
-  case 128:
-  case 256:
-  case 512:
-    if (sycl_workgroup_fits(dev, static_cast<unsigned>(parsed)))
-      return static_cast<unsigned>(parsed);
-    break;
-  }
-  return fallback;
-}
-
 // Return an aligned explicit batch, or zero when no usable override was supplied.
 static unsigned parse_pow_intensity_override(const unsigned local, const char* const env_name) {
   unsigned long parsed = 0;
@@ -57,13 +36,21 @@ static bool pow_has_dataset_memory(const sycl::device& dev, const uint64_t datas
 }
 
 // Resolve launch size and explicit batch overrides before applying the shared capacity heuristic.
+// `allowed` must be the set the search kernel accepts for `workgroup_env`, or an override only one
+// side admits would scale the batch by a workgroup the kernel never launches. The kernels' extra
+// local-memory budgets need not be repeated here: at the largest override, 512, KawPow reserves
+// 18,560 bytes and FishHash's cooperative search 5,760, both below the 32 KiB local_mem_size SYCL
+// 2020 guarantees for non-custom devices, so only the device work-group limits, which both sides
+// check, can reject a listed size. FishHash's scalar fallback has a fixed launch size, like Etchash.
 static unsigned pow_intensity(const sycl::device& dev, const char* const workgroup_env,
+                              const std::initializer_list<unsigned> allowed,
                               const char* const intensity_env,
                               const PowIntensityHeuristic& heuristic,
                               const unsigned max_work_items_per_gib = 0) {
   const PowDeviceProfile profile = pow_device_profile(dev);
   const PowIntensityScale scale = select_pow_intensity_scale(profile, heuristic);
-  const unsigned local = parse_pow_workgroup_override(dev, workgroup_env, scale.fallback_workgroup);
+  // The batch scales with this alignment unit, which need not be the search kernel's launch size.
+  const unsigned local = sycl_env_workgroup(dev, workgroup_env, allowed, scale.fallback_workgroup);
   const unsigned override = parse_pow_intensity_override(local, intensity_env);
   if (override)
     return override;
@@ -72,8 +59,8 @@ static unsigned pow_intensity(const sycl::device& dev, const char* const workgro
 
 // Bound the shared ProgPoW path; non-CUDA Firo, Evr and Meow use this heuristic too.
 static unsigned kawpow_intensity(const sycl::device& dev) {
-  return pow_intensity(dev, "MOM_KAWPOW_WORKGROUP", "MOM_KAWPOW_INTENSITY",
-                       progpow_intensity_heuristic);
+  return pow_intensity(dev, "MOM_KAWPOW_WORKGROUP", {64, 128, 256, 512},
+                       "MOM_KAWPOW_INTENSITY", progpow_intensity_heuristic);
 }
 
 // Retain ProgPoW defaults except where Firo's measured CUDA source-JIT dispatch needs less depth.
@@ -89,15 +76,19 @@ static unsigned firopow_intensity(const sycl::device& dev) {
   // A Linux RTX 5060 Ti sweep at 150 W retained workgroup 256 and 4,194,304 items at about
   // 21.1--21.2 MH/s; exact old/current-source runs agreed within 0.4%. Keep the shared kernel and
   // scale the portable device heuristic instead of introducing an NVIDIA algorithm fork.
-  return pow_intensity(dev, "MOM_KAWPOW_WORKGROUP", "MOM_KAWPOW_INTENSITY",
+  return pow_intensity(dev, "MOM_KAWPOW_WORKGROUP", {64, 128, 256, 512},
+                       "MOM_KAWPOW_INTENSITY",
                        {{256, 16384, 48}, {256, 21846, 48}, {256, 21846, 36}});
 #endif
 }
 
 // Four Mi work-items/GiB places high-EU devices on the measured broad Etchash plateau; current
 // Xe2, NVIDIA, and AMD heuristics are already shallower and therefore remain unchanged.
+// The Etchash and Octopus search kernels use fixed launch sizes, so MOM_ETCHASH_WORKGROUP only
+// changes this batch's alignment unit and scale.
 static unsigned etchash_intensity(const sycl::device& dev) {
-  return pow_intensity(dev, "MOM_ETCHASH_WORKGROUP", "MOM_ETCHASH_INTENSITY",
+  return pow_intensity(dev, "MOM_ETCHASH_WORKGROUP", {32, 64, 128, 256, 512},
+                       "MOM_ETCHASH_INTENSITY",
                        {{64, 32768, 36}, {64, 65536, 36}, {64, 131072, 40}}, 4);
 }
 
@@ -108,7 +99,8 @@ static unsigned octopus_intensity(const sycl::device& dev) {
   // AMD's queue-native WMMA pipeline reaches its throughput plateau with a deeper dispatch. On the
   // RX 9060 XT, 4,194,304 work-items sustained 29.18 MH/s while Etchash's 1,864,128 held 26.34 MH/s.
   // Scale the same device profiles instead of introducing a card-specific setting.
-  return pow_intensity(dev, "MOM_ETCHASH_WORKGROUP", "MOM_ETCHASH_INTENSITY",
+  return pow_intensity(dev, "MOM_ETCHASH_WORKGROUP", {32, 64, 128, 256, 512},
+                       "MOM_ETCHASH_INTENSITY",
                        {{64, 73728, 36}, {64, 147456, 36}, {64, 294912, 40}}, 9);
 }
 
@@ -117,7 +109,8 @@ static unsigned autolykos2_intensity(const sycl::device& dev) {
   if (mom_is_cuda(dev)) {
     // NVIDIA: larger batches amortize per-iteration host/sync overhead; throughput
     // climbs to a ~70 MH/s plateau on an L4 around these intensities.
-    return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY",
+    return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", {32, 64, 128, 256},
+                         "MOM_AUTOLYKOS2_INTENSITY",
                          {{64, 16384, 12}, {64, 32768, 16}, {64, 32768, 10}});
   }
   if (mom_is_hip(dev)) {
@@ -125,15 +118,18 @@ static unsigned autolykos2_intensity(const sycl::device& dev) {
     // Windows AdaptiveCpp/HIP has materially higher per-batch submission overhead. On RX 9060 XT,
     // 2.1M -> 8.4M raised the cooperative kernel from 26.49 to 30.97 MH/s; 16.8M added only 0.02.
     // Scale every device-profile tier by four so other cards keep the same memory/CU heuristic.
-    return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY",
+    return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", {32, 64, 128, 256},
+                         "MOM_AUTOLYKOS2_INTENSITY",
                          {{128, 32768, 12}, {128, 65536, 16}, {128, 65536, 10}});
 #else
     // DPC++ HIP is fastest with wave32-friendly local 128 and enough work to amortize UR submits.
-    return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY",
+    return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", {32, 64, 128, 256},
+                         "MOM_AUTOLYKOS2_INTENSITY",
                          {{128, 8192, 12}, {128, 16384, 16}, {128, 16384, 10}});
 #endif
   }
-  return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY",
+  return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", {32, 64, 128, 256},
+                       "MOM_AUTOLYKOS2_INTENSITY",
                        {{64, 4096, 12}, {64, 8192, 16}, {64, 8192, 10}});
 }
 
@@ -197,6 +193,7 @@ static pearlhash_profile_t pearlhash_profile(const sycl::device& dev) {
       // Optional capacity metadata must not make discovery reject the portable profile.
     }
   }
+  // MOM_PEARLHASH_INTENSITY sets M = N directly (at least 256, rounded down to a multiple of 64).
   unsigned long parsed = 0;
   if (mom_parse_env_ulong("MOM_PEARLHASH_INTENSITY", parsed) && parsed >= 256 &&
       parsed <= std::numeric_limits<unsigned>::max()) {
@@ -229,7 +226,8 @@ static unsigned fishhash_intensity(const sycl::device& dev) {
     // The Windows HIP cooperative path reaches its throughput knee at 7.46M (11.43/11.41 MH/s)
     // versus 10.71/10.67 at the old 1.86M default. 14.9M gains under 1%, so retain the lower-latency
     // 4x point. Local 128 matches the FishHash state's AMD workgroup and keeps all profile tiers.
-    return pow_intensity(dev, "MOM_FISHHASH_WORKGROUP", "MOM_FISHHASH_INTENSITY",
+    return pow_intensity(dev, "MOM_FISHHASH_WORKGROUP", {64, 128, 256, 512},
+                         "MOM_FISHHASH_INTENSITY",
                          {{128, 65536, 36}, {128, 131072, 36}, {128, 262144, 40}});
   }
 #endif
@@ -238,7 +236,8 @@ static unsigned fishhash_intensity(const sycl::device& dev) {
   if (mom_is_cuda(dev) && dev.get_info<sycl::info::device::max_compute_units>() >= 64)
     fallback_workgroup = 256;
 #endif
-  return pow_intensity(dev, "MOM_FISHHASH_WORKGROUP", "MOM_FISHHASH_INTENSITY",
+  return pow_intensity(dev, "MOM_FISHHASH_WORKGROUP", {64, 128, 256, 512},
+                       "MOM_FISHHASH_INTENSITY",
                        {{fallback_workgroup, 32768, 36},
                         {fallback_workgroup, 65536, 36},
                         {fallback_workgroup, 131072, 40}});

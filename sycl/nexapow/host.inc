@@ -12,12 +12,6 @@ static void test_recorded_vector(State& state, const uint8_t* input, uint8_t* ou
   std::memcpy(output, final_hash, sizeof(final_hash));
 }
 
-// Resolve the existing environment contract: any nonempty value except literal 0 enables the option.
-static bool env_enabled(const char* name) {
-  const char* value = std::getenv(name);
-  return value && *value && std::strcmp(value, "0");
-}
-
 // Describe the compiled field policy; AdaptiveCpp selects its representation at device JIT time.
 static const char* staged_field_name(const sycl::device& device) {
 #if defined(MOM_NEXAPOW_SYCL_NATIVE_FIELD)

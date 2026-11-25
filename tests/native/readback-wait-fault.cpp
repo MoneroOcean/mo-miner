@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -91,6 +92,7 @@ bool mom_is_opencl(const sycl::device&) {
   return false;
 }
 #include "wait.inc"
+#include "mom_env_flag.inc"  // the production on/off switch parser (sycl/lib-internal.h)
 #include "cleanup.inc"
 #include "search-result.inc"
 #include "monolithic-result.inc"

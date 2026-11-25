@@ -24,7 +24,6 @@
 // Indexed by round r in 1..5.
 constexpr unsigned ROUND_REMLEN[6] = {0, 448, 424, 400, 376, 288};  // pre-round work-bit length
 constexpr unsigned ROUND_MERGELEN[6] = {0, 424, 400, 376, 288, 24}; // post-merge work-bit length
-constexpr unsigned ROUND_PADNUM[6] = {0, 1, 2, 4, 6, 9};            // applyMix index count
 // LEVEL L holds the input to round L+1. work words stored / indices stored (= padNum of round L+1).
 constexpr unsigned LEVEL_WORDS[6] = {7, 7, 7, 6, 5, 1}; // ceil(remLen_of_next_round / 64), level5=1
 // Indices stored per slot: min(treeSize=2^L, MAX_PAD=9). To reconstruct round R+1's first padNum (<=9)
@@ -285,9 +284,8 @@ inline bool beam_compact_enabled(const sycl::device& device) {
 #else
   if (!mom_is_cuda(device) && !mom_is_hip(device) && !sycl_is_level_zero_gpu(device))
     return false;
-  const char* value = std::getenv("MOM_BEAMHASH3_COMPACT");
-  return !value ||
-         (std::strcmp(value, "0") && std::strcmp(value, "false") && std::strcmp(value, "off"));
+  // gpu-tuning.js layout writes MOM_BEAMHASH3_COMPACT; compact is the default where compiled.
+  return mom_env_flag("MOM_BEAMHASH3_COMPACT").value_or(true);
 #endif
 }
 
@@ -308,6 +306,7 @@ unsigned beamhash3_workgroup(const sycl::device& device) {
     const unsigned preferred = (mom_is_hip(device) || sycl_is_level_zero_gpu(device)) ? 512 : 256;
     unsigned result =
         sycl_default_workgroup(device, {128, 256, 512}, preferred, 0, per_item_local);
+    // gpu-tuning.js compact_workgroup (or workgroup); an override must still fit local memory.
     unsigned long parsed = 0;
     if (mom_parse_env_ulong("MOM_BEAMHASH3_COMPACT_WG", parsed) && parsed >= 16) {
       const unsigned override = static_cast<unsigned>(std::min<unsigned long>(parsed, 512));
@@ -328,6 +327,7 @@ unsigned beamhash3_workgroup(const sycl::device& device) {
 #endif
   unsigned result = sycl_default_workgroup(
       device, {128, 256, 384, 512, 640, 768, 1024}, preferred, 0, per_item_local);
+  // gpu-tuning.js workgroup; an override must still fit local memory.
   unsigned long parsed = 0;
   if (mom_parse_env_ulong("MOM_BEAMHASH3_WORKGROUP", parsed) && parsed >= 16) {
     const unsigned override = static_cast<unsigned>(std::min<unsigned long>(parsed, 1024));

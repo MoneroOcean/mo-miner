@@ -67,11 +67,12 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size, const uint8_t* co
     if (c29_proof_size != 32 && c29_proof_size != 42)
       throw std::string("c29 requires proof size 32 or 42");
 
-    // The bounded guard starts no asynchronous search, so its empty-input poll drains immediately.
-    if (std::getenv("MOM_C29_TEST_EDGE"))
+    // MOM_C29_TEST_EDGE selects the bounded edge-endpoint test. It starts no asynchronous search,
+    // so its empty-input poll drains immediately.
+    if (mom_env_flag("MOM_C29_TEST_EDGE").value_or(false))
       return input_size ? c29_portable_test(input, input_size, output, dev_str) : -1;
 
-    C29State& state = c29_state(dev_str);
+    C29State& state = persistentDeviceState<C29State>(dev_str);
     std::lock_guard<std::mutex> state_lock(state.mutex);
     sycl::queue& compute_queue = state.queue;
     const std::shared_ptr<C29ResultState> result_state = state.result_state;

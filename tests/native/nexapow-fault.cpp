@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -270,6 +271,13 @@ static void sycl_wait_and_throw(sycl::event event, const sycl::device&) {
   complete_readback();
   counts.pending = 0;
 }
+// Declared before cleanup.inc, whose MOM_SYCL_CLEANUP_DEBUG check reads it.
+static std::optional<bool> mom_env_flag(const char* name) {
+  if ((std::strcmp(name, "MOM_NEXAPOW_STAGED_TEST") == 0 && staged_test_enabled) ||
+      (std::strcmp(name, "MOM_NEXAPOW_STAGED_REQUIRE") == 0 && staged_require_enabled))
+    return true;
+  return std::nullopt;
+}
 #include "cleanup.inc"
 
 class TestShaKernel;
@@ -308,11 +316,7 @@ struct State {
 static std::unique_ptr<State> state;
 template <typename StateType>
 static StateType& persistentDeviceState(const std::string&) { return *state; }
-static bool env_enabled(const char* name) {
-  return (std::strcmp(name, "MOM_NEXAPOW_STAGED_TEST") == 0 && staged_test_enabled) ||
-      (std::strcmp(name, "MOM_NEXAPOW_STAGED_REQUIRE") == 0 && staged_require_enabled) ||
-      (std::strcmp(name, "MOM_SYCL_PORTABLE_TEST") == 0 && monolithic_test_enabled);
-}
+static bool mom_portable_test_requested() { return monolithic_test_enabled; }
 static const char* staged_field_name(const sycl::device&) { return "host-fixture"; }
 static void test_recorded_vector(State&, const uint8_t*, uint8_t*, uint64_t*) {
   throw std::logic_error("unexpected recorded-vector path");

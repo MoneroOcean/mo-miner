@@ -85,7 +85,8 @@ int octopus(unsigned, uint32_t height, const uint8_t* input, unsigned input_size
             uint8_t*, uint64_t* nonce, const uint8_t* target, const uint8_t*,
             unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str) {
   if (!input || !output || !nonce || input_size < HASH_LEN + sizeof(uint64_t) || !intensity)
-    throw std::string("octopus requires a 32-byte problem hash, nonce, and nonzero intensity");
+    throw std::string("octopus requires input, output, nonce, a 32-byte problem hash with an "
+                      "8-byte nonce, and nonzero intensity");
   if (!is_test && !target)
     throw std::string("octopus requires a target outside test mode");
   const uint64_t start_nonce = load64(input + HASH_LEN);
@@ -134,8 +135,9 @@ int octopus(unsigned, uint32_t height, const uint8_t* input, unsigned input_size
     const FastModData cache_mod = make_fast_mod_data(state.cache_nodes);
     const FastModData page_mod = make_fast_mod_data(dataset_size(state.epoch) / 256);
     // MOM_OCTOPUS_SCALAR keeps the original one-nonce/full-DAG kernel available
-    // as a correctness oracle while the default path uses the cooperative kernel.
-    const bool scalar = std::getenv("MOM_OCTOPUS_SCALAR") != nullptr;
+    // as a correctness oracle while the default path uses the cooperative kernel;
+    // MOM_OCTOPUS_BATCHED selects the batched kernel instead.
+    const bool scalar = mom_env_flag("MOM_OCTOPUS_SCALAR").value_or(false);
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
     const auto subgroup_sizes = state.device.get_info<sycl::info::device::sub_group_sizes>();
     // Older HIP GPUs can use wave64; their fallback must not launch a wave32-only kernel.
@@ -143,7 +145,9 @@ int octopus(unsigned, uint32_t height, const uint8_t* input, unsigned input_size
         std::find(subgroup_sizes.begin(), subgroup_sizes.end(), 32u) != subgroup_sizes.end();
 #endif
     bool searched = false;
-    const bool prove_native = is_test && std::getenv("MOM_OCTOPUS_TEST_NATIVE");
+    // Tests may require the native matrix route (MOM_OCTOPUS_TEST_NATIVE) or the full DAG
+    // (MOM_OCTOPUS_TEST_FULL_DAG); test_path_failure() rejects a run that took another route.
+    const bool prove_native = is_test && mom_env_flag("MOM_OCTOPUS_TEST_NATIVE").value_or(false);
     bool native_supported = false;
 #ifdef MOM_OCTOPUS_HAS_SYCL_NATIVE
     // Qualify hardware before a failed native launch can invalidate queue/interop queries. JIT
@@ -156,7 +160,9 @@ int octopus(unsigned, uint32_t height, const uint8_t* input, unsigned input_size
 #else
         mom_is_cuda(state.device) || mom_is_hip(state.device);
 #endif
-    if (sycl_native_requested() && state.full_dag && sycl_native_device && !scalar) {
+    // Native matrix search is opt-in; compiler-policy.js sets MOM_OCTOPUS_SYCL_NATIVE per route.
+    if (mom_env_flag("MOM_OCTOPUS_SYCL_NATIVE").value_or(false) && state.full_dag &&
+        sycl_native_device && !scalar) {
       if (has_input_copy_event)
         sycl_wait_and_throw(input_copy_event, state.device);
       searched = state.sycl_native.search(state.queue, state.header, state.dag, page_mod,
@@ -167,7 +173,7 @@ int octopus(unsigned, uint32_t height, const uint8_t* input, unsigned input_size
     }
 #endif
     const auto validation_failure = mom_octopus::test_path_failure(
-        is_test && std::getenv("MOM_OCTOPUS_TEST_FULL_DAG"), state.full_dag,
+        is_test && mom_env_flag("MOM_OCTOPUS_TEST_FULL_DAG").value_or(false), state.full_dag,
         prove_native, native_supported, searched);
     if (validation_failure == mom_octopus::TestPathFailure::full_dag)
       throw std::string("Octopus full-DAG validation could not run");
@@ -180,7 +186,7 @@ int octopus(unsigned, uint32_t height, const uint8_t* input, unsigned input_size
                                                 state.target, state.result, is_test),
                             state.device);
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
-      } else if (!std::getenv("MOM_OCTOPUS_BATCHED") && subgroup_32) {
+      } else if (!mom_env_flag("MOM_OCTOPUS_BATCHED").value_or(false) && subgroup_32) {
         sycl_wait_and_throw(search_cooperative(state.queue, state.header, state.dag, page_mod,
                                                state.points, start_nonce, intensity, state.target,
                                                state.result, is_test),

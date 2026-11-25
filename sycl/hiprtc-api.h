@@ -14,7 +14,6 @@
 #include <dlfcn.h>
 #endif
 
-#include <exception>
 #include <string>
 
 namespace mom {

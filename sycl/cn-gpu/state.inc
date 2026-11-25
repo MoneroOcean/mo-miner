@@ -84,12 +84,6 @@ struct CnGpuState {
   }
 };
 
-// Reuse one mutex-serialized batch-buffer owner for the selected device.
-static CnGpuState& cn_gpu_state(const std::string& dev_str) {
-  return persistentDeviceStates<CnGpuState>().get(dev_str,
-      [&] { return std::make_unique<CnGpuState>(dev_str); });
-}
-
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void cn_gpu_cleanup_states() noexcept {
   clearPersistentDeviceStates<CnGpuState>("cn/gpu");

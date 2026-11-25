@@ -125,28 +125,6 @@ public:
     sycl_cleanup_noexcept("kawpow release", [&] { release(); });
   }
 
-  // Pick a work-group size: honor `name` if set to one of `allowed`, else `sycl_default_workgroup`.
-  // Accept only supported device-fitting workgroup overrides.
-  static unsigned select_workgroup(const char* name, const sycl::device& dev,
-                                   const std::initializer_list<unsigned> allowed,
-                                   const unsigned preferred, const size_t fixed_local_bytes = 0,
-                                   const size_t local_bytes_per_item = 0,
-                                   const size_t local_bytes_per_team = 0,
-                                   const unsigned team_size = 1) {
-    const unsigned fallback = sycl_default_workgroup(
-        dev, allowed, preferred, fixed_local_bytes, local_bytes_per_item,
-        local_bytes_per_team, team_size);
-    uint32_t parsed;
-    if (!mom_parse_env_u32(name, parsed))
-      return fallback;
-    for (const unsigned candidate : allowed)
-      if (candidate == parsed && sycl_workgroup_fits(
-            dev, candidate, fixed_local_bytes, local_bytes_per_item,
-            local_bytes_per_team, team_size))
-        return parsed;
-    return fallback;
-  }
-
   // Choose the backend search default, then apply its validated override.
   static unsigned kawpow_workgroup(const sycl::device& dev) {
     // Windows CUDA, Intel, and HIP use 256 as before. On Linux CUDA, compact GPUs benefit from
@@ -162,8 +140,9 @@ public:
 #endif
     // Both exchanges use the cache; reserve the exact share[WG] and offsets[WG/16] footprint so
     // changing to the SLM fallback never inherits a workgroup that only fits the subgroup path.
-    return select_workgroup(
-        "MOM_KAWPOW_WORKGROUP", dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : gpu_default,
+    // intensity.inc admits the same override set when it sizes the batch.
+    return sycl_env_workgroup(
+        dev, "MOM_KAWPOW_WORKGROUP", {64, 128, 256, 512}, dev.is_cpu() ? 128 : gpu_default,
         KAWPOW_CACHE_WORDS * sizeof(uint32_t), sizeof(uint32_t), sizeof(uint32_t), KAWPOW_LANES);
   }
 
@@ -306,9 +285,8 @@ public:
     // unavailable (see cuda_use_jit). MOM_KAWPOW_JIT=0/1 forces a path (1 = JIT, no fallback).
     if (mom_is_cuda(device)) {
       if (cuda_use_jit.load() < 0) {
-        unsigned long force = 0;
-        if (mom_parse_env_ulong("MOM_KAWPOW_JIT", force))
-          cuda_use_jit.store(force != 0 ? 1 : 0);
+        if (const std::optional<bool> forced = mom_env_flag("MOM_KAWPOW_JIT"))
+          cuda_use_jit.store(*forced ? 1 : 0);
       }
       if (cuda_use_jit.load() != 0) { // 1 (committed JIT) or -1 (undecided -> try JIT)
         try {
@@ -330,6 +308,7 @@ public:
               kawpow_named_jit_wrapper(kernel_name);
           auto kb_src = syclex::create_kernel_bundle_from_source(
               queue.get_context(), syclex::source_language::sycl, src);
+          // Diagnostic: MOM_KAWPOW_JIT_OPTS passes extra kernel_compiler build options.
           const char* const jit_opts = std::getenv("MOM_KAWPOW_JIT_OPTS");
           // Build for THIS device explicitly: without the device list the kernel_compiler targets a
           // generic nvptx default (sm_75 -> CUDA_ERROR_NO_BINARY on newer GPUs / needs sm_75 libdevice).

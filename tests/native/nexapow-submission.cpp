@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -131,6 +132,7 @@ struct queue {
 
 } // namespace sycl
 
+#include "mom_env_flag.inc"  // the production on/off switch parser (sycl/lib-internal.h)
 #include "cleanup.inc"
 
 static void sycl_wait_and_throw(const sycl::event event, const sycl::device&) {

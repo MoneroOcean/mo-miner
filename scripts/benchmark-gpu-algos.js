@@ -140,7 +140,8 @@ function benchmark(algo, dev, options) {
     const samples = [];
     /** @type {BenchmarkSample[]} */
     const observedSamples = [];
-    const captureLoopStats = Object.hasOwn(process.env, "MOM_LOOP_STATS");
+    // The miner treats MOM_LOOP_STATS as an on/off switch: unset, "", "0", "false" and "off" are off.
+    const captureLoopStats = !["", "0", "false", "off"].includes(process.env["MOM_LOOP_STATS"] ?? "");
     /** @type {LoopStatsSample[]} */
     const loopStats = [];
     let stdout = "";

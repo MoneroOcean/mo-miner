@@ -174,9 +174,7 @@ static void add_gpu_c29_algo_dev(std::string& result_dev) {
   });
 }
 
-// Emit the resolved primary tuning dimension for each GPU that has room for the
-// algorithm's dataset. Secondary launch controls stay algorithm-specific and
-// can be overridden in the same bracket/object tuning model.
+// USM allocation kinds an algorithm implementation requires from the device.
 enum class GpuUsm { none, shared, device, both };
 
 #if defined(MOM_SYCL_HAS_HIP)
@@ -201,6 +199,7 @@ static bool gpu_usm_supported(const sycl::device& dev, const GpuUsm required) {
 }
 
 // Apply shared dataset/launch admission, then expose the algorithm's own primary tuning dimension.
+// Secondary launch controls stay algorithm-specific and are overridden in the same tuning model.
 static void add_gpu_dataset_algo_dev(std::string& result_dev, const uint64_t dataset_bytes,
                                      const uint64_t min_global_mem,
                                      unsigned (*intensity)(const sycl::device&),

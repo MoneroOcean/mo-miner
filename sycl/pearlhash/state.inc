@@ -22,7 +22,7 @@ template <typename T>
 static T* alloc_required(sycl::queue& q, const size_t count, const char* const name) {
   T* const result = alloc_buffer<T>(q, count);
   if (!result)
-    throw std::string("Can't allocate pearlhash ") + name;
+    throw std::string("Can't allocate PearlHash ") + name;
   return result;
 }
 
@@ -72,7 +72,7 @@ static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank, bool
                                      static_cast<unsigned>(k), static_cast<unsigned>(rank)};
   PearlHashAllocationCounts counts{};
   if (!pearlhash_allocation_counts(shape, counts))
-    throw std::string("Invalid pearlhash allocation dimensions");
+    throw std::string("Invalid PearlHash allocation dimensions");
   const sycl::device device = q.get_device();
   const PowDeviceProfile capacity = {
       1, device.get_info<sycl::info::device::global_mem_size>(),
@@ -99,7 +99,7 @@ static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank, bool
     b.CVB = alloc_required<uint8_t>(q, counts.cvb_bytes, "CVB");
     b.result = sycl::malloc_shared<Result>(1, q);
     if (!b.result)
-      throw std::string("Can't allocate pearlhash result");
+      throw std::string("Can't allocate PearlHash result");
     b.result->found = 0;
     // Only the CUDA source-JIT search reads a global transcript, as bounded row slices. The
     // portable and native routes and the fused HIP kernel keep theirs in registers or LDS.
@@ -216,12 +216,6 @@ struct State {
   }
 };
 
-// Reuse one queue/buffer owner per device; its mutex serializes profile changes and searches.
-State& state_for(const std::string& dev_str) {
-  return persistentDeviceStates<State>().get(dev_str, [&] {
-    return std::make_unique<State>(dev_str);
-  });
-}
 // One winning tile of the captured attempt and its lazily built PlainProof.
 struct PearlHashClaim {
   int row, col;

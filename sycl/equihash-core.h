@@ -185,7 +185,6 @@ struct alignas(packed_bucket_collision_alignment(Spec::n, FieldCount))
   static constexpr unsigned field_count = FieldCount;
   static constexpr unsigned local_bits = LocalBits;
   static constexpr unsigned parent_bucket_bits = ParentBucketBits;
-  static constexpr unsigned parent_slots = ParentSlots;
   static constexpr unsigned parent_slot_bits = bits_for_capacity(ParentSlots);
   static constexpr unsigned full_bit_count =
       LocalBits + (FieldCount - 1) * Spec::collision_bits + ParentBucketBits +

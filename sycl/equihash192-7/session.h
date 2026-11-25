@@ -9,7 +9,6 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
-#include <new>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -57,8 +56,9 @@ public:
   static constexpr std::uint32_t root_capacity = 8192;
 
   // Create an ordered queue and allocate persistent storage after checking the device limits.
+  // MOM_EQUIHASH192_7_PROFILE enables queue profiling and per-stage timing reports.
   explicit Session(const sycl::device& device)
-      : queue_(make_queue(device, std::getenv("MOM_EQUIHASH192_7_PROFILE") != nullptr)),
+      : queue_(make_queue(device, mom_env_flag("MOM_EQUIHASH192_7_PROFILE").value_or(false))),
         level_zero_(sycl_is_level_zero_gpu(device)) {
 #ifdef MOM_SYCL_HAS_HIP
     cache_partition_inputs_ =
@@ -67,12 +67,9 @@ public:
     allocate();
   }
 
+  // Drain live submissions before the UsmPtr members free their storage.
   ~Session() {
-    try {
-      queue_.wait_and_throw();
-    } catch (...) {
-    }
-    release();
+    sycl_cleanup_noexcept("equihash192_7 session wait", [&] { queue_.wait_and_throw(); });
   }
 
   Session(const Session&) = delete;
@@ -90,14 +87,15 @@ private:
   template <bool CacheInput>
   // Retry the same header after bounded arena overflow; explicit diagnostic layout overrides stay strict.
   std::vector<Solution> run_with_cache(const std::uint8_t (&header)[Spec::header_length]) {
-    if (std::getenv("MOM_EQUIHASH192_7_HYBRID_ARENA"))
+    if (mom_env_flag("MOM_EQUIHASH192_7_HYBRID_ARENA").value_or(false))
       return run_layout<HybridArena, CacheInput>(header);
-    if (std::getenv("MOM_EQUIHASH192_7_RETRY_ARENA"))
+    if (mom_env_flag("MOM_EQUIHASH192_7_RETRY_ARENA").value_or(false))
       return run_layout<RetryArena, CacheInput>(header);
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
     if constexpr (std::is_same_v<Arena, ProductionArena>) {
       // Profiling and explicit geometry diagnostics retain their single-layout contract.
-      if (mom_is_cuda(queue_.get_device()) && !std::getenv("MOM_EQUIHASH192_7_PROFILE")) {
+      if (mom_is_cuda(queue_.get_device()) &&
+          !mom_env_flag("MOM_EQUIHASH192_7_PROFILE").value_or(false)) {
         if (cuda_arena_ < 0)
           return select_cuda_arena<CacheInput>(header);
         if (cuda_arena_ == 1) {
@@ -174,7 +172,8 @@ private:
   // Run all collision stages in compatible retained storage, then recover, verify, and deduplicate roots.
   std::vector<Solution> run_layout(const std::uint8_t (&header)[Spec::header_length]) {
     const auto started = std::chrono::steady_clock::now();
-    const bool profile = std::getenv("MOM_EQUIHASH192_7_PROFILE") && profile_reports_ < 8;
+    const bool profile =
+        mom_env_flag("MOM_EQUIHASH192_7_PROFILE").value_or(false) && profile_reports_ < 8;
     if (profile) {
       ++profile_reports_;
     }
@@ -189,15 +188,15 @@ private:
         std::is_same_v<ActiveArena, HybridArena> ? 512 : RootWorkGroup;
     using ActiveRound6 =
         LaunchLayout<active_root_work_group, typename ActiveArena::Round6Layout>;
-    auto* level0 = reinterpret_cast<typename ActiveArena::Level0Record*>(level0_);
-    auto* round1 = reinterpret_cast<typename ActiveArena::Round1Record*>(round1_);
-    auto* round2 = reinterpret_cast<typename ActiveArena::Round2Record*>(round2_);
+    auto* level0 = reinterpret_cast<typename ActiveArena::Level0Record*>(level0_.get());
+    auto* round1 = reinterpret_cast<typename ActiveArena::Round1Record*>(round1_.get());
+    auto* round2 = reinterpret_cast<typename ActiveArena::Round2Record*>(round2_.get());
 #ifdef MOM_SYCL_HAS_HIP
-    auto* round3 = reinterpret_cast<typename ActiveArena::Round3Record*>(round3_);
+    auto* round3 = reinterpret_cast<typename ActiveArena::Round3Record*>(round3_.get());
 #endif
-    auto* round4 = reinterpret_cast<typename ActiveArena::Round4Record*>(round4_);
-    auto* round5 = reinterpret_cast<typename ActiveArena::Round5Record*>(round5_);
-    auto* round6 = reinterpret_cast<typename ActiveArena::Round6Record*>(round6_);
+    auto* round4 = reinterpret_cast<typename ActiveArena::Round4Record*>(round4_.get());
+    auto* round5 = reinterpret_cast<typename ActiveArena::Round5Record*>(round5_.get());
+    auto* round6 = reinterpret_cast<typename ActiveArena::Round6Record*>(round6_.get());
     std::array<std::uint64_t, 10> input{};
     mom_equihash::hash_header_midstate<Spec>(header, input.data());
     input[8] = mom_equihash::load64_le(header + 128);
@@ -420,22 +419,24 @@ private:
   static constexpr std::size_t count_stride =
       std::max({Layout::bucket_count, RetryArena::Layout::bucket_count,
                 HybridArena::Layout::bucket_count});
+  // UsmPtr members free on queue_, so they follow it; the plain pointers alias counts_storage_.
+  // run_layout reinterprets the record arenas per active layout through .get().
   sycl::queue queue_;
   const bool level_zero_;
-  std::uint64_t* input_ = nullptr;
-  typename Arena::Level0Record* level0_ = nullptr;
-  typename Arena::Round1Record* round1_ = nullptr;
-  typename Arena::Round2Record* round2_ = nullptr;
+  UsmPtr<std::uint64_t> input_;
+  UsmPtr<typename Arena::Level0Record> level0_;
+  UsmPtr<typename Arena::Round1Record> round1_;
+  UsmPtr<typename Arena::Round2Record> round2_;
 #ifdef MOM_SYCL_HAS_HIP
-  typename Arena::Round3Record* round3_ = nullptr;
+  UsmPtr<typename Arena::Round3Record> round3_;
 #else
-  mom_equihash::SplitRecordHead* round3_heads_ = nullptr;
-  std::uint32_t* round3_tails_ = nullptr;
+  UsmPtr<mom_equihash::SplitRecordHead> round3_heads_;
+  UsmPtr<std::uint32_t> round3_tails_;
 #endif
-  typename Arena::Round4Record* round4_ = nullptr;
-  typename Arena::Round5Record* round5_ = nullptr;
-  typename Arena::Round6Record* round6_ = nullptr;
-  std::uint32_t* counts_storage_ = nullptr;
+  UsmPtr<typename Arena::Round4Record> round4_;
+  UsmPtr<typename Arena::Round5Record> round5_;
+  UsmPtr<typename Arena::Round6Record> round6_;
+  UsmPtr<std::uint32_t> counts_storage_;
   std::array<std::uint32_t*, 7> counts_{};
   unsigned profile_reports_ = 0;
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
@@ -445,20 +446,18 @@ private:
   bool cache_partition_inputs_ = false;
 #endif
   std::uint32_t* overflow_ = nullptr;
-  typename Arena::RootRecord* roots_ = nullptr;
+  UsmPtr<typename Arena::RootRecord> roots_;
   std::uint32_t* root_count_ = nullptr;
-  std::uint32_t* leaves_ = nullptr;
-  std::uint8_t* valid_ = nullptr;
+  UsmPtr<std::uint32_t> leaves_;
+  UsmPtr<std::uint8_t> valid_;
 
   template <typename T>
-  T* allocate(const std::size_t count) {
-    if (T* value = sycl::malloc_device<T>(count, queue_)) {
-      return value;
-    }
-    throw std::bad_alloc();
+  UsmPtr<T> allocate(const std::size_t count) {
+    return mom_usm_alloc<T>(queue_, count, false, "Equihash(192,7) session device allocation failed");
   }
 
-  // Check device headroom and allocate all retained levels; any partial failure releases owned storage.
+  // Check device headroom, then allocate all retained levels. Called only from the constructor:
+  // a throw unwinds the members allocated so far.
   void allocate() {
     const auto device = queue_.get_device();
     const std::uint64_t required = Arena::arena_bytes +
@@ -468,72 +467,34 @@ private:
         device.get_info<sycl::info::device::max_work_group_size>() < Root::collision_work_group ||
         device.get_info<sycl::info::device::local_mem_size>() < Layout::local_memory_bytes)
       throw std::runtime_error("Equihash(192,7) direct arena is unsupported on this device");
-    try {
-      input_ = allocate<std::uint64_t>(10);
-      level0_ = allocate<typename Arena::Level0Record>(Layout::slot_count);
-      round1_ = allocate<typename Arena::Round1Record>(Layout::slot_count);
-      round2_ = allocate<typename Arena::Round2Record>(Layout::slot_count);
+    input_ = allocate<std::uint64_t>(10);
+    level0_ = allocate<typename Arena::Level0Record>(Layout::slot_count);
+    round1_ = allocate<typename Arena::Round1Record>(Layout::slot_count);
+    round2_ = allocate<typename Arena::Round2Record>(Layout::slot_count);
 #ifdef MOM_SYCL_HAS_HIP
-      round3_ = allocate<typename Arena::Round3Record>(Layout::slot_count);
+    round3_ = allocate<typename Arena::Round3Record>(Layout::slot_count);
 #else
-      round3_heads_ = allocate<mom_equihash::SplitRecordHead>(Layout::slot_count);
-      round3_tails_ = allocate<std::uint32_t>(Layout::slot_count);
+    round3_heads_ = allocate<mom_equihash::SplitRecordHead>(Layout::slot_count);
+    round3_tails_ = allocate<std::uint32_t>(Layout::slot_count);
 #endif
-      round4_ = allocate<typename Arena::Round4Record>(Layout::slot_count);
-      round5_ = allocate<typename Arena::Round5Record>(Layout::slot_count);
-      round6_ = allocate<typename Arena::Round6Record>(Layout::slot_count);
-      counts_storage_ = allocate<std::uint32_t>(7 * count_stride + 2);
-      for (unsigned i = 0; i < counts_.size(); ++i)
-        counts_[i] = counts_storage_ + i * count_stride;
-      overflow_ = counts_storage_ + 7 * count_stride;
-      roots_ = allocate<typename Arena::RootRecord>(root_capacity);
-      root_count_ = overflow_ + 1;
-      leaves_ = allocate<std::uint32_t>(root_capacity * Spec::proof_indices);
-      valid_ = allocate<std::uint8_t>(root_capacity);
-    } catch (...) {
-      release();
-      throw;
-    }
+    round4_ = allocate<typename Arena::Round4Record>(Layout::slot_count);
+    round5_ = allocate<typename Arena::Round5Record>(Layout::slot_count);
+    round6_ = allocate<typename Arena::Round6Record>(Layout::slot_count);
+    // One counter allocation holds the seven per-round bucket counts, then the overflow and
+    // root counts that run_layout reads back as one status pair.
+    counts_storage_ = allocate<std::uint32_t>(7 * count_stride + 2);
+    for (unsigned i = 0; i < counts_.size(); ++i)
+      counts_[i] = counts_storage_ + i * count_stride;
+    overflow_ = counts_storage_ + 7 * count_stride;
+    root_count_ = overflow_ + 1;
+    roots_ = allocate<typename Arena::RootRecord>(root_capacity);
+    leaves_ = allocate<std::uint32_t>(root_capacity * Spec::proof_indices);
+    valid_ = allocate<std::uint8_t>(root_capacity);
   }
 
   // Reset attempt counters in queue order; prior record bytes remain unreachable behind zero counts.
   void clear() {
     queue_.fill(counts_storage_, 0u, 7 * count_stride + 2);
-  }
-
-  template <typename T>
-  // Release one allocation without throwing and clear its pointer for partial-construction cleanup.
-  void free(T*& value) noexcept {
-    if (value) {
-      try {
-        sycl::free(value, queue_);
-      } catch (...) {
-      }
-      value = nullptr;
-    }
-  }
-
-  // Release owned buffers and clear counter aliases; callers drain the queue first.
-  void release() noexcept {
-    free(input_);
-    free(level0_);
-    free(round1_);
-    free(round2_);
-#ifdef MOM_SYCL_HAS_HIP
-    free(round3_);
-#else
-    free(round3_heads_);
-    free(round3_tails_);
-#endif
-    free(round4_);
-    free(round5_);
-    free(round6_);
-    free(counts_storage_);
-    counts_.fill(nullptr);
-    overflow_ = root_count_ = nullptr;
-    free(roots_);
-    free(leaves_);
-    free(valid_);
   }
 };
 

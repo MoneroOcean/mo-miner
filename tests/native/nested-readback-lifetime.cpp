@@ -10,6 +10,7 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -94,6 +95,7 @@ inline void sycl_wait_and_throw(sycl::event event, const sycl::device&) {
   event.wait_and_throw();
 }
 
+#include "mom_env_flag.inc"  // the production on/off switch parser (sycl/lib-internal.h)
 #include "cleanup.inc"
 
 // HooHash's source Result is deliberately given a destructor in this fixture so a missing local

@@ -14,6 +14,7 @@
 #include <initializer_list>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -235,6 +236,17 @@ inline bool mom_parse_env_u32(const char* name, uint32_t& out) {
   return true;
 }
 
+// The single parser for on/off MOM_* switches; the controller writes "1" or "0". Unset or empty
+// yields nullopt so the caller keeps its own default; "0", "false" and "off" turn the switch off
+// and any other value turns it on.
+inline std::optional<bool> mom_env_flag(const char* const name) {
+  const char* const value = std::getenv(name);
+  if (!value || !*value)
+    return std::nullopt;
+  return std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0 &&
+         std::strcmp(value, "off") != 0;
+}
+
 // Optional Intel geometry for host-side performance policy, not a requested subgroup size.
 // Unavailable/failed queries retain each caller's existing unknown-device default.
 inline unsigned mom_intel_eu_simd_width(const sycl::device& device) {
@@ -278,13 +290,17 @@ inline bool is_integrated_gpu(const sycl::device& device) {
   return integrated;
 }
 
+// MOM_SYCL_PORTABLE_TEST opts into bounded correctness fixtures. Each algorithm still gates its
+// fixture on test mode and its own device policy.
+inline bool mom_portable_test_requested() {
+  return mom_env_flag("MOM_SYCL_PORTABLE_TEST").value_or(false);
+}
+
 // Admit synthetic compact datasets only for explicit correctness tests on CPUs or integrated GPUs.
 // The mining and benchmark paths keep their consensus-sized datasets even if the flag is inherited.
 inline bool mom_compact_correctness_test(const bool is_test, const bool is_benchmark,
                                          const sycl::device& device) {
-  unsigned long enabled = 0;
-  return is_test && !is_benchmark &&
-         mom_parse_env_ulong("MOM_SYCL_PORTABLE_TEST", enabled) && enabled != 0 &&
+  return is_test && !is_benchmark && mom_portable_test_requested() &&
          (device.is_cpu() || is_integrated_gpu(device));
 }
 
@@ -465,6 +481,28 @@ inline unsigned sycl_default_workgroup(
   return smallest;
 }
 
+// Resolve a workgroup tuning override: `name` wins only when it is one of `allowed` and fits the
+// same local-memory budget; an unset, malformed or unsupported value keeps the default above.
+inline unsigned sycl_env_workgroup(
+  const sycl::device& device, const char* const name,
+  const std::initializer_list<unsigned> allowed, const unsigned preferred,
+  const size_t fixed_local_bytes = 0, const size_t local_bytes_per_item = 0,
+  const size_t local_bytes_per_team = 0, const unsigned team_size = 1
+) {
+  const unsigned fallback = sycl_default_workgroup(device, allowed, preferred, fixed_local_bytes,
+                                                   local_bytes_per_item, local_bytes_per_team,
+                                                   team_size);
+  uint32_t parsed = 0;
+  if (!mom_parse_env_u32(name, parsed))
+    return fallback;
+  for (const unsigned candidate : allowed)
+    if (candidate == parsed && sycl_workgroup_fits(device, candidate, fixed_local_bytes,
+                                                   local_bytes_per_item, local_bytes_per_team,
+                                                   team_size))
+      return candidate;
+  return fallback;
+}
+
 // Branch-free modulo by a runtime divisor via multiply-shift (Granlund-Montgomery).
 // Shared by the kawpow/etchash/autolykos2 kernels. Layout must stay byte-compatible
 // with the FastModData mirror in kawpow/jit.inc.
@@ -569,7 +607,7 @@ inline void sycl_wait_and_throw(sycl::event event, const sycl::device& device) {
 
 // Make suppressed teardown failures opt-in diagnostics without replacing the original failure.
 inline void sycl_log_cleanup_exception(const char* const scope, const char* const message) noexcept {
-  if (!std::getenv("MOM_SYCL_CLEANUP_DEBUG")) return;
+  if (!mom_env_flag("MOM_SYCL_CLEANUP_DEBUG").value_or(false)) return;
   std::fprintf(stderr, "MOM_SYCL_CLEANUP_DEBUG %s ignored cleanup exception: %s\n",
                scope, message ? message : "unknown");
   std::fflush(stderr);
@@ -675,6 +713,13 @@ void mom_resize_usm(sycl::queue& queue, UsmPtr<T>& buffer, uint64_t& count,
 // Monotonic milliseconds for host-side progress and profiling logs.
 inline uint64_t mom_now_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+// Monotonic microseconds for host-side phase profiling and timed route selection.
+inline uint64_t mom_now_us() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }

@@ -164,8 +164,8 @@ node scripts/check-native-release.js /output/entrypoint.json gpu --vendor intel 
 ~~~
 
 The GPU lane needs the named hardware, fails on missing devices, and does not build anything. A
-custom GPU harness must unset `MOM_SKIP_SYCL_ALGO_PARAMS` (the CPU-probe flag checks presence, so
-`0` still counts as set); the checker removes it for its GPU lanes. Run native builds and checks
+custom GPU harness must unset `MOM_SKIP_SYCL_ALGO_PARAMS` or set it to `0`, `false` or `off`; the
+checker removes it for its GPU lanes. Run native builds and checks
 in a resource-limited environment with swap disabled where practical; command timeouts and job
 counts are not memory limits.
 

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <optional>
 #include <string>
 #include "../../sycl/workgroup-limits.h"
 
@@ -50,6 +51,13 @@ int main() {
   int unavailableChoice = -1;
   assert(!selectCooperative(unsupported, unavailableChoice, "fixture", true,
                             [](bool, unsigned, bool) { assert(false); return 0; }));
+  // An explicit override skips the probe in both directions; "false" used to force it on.
+  const auto unprobed = [](bool, unsigned, bool) { assert(false); return 0; };
+  State forced{{}, nullptr, 128};
+  int forcedChoice = -1;
+  assert(selectCooperative(forced, forcedChoice, "fixture", true, unprobed));
+  setenv("MOM_FISHHASH_COOP", "false", 1);
+  assert(!selectCooperative(forced, forcedChoice, "fixture", true, unprobed));
   unsetenv("MOM_FISHHASH_COOP");
   for (unsigned mode = 0; mode < 3; ++mode) {
     Result result{};

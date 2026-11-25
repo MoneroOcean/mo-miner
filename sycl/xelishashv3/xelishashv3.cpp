@@ -97,11 +97,12 @@ int xelishashv3(unsigned, uint32_t, const uint8_t* input, unsigned input_size, u
   State& s = persistentDeviceState<State>(dev);
   std::lock_guard<std::mutex> lock(s.mutex);
   s.ensure(intensity);
+  MomSyclHostTransferGuard host_transfers(s.queue, "xelishashv3 host transfers");
   sycl_wait_and_throw(s.queue.memcpy(s.input, input, 112), s.device);
   sycl_wait_and_throw(s.queue.memcpy(s.target, target, 32), s.device);
   sycl_wait_and_throw(s.queue.memset(s.result, 0, sizeof(PowHits<>)), s.device);
-  const char* configured = std::getenv("MOM_XELISHASHV3_SYCL_NATIVE");
-  const bool native = !configured || std::strcmp(configured, "0");
+  // compiler-policy.js sets MOM_XELISHASHV3_SYCL_NATIVE per backend route; standalone runs default on.
+  const bool native = mom_env_flag("MOM_XELISHASHV3_SYCL_NATIVE").value_or(true);
 #ifdef MOM_XELISHASHV3_ESIMD
   // The cached ESIMD gathers require newer Intel hardware; XeLP lacks those LSC instructions.
   // The matrix capability keeps these older devices on the ordinary kernel without a SKU list.
@@ -115,6 +116,7 @@ int xelishashv3(unsigned, uint32_t, const uint8_t* input, unsigned input_size, u
   else
     search<false>(s, *nonce, intensity, is_test);
   PowHits<> hits;
+  MomSyclHostTransferGuard result_transfer(s.queue, "xelishashv3 result readback");
   sycl_wait_and_throw(s.queue.memcpy(&hits, s.result, sizeof(hits)), s.device);
   return mom_take_pow_hits(hits, output, nonce);
 } catch (const sycl::exception& error) {

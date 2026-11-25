@@ -51,7 +51,7 @@ void cn_gpu(const uint8_t* const inputs, const unsigned input_size, uint8_t* con
   const unsigned batch_eff = cn_gpu_padded_batch(batch);
   if (!inputs || !output || !input_size || !batch_eff || input_size >= HASH_DATA_AREA)
     throw std::string("cn/gpu requires a padded input below 136 bytes and a valid batch");
-  CnGpuState& state = cn_gpu_state(dev_str);
+  CnGpuState& state = persistentDeviceState<CnGpuState>(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
   // The packed recurrence and AES stages need an even batch. Initialize the extra odd-batch
   // scratchpad below, but never copy an input or read an output for that padding hash.

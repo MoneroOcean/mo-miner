@@ -149,7 +149,7 @@ void Core::Execute() try {
   debug_async_worker("Core::Execute entered");
   // MOM_LOOP_STATS=1 prints, every ~10s on stderr, worker-process CPU use and how the compute-loop wall
   // time splits between GPU/CPU dispatch calls and the host work around them (plus one-off stall lines).
-  const bool loop_stats = std::getenv("MOM_LOOP_STATS") != nullptr;
+  const bool loop_stats = mom_native_env_enabled("MOM_LOOP_STATS");
   LoopStats ls;
   bool runtime_initialized = false;
   auto init_runtime = [&]() {

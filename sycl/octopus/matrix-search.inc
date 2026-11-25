@@ -803,10 +803,8 @@ class OctopusSyclNativeSearch {
   uint64_t points_version_ = ~uint64_t(0);
   bool ready_ = false;
 #if defined(OCTOPUS_ESIMD)
-  const bool profile_ = [] {
-    const char* value = std::getenv("MOM_OCTOPUS_PROFILE");
-    return value && *value && std::strcmp(value, "0") != 0;
-  }();
+  // Diagnostic: report per-stage native search timings.
+  const bool profile_ = mom_env_flag("MOM_OCTOPUS_PROFILE").value_or(false);
   unsigned profile_reports_ = 0;
 #endif
 

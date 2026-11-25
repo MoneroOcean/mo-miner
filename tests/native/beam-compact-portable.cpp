@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 
 namespace sycl {
 struct device {
@@ -13,6 +14,8 @@ struct device {
 inline bool mom_is_cuda(const sycl::device& device) { return device.cuda; }
 inline bool mom_is_hip(const sycl::device& device) { return device.hip; }
 inline bool sycl_is_level_zero_gpu(const sycl::device& device) { return device.level_zero; }
+
+#include "mom_env_flag.inc"
 
 #include "beam_compact_enabled.inc"
 

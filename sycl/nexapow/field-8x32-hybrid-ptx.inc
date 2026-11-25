@@ -35,9 +35,7 @@ SOFTWARE.
 
 #if (defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)) || defined(MOM_NEXAPOW_ACPP_PTX_FIELD)
 
-#ifndef MOM_NEXAPOW_NO_STDINT
 #include <stdint.h>
-#endif
 
 namespace mom_nexa_field32_hybrid_ptx {
 namespace detail {

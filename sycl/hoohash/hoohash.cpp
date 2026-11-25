@@ -197,17 +197,12 @@ public:
   explicit State(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
-        workgroup(sycl_default_workgroup(device, {1, 2, 4, 8, 16, 32, 64, 128},
-                                         mom_is_cuda(device) ? 128 : 64)) {
+        // 256 is admitted only as an explicit override; the defaults stop at 128.
+        workgroup(sycl_env_workgroup(device, "MOM_HOOHASH_WORKGROUP",
+                                     {1, 2, 4, 8, 16, 32, 64, 128, 256},
+                                     mom_is_cuda(device) ? 128 : 64)) {
     if (!device.has(sycl::aspect::fp64) || !mom_has_usm_device(device))
       throw std::string("hoohash requires FP64 and SYCL device USM");
-    unsigned long override;
-    if (mom_parse_env_ulong("MOM_HOOHASH_WORKGROUP", override)) {
-      const size_t maximum = device.get_info<sycl::info::device::max_work_group_size>();
-      if (!override || override > maximum)
-        throw std::string("MOM_HOOHASH_WORKGROUP exceeds the device limit");
-      workgroup = static_cast<unsigned>(override);
-    }
     const char* const failure = "Can't allocate hoohash buffers";
     matrix = mom_usm_alloc<double>(queue, 4096, false, failure);
     normal = mom_usm_alloc<FloatPair>(queue, 4096 * 16, false, failure);

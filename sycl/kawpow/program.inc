@@ -110,15 +110,9 @@ static uint64_t chfast_cache_bytes(const uint32_t epoch, const int init_items,
   return static_cast<uint64_t>(firo_find_largest_prime(upper)) * 64ull;
 }
 
-// Used by MOM_LOOP_STATS to break a dispatch call into host-side phases.
-static uint64_t kawpow_now_us() {
-  return std::chrono::duration_cast<std::chrono::microseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-
+// MOM_LOOP_STATS breaks a dispatch call into host-side phases.
 static bool kawpow_loop_stats() {
-  static const bool enabled = std::getenv("MOM_LOOP_STATS") != nullptr;
+  static const bool enabled = mom_env_flag("MOM_LOOP_STATS").value_or(false);
   return enabled;
 }
 

@@ -122,7 +122,9 @@ static int searchFixedDag(const uint8_t* input, unsigned input_size, uint8_t* ou
   std::memset(state.result, 0, sizeof(*state.result));
   sycl_wait_and_throw(search(cooperative, intensity, is_test), state.device);
 
-  static const bool perf_log = std::getenv(Karlsen ? "MOM_KARLSEN_PERF" : "MOM_FISHHASH_PERF") != nullptr;
+  // Diagnostic: log the mining hashrate per device.
+  static const bool perf_log =
+      mom_env_flag(Karlsen ? "MOM_KARLSEN_PERF" : "MOM_FISHHASH_PERF").value_or(false);
   if (perf_log && !is_test) {
     auto& window = Karlsen ? state.karlsenhashv2Rate : state.fishhashRate;
     window.record(intensity, [&](double hashesPerSecond, double) {

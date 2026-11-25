@@ -6,10 +6,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
+#include "mom_env_flag.inc"  // the production on/off switch parser (sycl/lib-internal.h)
 
 #define DEV
 #ifndef PEARLHASH_ER

@@ -70,8 +70,9 @@ test.describe("Portable DAG modes", {concurrency: false}, () => {
       program, /^constexpr uint32_t KAWPOW_LANES = .*;\r?$/m, "KAWPOW_LANES");
     const kawpowDagLoads = extractLine(
       program, /^constexpr uint32_t KAWPOW_DAG_LOADS = .*;\r?$/m, "KAWPOW_DAG_LOADS");
-    const parser = extractCppBlock(internal, "inline bool mom_parse_env_ulong");
+    const parser = extractCppBlock(internal, "inline std::optional<bool> mom_env_flag");
     const integratedGpu = extractCppBlock(internal, "inline bool is_integrated_gpu");
+    const portableTestRequested = extractCppBlock(internal, "inline bool mom_portable_test_requested");
     const compactCorrectnessTest = extractCppBlock(internal,
       "inline bool mom_compact_correctness_test");
     const fastModStart = internal.indexOf("struct FastModData");
@@ -96,14 +97,13 @@ test.describe("Portable DAG modes", {concurrency: false}, () => {
         "Etchash DAG geometry"),
       parser,
       integratedGpu,
+      portableTestRequested,
       compactCorrectnessTest,
       extractCppBlock(internal, "class MomBufferAllocation") + ";",
       "constexpr bool mom_sycl_portable_opencl = true;",
       "struct PortableResultState { sycl::queue queue; MomBufferAllocation<unsigned> portable_results;",
       extractCppBlock(variant.autolykos, "  void ensure_portable_results(") + "};",
       fastMod,
-      extractCppBlock(kawpow, "static bool kawpow_portable_test"),
-      extractCppBlock(etchash, "static bool etchash_portable_test"),
       "inline bool etchash_cache_key_matches(",
       "    const uint32_t epoch, const uint32_t new_epoch, const uint32_t seed_epoch,",
       "    const uint32_t new_seed_epoch, const uint64_t light_cache_words,",

@@ -5,6 +5,7 @@
 #include <cstring>
 #include <exception>
 #include <initializer_list>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -52,6 +53,7 @@ struct queue {
 };
 }
 
+#include "mom_env_flag.inc"  // the production on/off switch parser (sycl/lib-internal.h)
 #include "cleanup.inc"
 static void sycl_wait_and_throw(sycl::event, sycl::device) {
   if (pending) std::memcpy(destination, source, bytes);

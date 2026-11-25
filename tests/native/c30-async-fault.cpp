@@ -16,6 +16,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include "mom_env_flag.inc"  // the production on/off switch parser (sycl/lib-internal.h)
 
 static int kind, fault_wait, layout, owner;
 static int waits, kernels, copies, cycles, calls, errors, clears, results;
@@ -219,7 +220,8 @@ struct C30State {
   C30State() : solver("fixture") {}
 };
 static C30State* active;
-static C30State& c30_state(const std::string& dev) {
+template <typename State>
+static State& persistentDeviceState(const std::string& dev) {
   require(dev == "fixture", "entry device binding changed");
   return *active;
 }
