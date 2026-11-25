@@ -140,12 +140,10 @@ void allocateRead(uv_handle_t *, size_t, uv_buf_t *buffer) {
   buffer->len = buffer->base ? 65536 : 0;
 }
 
+// Node reports both "no such host" resolver results as ENOTFOUND.
 Object ioError(Runtime &rt, int status) {
-  auto error = rt.global().getPropertyAsFunction(rt, "Error")
-      .callAsConstructor(rt, String::createFromUtf8(rt, uv_strerror(status))).asObject(rt);
-  const char *code = status == UV_EAI_NONAME || status == UV_EAI_NODATA
-      ? "ENOTFOUND" : uv_err_name(status);
-  error.setProperty(rt, "code", String::createFromAscii(rt, code));
+  auto error = codedError(rt, status == UV_EAI_NONAME || status == UV_EAI_NODATA
+      ? "ENOTFOUND" : uv_err_name(status), uv_strerror(status));
   error.setProperty(rt, "errno", status);
   return error;
 }
@@ -183,6 +181,11 @@ void emit(Resource &resource, const char *event, Value value = Value::undefined(
     resource.callback.call(rt, String::createFromUtf8(rt,
         resource.channel.empty() ? event : resource.channel + ":" + event), std::move(value));
   });
+}
+
+// Each read callback owns its transient libuv/OpenSSL buffer; JS receives an independent copy.
+void emitData(Resource &resource, const char *bytes, size_t size) {
+  emit(resource, "data", ArrayBuffer(resource.owner.runtime, std::make_shared<OwnedBytes>(bytes, size)));
 }
 
 void resumeWorkers(SHConsoleContext &owner);
@@ -254,6 +257,15 @@ void close(Resource &resource) {
   finishClose(resource);
 }
 
+// A registered handle whose libuv open/start call failed is closed (never just erased: libuv
+// already links it) before the error reaches JS.
+void closeOnFailure(Resource &resource, int status) {
+  if (!status) {return;}
+  auto &rt = resource.owner.runtime; // close() may release the registry's reference.
+  close(resource);
+  throw JSError(rt, ioError(rt, status));
+}
+
 // Leave enough room below the 32-MiB stream cap for one maximum Pearl proof frame. Pausing
 // callback delivery (not the loop) lets timers/stdin/shutdown run while the bounded cross-thread
 // queue applies backpressure to the producer. No event/proof is dropped or kept off-budget.
@@ -292,10 +304,8 @@ void drainWorker(Resource &resource) {
       const auto &event = queued.event;
       guarded(resource.owner, [&] {
         if (event.type == WorkerEvent::Type::complete) {resource.worker->complete.call(rt);}
-        else if (event.type == WorkerEvent::Type::error) {
-          resource.worker->error.call(rt, rt.global().getPropertyAsFunction(rt, "Error")
-              .callAsConstructor(rt, String::createFromUtf8(rt, event.error)));
-        } else {
+        else if (event.type == WorkerEvent::Type::error) {resource.worker->error.call(rt, errorObject(rt, event.error));}
+        else {
           Object values(rt);
           for (const auto &[key, value] : event.values) {values.setProperty(rt, key.c_str(), String::createFromUtf8(rt, value));}
           resource.callback.call(rt, String::createFromUtf8(rt, event.name), std::move(values));
@@ -309,10 +319,7 @@ void drainWorker(Resource &resource) {
       done = resource.worker->done && !pending;
       failed = resource.worker->failed;
     }
-    if (failed && !resource.closing) {
-      resource.worker->error.call(rt, rt.global().getPropertyAsFunction(rt, "Error")
-          .callAsConstructor(rt, String::createFromAscii(rt, "Native worker event queue failed")));
-    }
+    if (failed && !resource.closing) {resource.worker->error.call(rt, errorObject(rt, "Native worker event queue failed"));}
     if ((done || failed) && !resource.closing) {close(resource);}
     else if (pending && !resource.closing && !outputBlocked(resource.owner)) {
       // Bound each JS dispatch turn too: a fast producer must not starve timers/other devices.
@@ -391,9 +398,7 @@ public:
         if (entry.size(rt) != 2) {throw JSError(rt, "Invalid native worker field");}
         values[entry.getValueAtIndex(rt, 0).asString(rt).utf8(rt)] = entry.getValueAtIndex(rt, 1).asString(rt).utf8(rt);
       }
-      try {resource->worker->core->post({args[0].asString(rt).utf8(rt), std::move(values)});}
-      catch (const std::string &error) {throw JSError(rt, error);}
-      catch (const std::exception &error) {throw JSError(rt, error.what());}
+      nativeCall(rt, [&] {resource->worker->core->post({args[0].asString(rt).utf8(rt), std::move(values)});});
       return Value::undefined();
     });
   }
@@ -413,9 +418,7 @@ void tlsFailure(Resource &resource, const mom::runtime::TlsError &failure) {
   resource.hadError = true;
   guarded(resource.owner, [&] {
     auto &rt = resource.owner.runtime;
-    auto error = rt.global().getPropertyAsFunction(rt, "Error")
-        .callAsConstructor(rt, String::createFromUtf8(rt, failure.what())).asObject(rt);
-    error.setProperty(rt, "code", String::createFromUtf8(rt, failure.code));
+    auto error = codedError(rt, failure.code.c_str(), failure.what());
     if (resource.tls) {
       error.setProperty(rt, "authorizationError", String::createFromUtf8(rt, resource.tls->authorizationError()));
     }
@@ -437,9 +440,7 @@ void deferFailure(Resource &resource, int status) {
 Resource *lookup(SHConsoleContext &owner, const Value &value) {
   if (!value.isNumber()) {throw JSError(owner.runtime, "Native handle must be an integer");}
   const auto id = value.getNumber();
-  if (!std::isfinite(id) || id < 1 || id > UINT32_MAX || std::floor(id) != id) {
-    throw JSError(owner.runtime, "Invalid native handle");
-  }
+  if (!integerInRange(id, 1, UINT32_MAX)) {throw JSError(owner.runtime, "Invalid native handle");}
   const auto found = owner.resources.find(static_cast<uint32_t>(id));
   return found == owner.resources.end() ? nullptr : found->second.get();
 }
@@ -484,8 +485,7 @@ std::shared_ptr<Resource> allocate(SHConsoleContext &owner, Kind kind, const Val
   }
   resource->handle()->data = resource.get();
   if (kind == Kind::immediate) {
-    status = uv_idle_init(&owner.loop, &resource->idle);
-    if (status) {close(*resource); throw JSError(owner.runtime, ioError(owner.runtime, status));}
+    closeOnFailure(*resource, uv_idle_init(&owner.loop, &resource->idle));
     resource->idle.data = resource.get();
     resource->idleInitialized = true;
   }
@@ -504,10 +504,7 @@ void readPipe(Resource &resource, bool reading) {
         guarded(resource.owner, [&] {
           if (size == UV_EOF) {emit(resource, "end"); close(resource);}
           else if (size < 0) {fail(resource, static_cast<int>(size));}
-          else if (size > 0) {
-            emit(resource, "data", ArrayBuffer(resource.owner.runtime,
-                std::make_shared<OwnedBytes>(buffer->base, static_cast<size_t>(size))));
-          }
+          else if (size > 0) {emitData(resource, buffer->base, static_cast<size_t>(size));}
         });
       });
   if (status && status != UV_EALREADY) {fail(resource, status);}
@@ -806,10 +803,7 @@ void startConnect(Resource &resource) {
                       resource.tls->feed(buffer->base, static_cast<size_t>(size));
                       pumpTls(resource);
                     } catch (const mom::runtime::TlsError &error) {tlsFailure(resource, error);}
-                  } else {
-                    emit(resource, "data", ArrayBuffer(resource.owner.runtime,
-                        std::make_shared<OwnedBytes>(buffer->base, static_cast<size_t>(size))));
-                  }
+                  } else {emitData(resource, buffer->base, static_cast<size_t>(size));}
                 }
               });
             });
@@ -1006,7 +1000,7 @@ void pumpTls(Resource &resource) {
         const int size = resource.tls->read(bytes, sizeof(bytes));
         if (!size) {break;}
         if (size < 0) {receivedEnd(resource); break;}
-        emit(resource, "data", ArrayBuffer(resource.owner.runtime, std::make_shared<OwnedBytes>(bytes, size)));
+        emitData(resource, bytes, static_cast<size_t>(size));
       }
       if (resource.closing) {return;}
       while (!resource.plainWrites.empty()) {
@@ -1040,6 +1034,7 @@ void scheduleTls(Resource &resource) {
 bool write(SHConsoleContext &owner, Resource &resource, const Value &view) {
   auto &rt = owner.runtime;
   const auto input = byteView(rt, view);
+  // The caller checked writability, but byteView's JS getters can close or end this socket.
   if (resource.closing || resource.ending) {throw JSError(rt, "Native socket is not writable");}
   const size_t length = input.size;
   constexpr size_t maximumQueued = 32 * 1024 * 1024;
@@ -1095,7 +1090,7 @@ SHConsoleContext *createLoop(Runtime &runtime, WorkerFactory workerFactory) {
       close(resource);
       guarded(resource.owner, [&] {resource.callback.call(resource.owner.runtime);});
     });
-    if (check) {close(*resource); throw JSError(owner.runtime, ioError(owner.runtime, check));}
+    closeOnFailure(*resource, check);
     return Value(static_cast<double>(resource->id));
   });
   binding(*owner, "__momSpawn", 3, [](SHConsoleContext &owner, const Value *args) {return spawnProcess(owner, args);});
@@ -1116,8 +1111,7 @@ SHConsoleContext *createLoop(Runtime &runtime, WorkerFactory workerFactory) {
   });
   binding(*owner, "__momStdinOpen", 1, [](SHConsoleContext &owner, const Value *args) -> Value {
     auto resource = allocate(owner, Kind::pipe, args[0]);
-    const int status = uv_pipe_open(&resource->pipe, 0);
-    if (status) {close(*resource); throw JSError(owner.runtime, ioError(owner.runtime, status));}
+    closeOnFailure(*resource, uv_pipe_open(&resource->pipe, 0));
     return Value(static_cast<double>(resource->id));
   });
   binding(*owner, "__momOutputOpen", 2, [](SHConsoleContext &owner, const Value *args) -> Value {
@@ -1125,8 +1119,7 @@ SHConsoleContext *createLoop(Runtime &runtime, WorkerFactory workerFactory) {
     if (fd != 1 && fd != 2) {throw JSError(owner.runtime, "Only stdout/stderr may open as native output");}
     if (uv_guess_handle(static_cast<int>(fd)) != UV_NAMED_PIPE) {return Value::null();}
     auto resource = allocate(owner, Kind::pipe, args[1]);
-    const int status = uv_pipe_open(&resource->pipe, static_cast<int>(fd));
-    if (status) {close(*resource); throw JSError(owner.runtime, ioError(owner.runtime, status));}
+    closeOnFailure(*resource, uv_pipe_open(&resource->pipe, static_cast<int>(fd)));
     owner.outputs[static_cast<size_t>(fd) - 1] = resource->id;
     return Value(static_cast<double>(resource->id));
   });
@@ -1139,7 +1132,7 @@ SHConsoleContext *createLoop(Runtime &runtime, WorkerFactory workerFactory) {
       auto &resource = *static_cast<Resource *>(handle->data);
       guarded(resource.owner, [&] {resource.callback.call(resource.owner.runtime);});
     }, signal);
-    if (status) {close(*resource); throw JSError(owner.runtime, ioError(owner.runtime, status));}
+    closeOnFailure(*resource, status);
     uv_unref(resource->handle()); // Node's signal listeners alone do not keep a process alive.
     return Value(static_cast<double>(resource->id));
   });
@@ -1167,7 +1160,7 @@ SHConsoleContext *createLoop(Runtime &runtime, WorkerFactory workerFactory) {
       if (!uv_timer_get_repeat(timer)) {close(resource);}
       guarded(resource.owner, [&] {resource.callback.call(resource.owner.runtime);});
     }, delay, repeat ? delay : 0);
-    if (status) {close(*resource); throw JSError(owner.runtime, ioError(owner.runtime, status));}
+    closeOnFailure(*resource, status);
     return Value(static_cast<double>(resource->id));
   });
   binding(*owner, "__momHandleClose", 1, [](SHConsoleContext &owner, const Value *args) -> Value {
@@ -1211,17 +1204,14 @@ SHConsoleContext *createLoop(Runtime &runtime, WorkerFactory workerFactory) {
   binding(*owner, "__momTCPConnect", 4, [](SHConsoleContext &owner, const Value *args) -> Value {
     const auto host = args[0].asString(owner.runtime).utf8(owner.runtime);
     const auto port = args[1].asNumber();
-    if (host.empty() || host.find('\0') != std::string::npos ||
-        !std::isfinite(port) || port < 1 || port > 65535 || port != std::floor(port)) {
+    if (host.empty() || host.find('\0') != std::string::npos || !integerInRange(port, 1, 65535)) {
       throw JSError(owner.runtime, "Invalid native TCP address");
     }
     uint32_t attemptTimeout = defaultConnectAttemptTimeout;
     if (!args[3].isUndefined() && !args[3].isNull()) {
-      if (!args[3].isNumber()) {throw JSError(owner.runtime, "Invalid native TCP attempt timeout");}
-      const double requested = args[3].asNumber();
-      if (!std::isfinite(requested) || requested < 1 || requested > INT32_MAX || std::floor(requested) != requested) {
-        throw JSError(owner.runtime, "Invalid native TCP attempt timeout");
-      }
+      const double requested = args[3].isNumber() ? args[3].getNumber() : 0;
+      if (!integerInRange(requested, 1, INT32_MAX)) {throw JSError(owner.runtime, "Invalid native TCP attempt timeout");}
+      // Node raises shorter family-attempt timeouts to its 10 ms minimum.
       attemptTimeout = static_cast<uint32_t>(requested < 10 ? 10 : requested);
     }
     auto resource = allocate(owner, Kind::tcp, args[2]);

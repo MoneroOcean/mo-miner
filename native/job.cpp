@@ -46,17 +46,17 @@ void Core::prepare(const Message& first) {
 // Answer "algo_params": every supported algorithm with its default devices and tuning for this
 // host, from the controller's CPU topology plus SYCL GPU discovery (skipped for CPU-only runs).
 void Core::get_algo_params(const MessageValues& v) {
-  if (!v.contains("cpu_sockets")) throw std::string("Missing cpu_sockets algo_params key");
-  if (!v.contains("cpu_threads")) throw std::string("Missing cpu_threads algo_params key");
-  if (!v.contains("cpu_l3cache")) throw std::string("Missing cpu_l3cache algo_params key");
-  unsigned cpu_sockets = 0;
-  unsigned cpu_threads = 0;
-  unsigned cpu_l3cache = 0;
-  if (!mom::job_boundary::parse_unsigned(v.at("cpu_sockets"), cpu_sockets) ||
-      !mom::job_boundary::parse_unsigned(v.at("cpu_threads"), cpu_threads) ||
-      !mom::job_boundary::parse_unsigned(v.at("cpu_l3cache"), cpu_l3cache)) {
-    throw std::string("Invalid unsigned algo_params topology");
-  }
+  const auto topology = [&](const char* const key) {
+    const auto it = v.find(key);
+    if (it == v.end()) throw std::string("Missing ") + key + " algo_params key";
+    unsigned value = 0;
+    if (!mom::job_boundary::parse_unsigned(it->second, value))
+      throw std::string("Invalid unsigned algo_params topology");
+    return value;
+  };
+  const unsigned cpu_sockets = topology("cpu_sockets");
+  const unsigned cpu_threads = topology("cpu_threads");
+  const unsigned cpu_l3cache = topology("cpu_l3cache");
   const auto keys2set = [](const auto& map) {
     const auto keys = std::views::keys(map);
     return std::set<std::string>(keys.begin(), keys.end());

@@ -43,10 +43,10 @@ std::string Core::bin2hex(const uint8_t* const data, const size_t size) {
   return hex;
 }
 
-void Core::send_msg(const std::string key, const MessageValues& values) {
-  debug_async_worker(("Core::send_msg " + key).c_str());
+void Core::send_msg(const std::string& key, const MessageValues& values) {
+  debug_async_worker("Core::send_msg ", key);
   sendToNode(Message(key, values));
-  debug_async_worker(("Core::send_msg done " + key).c_str());
+  debug_async_worker("Core::send_msg done ", key);
 }
 
 void Core::send_msg(const std::string& topic, const std::string& key, const std::string& value) {
@@ -163,16 +163,13 @@ void Core::send_equihash_results(
   const unsigned prefix_size = compact_size_prefix
       ? mom::job_boundary::write_compact_size16(static_cast<uint16_t>(solution_size), submit) : 0;
   for (unsigned i = 0; i < count; ++i) {
-    const uint8_t* const solution = solutions + 1 + static_cast<size_t>(i) * solution_size;
-    if (!compact_size_prefix) {
-      send_result(nonce, m_nonce_bytes, nullptr, nullptr, 32, nullptr, nullptr,
-                  solution, solution_size);
-      continue;
+    const uint8_t* proof = solutions + 1 + static_cast<size_t>(i) * solution_size;
+    if (compact_size_prefix) {
+      std::memcpy(submit + prefix_size, proof, solution_size);
+      proof = submit;
     }
-
-    std::memcpy(submit + prefix_size, solution, solution_size);
     send_result(nonce, m_nonce_bytes, nullptr, nullptr, 32, nullptr, nullptr,
-                submit, solution_size + prefix_size);
+                proof, prefix_size + solution_size);
   }
 }
 

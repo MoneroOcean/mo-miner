@@ -10,6 +10,10 @@
 namespace mom::runtime {
 // Shared initialization must precede RAND/EVP as well as TLS; never load host config/providers.
 void initializeCrypto();
+// Node's IPv6 zone syntax after hostname[zone] == '%': one nonempty run of ASCII alnum, '-', '.'
+// or ':'. Both net.isIP and TLS identity use it, so a malformed scope can never turn a DNS/IPv4
+// name into an IP literal or certificate IP identity.
+bool validIpv6Scope(const std::string &hostname, size_t zone);
 class TlsError final : public std::runtime_error {
  public:
   std::string code;

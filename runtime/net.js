@@ -1,25 +1,20 @@
 "use strict";
 
-const {EventEmitter} = require("node:events");
-const {StringDecoder} = require("node:string_decoder");
 const bytes = require("./bytes");
+const {ByteStream, highWaterMark} = require("./byte-stream");
 
 // Native mode alone resolves node:net here. Controller/pool sources and Engineering Mode remain
 // unchanged. OS handles stay private integers; all callbacks run on the language runtime thread.
-class Socket extends EventEmitter {
+class Socket extends ByteStream {
   /** @param {{host: string, port: number, autoSelectFamilyAttemptTimeout?: number | null}} options */
   constructor(options) {
     super();
     this.connecting = true;
     this.destroyed = false;
     this.writable = true;
-    this.writableLength = 0;
-    /** @type {StringDecoder | null} */
-    this.decoder = null;
+    // Writes made before readiness; their bytes already count toward writableLength.
     /** @type {Array<{data: Buffer, callback?: (error?: Error) => void}>} */
     this.pending = [];
-    /** @type {Array<{size: number, callback?: (error?: Error) => void}>} */
-    this.writes = [];
     /** @type {Error | undefined} */
     this.failure = undefined;
     this.ending = false;
@@ -45,22 +40,14 @@ class Socket extends EventEmitter {
       this.flushPending();
       this.emit("connect");
     } else if (event === "data") {
-      const buffer = Buffer.from(/** @type {ArrayBuffer} */ (value));
-      const decoded = this.decoder ? this.decoder.write(buffer) : buffer;
-      if (decoded.length) {this.emit("data", decoded);}
+      this.receiveData(value);
     } else if (event === "write") {
-      const completed = this.writes.shift();
-      const wasBlocked = this.writableLength >= 65536;
-      this.writableLength -= completed?.size || 0;
-      completed?.callback?.();
-      if (wasBlocked && this.writableLength < 65536) {this.emit("drain");}
+      this.receiveWrite();
     } else if (event === "error") {
       this.failure = value instanceof Error ? value : new Error(String(value));
       this.emit("error", this.failure);
     } else if (event === "end") {
-      const remaining = this.decoder?.end();
-      if (remaining) {this.emit("data", remaining);}
-      this.emit("end");
+      this.receiveEnd();
     } else if (event === "finish") {
       this.emit("finish");
     } else if (event === "close") {
@@ -70,7 +57,7 @@ class Socket extends EventEmitter {
       const error = this.failure || new Error("Socket closed before write completion");
       for (const entry of [...this.pending, ...this.writes]) {entry.callback?.(error);}
       this.pending = [];
-      this.writes = [];
+      this.writes.length = 0;
       this.writableLength = 0;
       this.emit("close", value);
     }
@@ -118,11 +105,10 @@ class Socket extends EventEmitter {
       });
       return false;
     }
-    if (this.writableLength + value.length > 32 * 1024 * 1024) {throw new Error("Socket write queue exceeded 32 MiB");}
-    this.writableLength += value.length;
+    this.reserve(value.length, "Socket");
     if (!this.ready()) {
       this.pending.push({data: value, ...(callback ? {callback} : {})});
-      return this.writableLength < 65536;
+      return this.writableLength < highWaterMark;
     }
     return this.send(value, callback);
   }
@@ -136,8 +122,6 @@ class Socket extends EventEmitter {
     return this;
   }
 
-  /** @param {BufferEncoding} encoding */
-  setEncoding(encoding) {this.decoder = new StringDecoder(encoding); return this;}
   destroy() {this.destroyed = true; this.writable = false; globalThis.__momHandleClose(this.id); return this;}
   ref() {globalThis.__momHandleRef(this.id, true); return this;}
   unref() {globalThis.__momHandleRef(this.id, false); return this;}

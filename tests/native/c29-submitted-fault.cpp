@@ -216,6 +216,7 @@ static int call(unsigned job, unsigned proof, const uint8_t* input, unsigned n, 
   ++calls;
   return c29(job, proof, input, n, output, edges, nonce, dev);
 }
+#include "describe-exception.inc"
 static void send_error(const std::string& value) {
   ++errors;
   last_error = value;

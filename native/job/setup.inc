@@ -207,23 +207,22 @@ void Core::set_job(
     throw std::string("Invalid GPU backend");
   if (new_dev == DEV::PEARLHASH_GPU) {
     if (new_pearlhash_cert_version != 3)
-      throw std::string("Unsupported pearlhash certificate version");
+      throw std::string("Unsupported PearlHash certificate version");
     const uint64_t pearlhash_m = mode == JobMode::test
       ? (new_backend == "native" ? 2048 : 256)
       : (new_batch >= 128 ? new_batch : 131072);
     const uint64_t pearlhash_n = mode == JobMode::test ? pearlhash_m : new_pearlhash_n;
     // Align effective matrices before allocation so transcript chunks, kernel indices, tile
     // searches, 32-depth matrix loads, transcript boundaries, and PlainProof accesses stay bounded.
+    // The shape limits include certificate V3's rank >= 128.
     if (!mom::job_boundary::valid_pearlhash_shape(
           pearlhash_m, pearlhash_n, new_pearlhash_k, new_pearlhash_rank))
-      throw std::string("Invalid pearlhash M/N/K/rank profile");
-    if (new_pearlhash_rank < 128)
-      throw std::string("PearlHash certificate V3 requires rank >= 128");
+      throw std::string("Invalid PearlHash M/N/K/rank profile");
   }
   if (new_nonce_bytes != 4 && new_nonce_bytes != 8)
     throw std::string("Only support 4 or 8 bytes long nonces");
   if (new_dev == DEV::PEARLHASH_GPU && new_nonce_bytes != 8)
-    throw std::string("pearlhash requires an 8-byte external seed");
+    throw std::string("PearlHash requires an 8-byte external seed");
   if (new_nonce_bytes == 4 &&
       (new_nonce > std::numeric_limits<uint32_t>::max() ||
        new_nicehash_mask > std::numeric_limits<uint32_t>::max()))
@@ -314,18 +313,16 @@ void Core::set_job(
         "c30 requires a canonical 32-byte search header with an 8-byte nonce at offset 0; "
         "only test mode accepts the 40-byte header-plus-nonce vector at offset 32");
   }
-  // Apply the common fixed/minimum input bounds first. Algorithm-specific layout checks below
-  // refine variable forms such as NexaPow's 40- and 48-byte work blobs.
+  // Apply the common fixed/minimum input bounds. NexaPow's 40-, 44- and 48-byte work blobs and
+  // BeamHash III's prework(32)||nonce(8)||extranonce(4) have their own layout checks; the cn/gpu,
+  // FishHash and KarlsenHashV2 layouts are refined below.
   const unsigned min_input_len = new_dev == DEV::PEARLHASH_GPU ? 76
     : new_dev == DEV::KARLSENHASHV2_GPU ? 80
-    : new_dev == DEV::MISC_GPU
-      ? (new_algo_str == "xelishashv3" ? 112 : new_algo_str == "nexapow" ? 40 : 80)
+    : new_dev == DEV::MISC_GPU ? (new_algo_str == "xelishashv3" ? 112 : 80)
     : new_dev == DEV::VERTHASH_GPU ? 80
     : new_dev == DEV::ZCASH_EQUIHASH_GPU ? 140 // full Zcash/Flux header
-    : new_dev == DEV::BEAMHASH3_GPU ? 44 // prework(32)||nonce(8)||extranonce(4)
     : is_nonce_at_32_gpu_dev(new_dev) ? 40 : 0;
-  const bool exact_input_len = new_algo_str == "xelishashv3" ||
-    new_dev == DEV::PEARLHASH_GPU || new_dev == DEV::MISC_GPU ||
+  const bool exact_input_len = new_dev == DEV::PEARLHASH_GPU || new_dev == DEV::MISC_GPU ||
     new_dev == DEV::VERTHASH_GPU || new_dev == DEV::ZCASH_EQUIHASH_GPU;
   bool bad_input_len;
   if (new_algo_str == "nexapow") {
@@ -523,11 +520,6 @@ void Core::set_job(
           }
           m_vms = std::move(new_vms);
         }
-      } else if (new_dev == DEV::CN_GPU) {
-        if (m_input == nullptr)
-          m_input = static_cast<uint8_t*>(alloc_mem(allocation_size(new_batch, MAX_BLOB_LEN)));
-        if (m_output == nullptr)
-          m_output = static_cast<uint8_t*>(alloc_mem(allocation_size(new_batch, HASH_LEN)));
       } else if (is_small_blob_gpu_dev(new_dev)) {
         if (m_input == nullptr) {
           m_input = static_cast<uint8_t*>(alloc_mem(MAX_BLOB_LEN));
@@ -541,17 +533,20 @@ void Core::set_job(
         if (m_spads == nullptr) {
           m_spads = alloc_mem(EQUIHASH_SOL_BUFFER_LEN);
         }
-      } else { // setup cn/c29 stuff
+      } else { // one input copy and hash per lane: CPU, cn/gpu and C29
         if (m_input == nullptr)
           m_input = static_cast<uint8_t*>(alloc_mem(allocation_size(new_batch, MAX_BLOB_LEN)));
         if (m_output == nullptr)
           m_output = static_cast<uint8_t*>(alloc_mem(allocation_size(new_batch, HASH_LEN)));
-        if (m_spads == nullptr) {
-          m_spads = alloc_mem(allocation_size(new_batch, SPAD_LEN));
-        }
-        if (m_ctx == nullptr) {
-          m_ctx = new cryptonight_ctx*[new_batch]{};
-          xmrig::CnCtx::create(m_ctx, m_lpads->scratchpad(), new_mem_size, new_batch);
+        // cn/gpu keeps its scratchpads on the device and needs no host contexts or scratch area.
+        if (new_dev != DEV::CN_GPU) {
+          if (m_spads == nullptr) {
+            m_spads = alloc_mem(allocation_size(new_batch, SPAD_LEN));
+          }
+          if (m_ctx == nullptr) {
+            m_ctx = new cryptonight_ctx*[new_batch]{};
+            xmrig::CnCtx::create(m_ctx, m_lpads->scratchpad(), new_mem_size, new_batch);
+          }
         }
       }
       m_batch    = new_batch;
@@ -700,10 +695,8 @@ void Core::set_job(
               if (nonce_exhausted && exhausted_threads->fetch_add(1) + 1 == thread_count) {
                 send_error("Nonce overflow");
               }
-            } catch (const std::string& err) {
-              send_error(std::string("Compute function thread exception: ") + err);
             } catch (...) {
-              send_error("Compute function thread exception");
+              send_error(describe_current_exception("Compute function thread exception"));
             }
           }
         );

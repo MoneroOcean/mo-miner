@@ -97,19 +97,12 @@ void installProcess(Runtime &rt, int argc, const char *const *argv) {
     const auto directory = args[0].asString(rt).utf8(rt);
     // Node chdir, unlike fs path APIs, passes a C string to libuv. Preserve its NUL truncation.
     const int status = uv_chdir(directory.c_str());
-    if (status) {
-      auto error = rt.global().getPropertyAsFunction(rt, "Error")
-          .callAsConstructor(rt, String::createFromUtf8(rt, uv_strerror(status))).asObject(rt);
-      error.setProperty(rt, "code", String::createFromAscii(rt, uv_err_name(status)));
-      throw JSError(rt, std::move(error));
-    }
+    if (status) {throw JSError(rt, codedError(rt, uv_err_name(status), uv_strerror(status)));}
     return Value::undefined();
   });
   binding(rt, "__momExitNow", 1, [](Runtime &rt, const Value *args) -> Value {
     const double code = args[0].asNumber();
-    if (!std::isfinite(code) || code < INT32_MIN || code > INT32_MAX || code != std::floor(code)) {
-      throw JSError(rt, "Invalid process exit code");
-    }
+    if (!integerInRange(code, INT32_MIN, INT32_MAX)) {throw JSError(rt, "Invalid process exit code");}
     // process.exit is explicitly forced, unlike exitCode/event-loop completion. Flush our own
     // synchronous output, then let the OS close handles; never unwind through generated C frames.
     std::fflush(nullptr);
@@ -122,9 +115,7 @@ int processExitCode(Runtime &rt) {
   if (code.isUndefined()) {return 0;}
   const double value = code.asNumber();
   // A replaced JS descriptor must not turn NaN/out-of-range input into undefined native casts.
-  if (!std::isfinite(value) || value < INT32_MIN || value > INT32_MAX || value != std::floor(value)) {
-    throw JSError(rt, "Invalid final process exit code");
-  }
+  if (!integerInRange(value, INT32_MIN, INT32_MAX)) {throw JSError(rt, "Invalid final process exit code");}
   return static_cast<int>(value);
 }
 } // namespace mom::runtime

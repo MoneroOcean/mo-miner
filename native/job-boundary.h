@@ -11,6 +11,11 @@
 
 namespace mom::job_boundary {
 
+inline std::string_view strip_hex_prefix(std::string_view hex) {
+  const bool prefixed = hex.size() >= 2 && hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X');
+  return prefixed ? hex.substr(2) : hex;
+}
+
 // Parse a complete unsigned number in `base` (2..36), rejecting empty text, stray characters and
 // overflow; `out` is written only on success. Hex input may carry a 0x prefix when allowed.
 template <typename UInt>
@@ -21,16 +26,14 @@ inline bool parse_unsigned(std::string_view text, UInt& out, int base = 10,
                 "UInt must be an unsigned integer type");
   if (base < 2 || base > 36)
     return false;
-  std::size_t begin = 0;
-  if (allow_hex_prefix && base == 16 && text.size() >= 2 && text[0] == '0' &&
-      (text[1] == 'x' || text[1] == 'X'))
-    begin = 2;
-  if (begin == text.size())
+  if (allow_hex_prefix && base == 16)
+    text = strip_hex_prefix(text);
+  if (text.empty())
     return false;
   const UInt radix = static_cast<UInt>(base);
   const UInt maximum = std::numeric_limits<UInt>::max();
   UInt value = 0;
-  for (std::size_t i = begin; i < text.size(); ++i) {
+  for (std::size_t i = 0; i < text.size(); ++i) {
     const unsigned char character = static_cast<unsigned char>(text[i]);
     unsigned digit = 0;
     if (character >= static_cast<unsigned char>('0') &&
@@ -168,11 +171,8 @@ inline bool nonce_with_offset(UInt base, std::uint64_t index, std::uint64_t stri
 inline bool pearl_seed_start(std::uint32_t slot, std::uint32_t thread_id,
                              std::uint32_t thread_num, std::uint32_t stride,
                              std::uint32_t& start) {
-  if (!thread_num || thread_id >= thread_num || !stride ||
-      !nonce_with_offset<std::uint32_t>(slot, thread_id, stride, 0, start)) {
-    return false;
-  }
-  return true;
+  return thread_num && thread_id < thread_num && stride &&
+         nonce_with_offset<std::uint32_t>(slot, thread_id, stride, 0, start);
 }
 
 inline bool pearl_seed_next(std::uint32_t current, std::uint64_t step,
@@ -272,11 +272,6 @@ inline bool decode_hex(std::string_view hex, std::uint8_t* out) {
     *out++ = static_cast<std::uint8_t>(high << 4 | low);
   }
   return true;
-}
-
-inline std::string_view strip_hex_prefix(std::string_view hex) {
-  const bool prefixed = hex.size() >= 2 && hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X');
-  return prefixed ? hex.substr(2) : hex;
 }
 
 // Equihash proof lengths fit the one- or three-byte form of Bitcoin CompactSize.

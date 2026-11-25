@@ -49,13 +49,12 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
         v.contains("pearlhash_base_target");
     uint8_t new_pearlhash_base_target[HASH_LEN]{};
     if (new_pearlhash_has_base_target) {
+      // Unlike the share target, the pool's base target may have an odd digit count.
       std::string base(mom::job_boundary::strip_hex_prefix(v.at("pearlhash_base_target")));
-      if (base.empty() || base.size() > HASH_LEN * 2)
-        throw std::string("Bad PearlHash base target hex");
       if (base.size() & 1)
         base.insert(0, 1, '0');
       if (!mom::job_boundary::parse_big_target(base, new_pearlhash_base_target))
-        throw std::string("Bad target hex");
+        throw std::string("Bad PearlHash base target hex");
     }
 
     replace_job(JobMode::mine, true, v, [&]() {

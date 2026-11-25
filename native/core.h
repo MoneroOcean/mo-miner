@@ -94,6 +94,20 @@ enum class JobMode {
   test,
 };
 
+// "<context>: <detail>" for the exception being handled (call only from a catch block). Commands
+// throw std::string; SYCL, allocation and system failures derive from std::exception.
+inline std::string describe_current_exception(const char* const context) {
+  try {
+    throw;
+  } catch (const std::string& error) {
+    return std::string(context) + ": " + error;
+  } catch (const std::exception& error) {
+    return std::string(context) + ": " + error.what();
+  } catch (...) {
+    return context;
+  }
+}
+
 struct RandomXVmDeleter {
   void operator()(randomx_vm* const vm) const noexcept {
     if (vm) {
@@ -200,7 +214,7 @@ class Core: public AsyncWorker {
   }
 
   static std::string bin2hex(const uint8_t* data, size_t size);
-  void send_msg(const std::string key, const MessageValues& values);
+  void send_msg(const std::string& key, const MessageValues& values);
   void send_msg(
     const std::string& topic, const std::string& key = std::string(),
     const std::string& value = std::string()

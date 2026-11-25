@@ -44,9 +44,9 @@ function clearTimer(value) {
   if (Number.isSafeInteger(id) && id > 0 && id <= 0xffffffff) {globalThis.__momHandleClose(id);}
 }
 
-// The remaining signal/stream/child-process APIs stay gated until implemented and tested.
 Object.defineProperty(globalThis, "process", {value: nativeProcess(globalThis.__momProcessInfo)});
 globalThis.__momNativeCore = core;
+// There is no cluster IPC here (cluster.js): workers always use the helper's subprocess route.
 process.env["MOM_USE_SUBPROCESS_WORKERS"] = "1";
 // MoM logs strings (including empty lines), not inspect() graphs or printf-style formats.
 const log = (/** @type {{write(value: string): unknown}} */ stream, /** @type {unknown[]} */ values) => {

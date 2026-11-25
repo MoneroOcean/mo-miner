@@ -6963,7 +6963,7 @@ int main(int argc, char** argv) {
         assert.ok(first >= 0 && last > first, start);
         return source.slice(first, last);
       };
-      const catchStart = execution.indexOf("      } catch (const std::string& err) {",
+      const catchStart = execution.indexOf("      } catch (...) {",
         execution.indexOf("switch (m_dev)"));
       const catchEnd = execution.indexOf("      if (loop_stats)", catchStart);
       const callerStart = octopus.indexOf("int octopus(unsigned,");
@@ -6984,6 +6984,8 @@ int main(int argc, char** argv) {
         fs.writeFileSync(path.join(fixture, "caller.inc"), octopus.slice(callerStart));
         fs.copyFileSync(path.join(root, "sycl/octopus/validation.h"), path.join(fixture, "validation.inc"));
         fs.writeFileSync(path.join(fixture, "compute-catch.inc"), execution.slice(catchStart, catchEnd));
+        fs.writeFileSync(path.join(fixture, "describe-exception.inc"), extractCppBlock(
+          fs.readFileSync(path.join(root, "native/core.h"), "utf8"), "inline std::string describe_current_exception("));
         fs.writeFileSync(path.join(fixture, "cleanup.inc"),
           extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
         const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
@@ -7217,7 +7219,7 @@ int main(int argc, char** argv) {
         assert.ok(first >= 0 && last > first, start);
         return source.slice(first, last);
       };
-      const catchStart = execution.indexOf("      } catch (const std::string& err) {",
+      const catchStart = execution.indexOf("      } catch (...) {",
         execution.indexOf("switch (m_dev)"));
       const catchEnd = execution.indexOf("      if (loop_stats)", catchStart);
       assert.ok(catchStart > 0 && catchEnd > catchStart);
@@ -7240,6 +7242,8 @@ int main(int argc, char** argv) {
         fs.writeFileSync(path.join(fixture, "dispatch.inc"),
           extract(execution, "          case DEV::C30_GPU:", "          case DEV::PROGPOW_GPU:"));
         fs.writeFileSync(path.join(fixture, "compute-catch.inc"), execution.slice(catchStart, catchEnd));
+        fs.writeFileSync(path.join(fixture, "describe-exception.inc"), extractCppBlock(
+          fs.readFileSync(path.join(root, "native/core.h"), "utf8"), "inline std::string describe_current_exception("));
         fs.writeFileSync(path.join(fixture, "accounting.inc"),
           extract(execution, "      uint64_t completed = m_batch;",
             "      if (is_nonce_at_32_gpu_dev(m_dev) ||"));
@@ -7469,7 +7473,7 @@ int main() {
       const completeSearch = search.slice(search.indexOf("struct C29SearchCompletionGuard {"));
       assert.ok(completeSearch.startsWith("struct C29SearchCompletionGuard {"));
       assert.equal(completeSearch.split("std::async(").length, 2);
-      const catchStart = execution.indexOf("      } catch (const std::string& err) {",
+      const catchStart = execution.indexOf("      } catch (...) {",
         execution.indexOf("switch (m_dev)"));
       const catchEnd = execution.indexOf("      if (loop_stats)", catchStart);
       assert.ok(catchStart > 0 && catchEnd > catchStart);
@@ -7502,6 +7506,8 @@ int main() {
           .replace(/\n\s*if \(loop_stats\) \{\s*ls\.record_c29\(m_input_len, dev_sols\);\s*\}/, "");
         fs.writeFileSync(path.join(fixture, "dispatch.inc"), dispatch);
         fs.writeFileSync(path.join(fixture, "compute-catch.inc"), execution.slice(catchStart, catchEnd));
+        fs.writeFileSync(path.join(fixture, "describe-exception.inc"), extractCppBlock(
+          fs.readFileSync(path.join(root, "native/core.h"), "utf8"), "inline std::string describe_current_exception("));
         fs.writeFileSync(path.join(fixture, "accounting.inc"),
           extract(execution, "      uint64_t completed = m_batch;",
             "      if (is_nonce_at_32_gpu_dev(m_dev) ||"));

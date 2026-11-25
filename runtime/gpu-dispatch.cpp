@@ -65,10 +65,8 @@ void forgetImages(ImageProfileSlot profile, void* descriptor) {
   if (image.registered) __sycl_unregister_lib(descriptor);
   image = {};
 }
-void activateImages(const char* key) {
-  const auto profile = std::strcmp(key, "dpcpp") == 0 ? dpcppSlot :
-      std::strcmp(key, "oneapi") == 0 ? oneapiSlot :
-      std::strcmp(key, "dpcpp-opencl") == 0 ? dpcppOpenclSlot : noImageSlot;
+// select() maps the key to its image slot; ACPP graphs have no static images (noImageSlot).
+void activateImages(ImageProfileSlot profile, const char* key) {
   if (profile == noImageSlot) return;
   auto& image = staticImages[profile];
   if (!image.descriptor || image.failed)
@@ -130,14 +128,17 @@ const GpuTable* select() {
   const char* key = std::getenv("MOM_SYCL_COMPILER");
   if (!key || !*key) key = MOM_NATIVE_GPU_DEFAULT;
   const GpuTable* table = nullptr;
+#if defined(MOM_NATIVE_GPU_DPCPP) || defined(MOM_NATIVE_GPU_ONEAPI) || defined(MOM_NATIVE_GPU_DPCPP_OPENCL)
+  ImageProfileSlot images = noImageSlot;
+#endif
 #ifdef MOM_NATIVE_GPU_DPCPP
-  if (std::strcmp(key, "dpcpp") == 0) table = mom_native_gpu_dpcpp();
+  if (std::strcmp(key, "dpcpp") == 0) {table = mom_native_gpu_dpcpp(); images = dpcppSlot;}
 #endif
 #ifdef MOM_NATIVE_GPU_ONEAPI
-  if (std::strcmp(key, "oneapi") == 0) table = mom_native_gpu_oneapi();
+  if (std::strcmp(key, "oneapi") == 0) {table = mom_native_gpu_oneapi(); images = oneapiSlot;}
 #endif
 #ifdef MOM_NATIVE_GPU_DPCPP_OPENCL
-  if (std::strcmp(key, "dpcpp-opencl") == 0) table = mom_native_gpu_dpcpp_opencl();
+  if (std::strcmp(key, "dpcpp-opencl") == 0) {table = mom_native_gpu_dpcpp_opencl(); images = dpcppOpenclSlot;}
 #endif
 #ifdef MOM_NATIVE_GPU_ACPP_CUDA
   if (std::strcmp(key, "acpp-cuda") == 0) table = mom_native_gpu_acpp_cuda();
@@ -157,7 +158,7 @@ const GpuTable* select() {
 #if defined(MOM_NATIVE_GPU_DPCPP) || defined(MOM_NATIVE_GPU_ONEAPI) || defined(MOM_NATIVE_GPU_DPCPP_OPENCL)
   // Selection's function-static initialization serializes first entry. Failed selection is
   // still retryable: no profile's images are registered before its factory validates.
-  activateImages(key);
+  activateImages(images, key);
 #endif
   active.store(table, std::memory_order_release);
   return table;

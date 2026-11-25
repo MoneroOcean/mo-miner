@@ -41,12 +41,8 @@ struct FileDescriptor {
 // JS exposes uint32 modes. Pass only actual permission bits to the signed OS interface, never
 // overflow a conversion (or rely on a Node-version-specific native assertion for extreme values).
 int fileMode(Runtime &rt, const Value &value) {
-  if (!value.isNumber()) {throw JSError(rt, "Invalid file mode");}
-  const double mode = value.asNumber();
-  if (!std::isfinite(mode) || mode < 0 || mode > UINT32_MAX || std::floor(mode) != mode) {
-    throw JSError(rt, "Invalid file mode");
-  }
-  return static_cast<int>(static_cast<uint32_t>(mode) & 07777U);
+  if (!value.isNumber() || !integerInRange(value.getNumber(), 0, UINT32_MAX)) {throw JSError(rt, "Invalid file mode");}
+  return static_cast<int>(static_cast<uint32_t>(value.getNumber()) & 07777U);
 }
 
 std::string filename(Runtime &rt, const Value &value) {
@@ -63,20 +59,9 @@ int nativeIsIP(const std::string &host) {
   if (host.empty() || host.size() > kMaxIpLiteralLength || host.find('\0') != std::string::npos) {return 0;}
   char address[16]{};
   if (uv_inet_pton(AF_INET, host.c_str(), address) == 0) {return 4;}
-
-  std::string literal = host;
-  const auto zone = literal.find('%');
-  if (zone != std::string::npos) {
-    if (zone + 1 == literal.size()) {return 0;}
-    for (size_t i = zone + 1; i < literal.size(); ++i) {
-      const auto c = static_cast<unsigned char>(literal[i]);
-      const bool alpha = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
-      const bool digit = c >= '0' && c <= '9';
-      if (!alpha && !digit && c != '-' && c != '.' && c != ':') {return 0;}
-    }
-    literal.resize(zone);
-  }
-  return uv_inet_pton(AF_INET6, literal.c_str(), address) == 0 ? 6 : 0;
+  const auto zone = host.find('%');
+  if (zone != std::string::npos && !validIpv6Scope(host, zone)) {return 0;}
+  return uv_inet_pton(AF_INET6, host.substr(0, zone).c_str(), address) == 0 ? 6 : 0;
 }
 
 // A host function can outlive a property lookup's receiver. Keep hash state alive in method
@@ -94,14 +79,17 @@ public:
     if (name != "update" && name != "digest") {return Value::undefined();}
     return Function::createFromHostFunction(rt, property, name == "update" ? 1 : 0,
         [state = shared_from_this(), name](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
-      try {
+      const auto requireActive = [&] {
         if (!state->context_) {throw JSError(rt, codedError(rt, "ERR_CRYPTO_HASH_FINALIZED", "Digest already called"));}
+      };
+      return nativeCall(rt, [&]() -> Value {
+        requireActive();
         ERR_clear_error();
         if (name == "update") {
           if (!count) {throw JSError(rt, "Missing hash input");}
           const auto bytes = byteView(rt, args[0]);
           // A forged view's getters may reenter digest(); never pass a finalized context to EVP.
-          if (!state->context_) {throw JSError(rt, codedError(rt, "ERR_CRYPTO_HASH_FINALIZED", "Digest already called"));}
+          requireActive();
           if (EVP_DigestUpdate(state->context_.get(), bytes.data(rt), bytes.size) != 1) {
             throw std::runtime_error("SHA-256 update failed");
           }
@@ -114,8 +102,7 @@ public:
         if (status != 1 || size != 32) {throw std::runtime_error("SHA-256 digest failed");}
         bytes.resize(size);
         return byteBuffer(rt, std::move(bytes));
-      } catch (const JSError &) {throw;}
-      catch (const std::exception &error) {throw JSError(rt, error.what());}
+      });
     });
   }
 };
@@ -151,9 +138,7 @@ void installServices(Runtime &rt) {
   });
   binding(rt, "__momRandomBytes", 1, [](Runtime &rt, const Value *args) -> Value {
     const double size = args[0].asNumber();
-    if (!std::isfinite(size) || size < 0 || size > INT_MAX || std::floor(size) != size) {
-      throw JSError(rt, "Invalid random byte count");
-    }
+    if (!integerInRange(size, 0, INT_MAX)) {throw JSError(rt, "Invalid random byte count");}
     std::vector<uint8_t> bytes(static_cast<size_t>(size));
     ERR_clear_error();
     if (size && RAND_bytes(bytes.data(), static_cast<int>(size)) != 1) {
@@ -285,7 +270,7 @@ void installServices(Runtime &rt) {
   binding(rt, "__momWrite", 2, [](Runtime &rt, const Value *args) -> Value {
     const auto fd = args[0].asNumber();
     const auto bytes = byteView(rt, args[1]);
-    if (!std::isfinite(fd) || fd < 0 || fd > INT_MAX || std::floor(fd) != fd || bytes.size > UINT_MAX) {
+    if (!integerInRange(fd, 0, INT_MAX) || bytes.size > UINT_MAX) {
       throw JSError(rt, "Invalid synchronous write");
     }
     auto buffer = uv_buf_init(reinterpret_cast<char *>(const_cast<uint8_t *>(bytes.data(rt))), static_cast<unsigned>(bytes.size));

@@ -158,7 +158,7 @@ void Core::Execute() try {
     debug_async_worker("runtime init start");
 
     argon2_select_impl();
-    debug_async_worker((std::string("argon2 impl ") + argon2_get_impl_name()).c_str());
+    debug_async_worker("argon2 impl ", argon2_get_impl_name());
 
 #if !defined(_WIN32)
     const xmrig::ICpuInfo* const cpu = xmrig::Cpu::info();
@@ -207,20 +207,16 @@ void Core::Execute() try {
     const std::deque<Message> messages = fromNode.drain();
     for (const auto& message : messages) {
       try {
-        debug_async_worker(("message " + message.name).c_str());
+        debug_async_worker("message ", message.name);
         if (message.name == "job" || message.name == "bench" || message.name == "test")
           init_runtime();
         if (loop_stats && (message.name == "job" || message.name == "bench")) {
           ++ls.jobs;
         }
         if (!process_message(message.name, message.values)) return;
-      } catch (const std::string& err) {
-        send_error(std::string("Message processing exception: ") + err);
-      } catch (const std::exception& e) {
-        // sycl::exception, std::system_error and std::bad_alloc must not terminate the worker.
-        send_error(std::string("Message processing exception: ") + e.what());
       } catch (...) {
-        send_error("Message processing exception");
+        // A failed command (including sycl::exception or std::bad_alloc) must not end the worker.
+        send_error(describe_current_exception("Message processing exception"));
       }
     }
     if (loop_stats && !messages.empty()) {
@@ -366,17 +362,8 @@ void Core::Execute() try {
             // RandomX work runs only in the per-job thread pool.
             break;
         }
-      } catch (const std::string& err) {
-        send_error(std::string("Compute function exception: ") + err);
-        clear_fn();
-        continue;
-      } catch (const std::exception& e) {
-        // Surface sycl::exception (and any std::exception) detail instead of a bare message.
-        send_error(std::string("Compute function exception: ") + e.what());
-        clear_fn();
-        continue;
       } catch (...) {
-        send_error("Compute function exception");
+        send_error(describe_current_exception("Compute function exception"));
         clear_fn();
         continue;
       }
@@ -388,50 +375,38 @@ void Core::Execute() try {
 
       if (is_test) {
         m_input_len = 0; // do not produce any more test jobs for async GPU code like in c29
-        if (is_ethash_dag_gpu_dev(m_dev)) {
-          if (dev_sols > 0) {
-            std::string result = bin2hex(m_output, HASH_LEN);
-            if (m_algo_str != "octopus") {
-              result += " ";
-              result += bin2hex(static_cast<uint8_t*>(m_spads), HASH_LEN);
-            }
+        // Single-blob GPU tests run once: report the result (or its absence) and stop the function.
+        const auto finish_single_test = [&](const bool found, const std::string& result) {
+          if (found)
             send_msg("test", "result", result);
-          } else {
+          else
             send_error("No " + m_algo_str + " test result");
-          }
           clear_fn();
+        };
+        if (is_ethash_dag_gpu_dev(m_dev)) {
+          // Octopus returns only the final hash; the other DAG routes append their mix hash.
+          std::string result = bin2hex(m_output, HASH_LEN);
+          if (m_algo_str != "octopus")
+            result += " " + bin2hex(static_cast<uint8_t*>(m_spads), HASH_LEN);
+          finish_single_test(dev_sols > 0, result);
           continue;
         }
         // MISC GPU test APIs return one hash; intensity controls tested lanes, not output hashes.
         if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU ||
             m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::VERTHASH_GPU ||
             m_dev == DEV::MISC_GPU) {
-          if (dev_sols > 0) {
-            send_msg("test", "result", bin2hex(m_output, HASH_LEN));
-          } else {
-            send_error("No " + m_algo_str + " test result");
-          }
-          clear_fn();
+          finish_single_test(dev_sols > 0, bin2hex(m_output, HASH_LEN));
           continue;
         }
         if (m_dev == DEV::PEARLHASH_GPU) {
-          if (dev_sols == 1) {
-            send_msg("test", "result", "ok");
-          } else {
-            send_error("No pearlhash test result");
-          }
-          clear_fn();
+          finish_single_test(dev_sols == 1, "ok");
           continue;
         }
         if (is_equihash_gpu_dev(m_dev)) {
           // The test path dumped generation rows (or solutions) into m_spads; emit the whole buffer
           // so the test can compare it with the reference oracle.
-          if (dev_sols == 1) {
-            send_msg("test", "result", bin2hex(static_cast<const uint8_t*>(m_spads), SMALL_BLOB_SOL_LEN));
-          } else {
-            send_error("No " + m_algo_str + " test result");
-          }
-          clear_fn();
+          finish_single_test(dev_sols == 1,
+                             bin2hex(static_cast<const uint8_t*>(m_spads), SMALL_BLOB_SOL_LEN));
           continue;
         }
         if (m_dev == DEV::C29_GPU && dev_sols == 0) {

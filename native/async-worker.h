@@ -12,16 +12,24 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 
 using MessageValues = std::map<std::string, std::string>;
 
-static void debug_async_worker(const char* message) {
-  if (!std::getenv("MOM_DEBUG_STARTUP")) {
+// MOM_DEBUG_STARTUP trace line "<message><detail>" for diagnosing worker startup and message
+// hangs. The variable is read once, and callers pass dynamic text as `detail` so that no string
+// is built when tracing is off (send_msg runs on every hashrate and share message).
+static void debug_async_worker(const std::string_view message,
+                               const std::string_view detail = {}) {
+  static const bool enabled = std::getenv("MOM_DEBUG_STARTUP") != nullptr;
+  if (!enabled) {
     return;
   }
-  std::fprintf(stderr, "MOM_DEBUG_STARTUP %s\n", message);
+  std::fprintf(stderr, "MOM_DEBUG_STARTUP %.*s%.*s\n",
+               static_cast<int>(message.size()), message.data(),
+               static_cast<int>(detail.size()), detail.data());
   std::fflush(stderr);
 }
 
@@ -39,13 +47,12 @@ template <typename T> class MessageQueue {
 
 public:
 
+  // The two trace lines bracket the only blocking step, the queue lock.
   void write(T data) {
     debug_async_worker("MessageQueue write locking");
     {
       const std::lock_guard lock(m_mutex);
-      debug_async_worker("MessageQueue write locked");
       m_buff.emplace_back(std::move(data));
-      debug_async_worker("MessageQueue write stored");
     }
     debug_async_worker("MessageQueue write done");
   }

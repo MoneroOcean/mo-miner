@@ -1,12 +1,11 @@
 "use strict";
 
-const {EventEmitter} = require("node:events");
-const {StringDecoder} = require("node:string_decoder");
 const bytes = require("./bytes");
+const {ByteStream} = require("./byte-stream");
 
 // One-direction process pipes use the loop's existing owned stream/write machinery. Stdin is
 // opened lazily: an unused input stream must neither steal fd 0 nor keep the controller alive.
-class Pipe extends EventEmitter {
+class Pipe extends ByteStream {
   /** @param {boolean} readable @param {number | null} [id] */
   constructor(readable, id = null) {
     super();
@@ -14,11 +13,6 @@ class Pipe extends EventEmitter {
     this.readable = readable;
     this.writable = !readable;
     this.destroyed = false;
-    this.writableLength = 0;
-    /** @type {StringDecoder | null} */
-    this.decoder = null;
-    /** @type {Array<{size: number, callback?: (error?: Error) => void}>} */
-    this.writes = [];
     this.on("newListener", (name) => {
       if (name === "data") {this.resume();}
     });
@@ -30,20 +24,12 @@ class Pipe extends EventEmitter {
   /** @param {string} event @param {unknown} [value] */
   receive(event, value) {
     if (event === "data") {
-      const buffer = Buffer.from(/** @type {ArrayBuffer} */ (value));
-      const decoded = this.decoder ? this.decoder.write(buffer) : buffer;
-      if (decoded.length) {this.emit("data", decoded);}
+      this.receiveData(value);
     } else if (event === "write") {
-      const entry = this.writes.shift();
-      const blocked = this.writableLength >= 65536;
-      this.writableLength -= entry?.size || 0;
-      entry?.callback?.();
-      if (blocked && this.writableLength < 65536) {this.emit("drain");}
+      this.receiveWrite();
     } else if (event === "end") {
       this.readable = false;
-      const tail = this.decoder?.end();
-      if (tail) {this.emit("data", tail);}
-      this.emit("end");
+      this.receiveEnd();
     } else if (event === "error") {
       this.emit("error", value);
     } else if (event === "finish") {
@@ -51,7 +37,7 @@ class Pipe extends EventEmitter {
     } else if (event === "close") {
       this.destroyed = true; this.writable = false; this.readable = false;
       const error = new Error("Pipe closed before write completed");
-      const pending = this.writes; this.writes = []; this.writableLength = 0;
+      const pending = this.writes.splice(0); this.writableLength = 0;
       for (const entry of pending) {entry.callback?.(error);}
       this.emit("close");
     }
@@ -66,9 +52,8 @@ class Pipe extends EventEmitter {
       return false;
     }
     const value = bytes(data, typeof encoding === "string" ? encoding : "utf8");
-    if (value.length > 32 * 1024 * 1024 - this.writableLength) {throw new Error("Pipe write queue exceeded 32 MiB");}
+    this.reserve(value.length, "Pipe");
     this.writes.push({size: value.length, ...(callback ? {callback} : {})});
-    this.writableLength += value.length;
     try {return globalThis.__momTCPWrite(this.ensure(), value);} catch (failure) {
       this.writes.pop(); this.writableLength -= value.length;
       const error = failure instanceof Error ? failure : new Error(String(failure));
@@ -84,8 +69,6 @@ class Pipe extends EventEmitter {
     if (!this.destroyed) {globalThis.__momTCPEnd(this.ensure());}
     return this;
   }
-  /** @param {BufferEncoding} encoding */
-  setEncoding(encoding) {this.decoder = new StringDecoder(encoding); return this;}
   resume() {
     if (this.readable && !this.destroyed) {globalThis.__momPipeRead(this.ensure(), true);}
     return this;

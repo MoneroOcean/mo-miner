@@ -31,6 +31,7 @@ test.describe("Native service compilation portability", {skip: process.platform 
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-service-ip-"));
     t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
     const source = fs.readFileSync(path.join(__dirname, "../runtime/services.cpp"), "utf8");
+    const tls = fs.readFileSync(path.join(__dirname, "../runtime/tls.cpp"), "utf8");
     const cases = new Map([
       ["", 0], ["0.0.0.0", 4], ["127.0.0.1", 4], ["255.255.255.255", 4],
       ["::", 6], ["::1", 6], ["2001:db8::1", 6],
@@ -46,6 +47,7 @@ test.describe("Native service compilation portability", {skip: process.platform 
     const file = path.join(directory, "ip.cpp"), executable = path.join(directory, "ip");
     fs.writeFileSync(file, [
       "#include <cassert>", "#include <string>", "#include <uv.h>",
+      extractCppBlock(tls, "bool validIpv6Scope("),
       extractCppBlock(source, "int nativeIsIP("),
       "int main() {", assertions,
       "std::string embedded = \"2001:db8::1\"; embedded.push_back('\\0'); embedded += \"tail\";",

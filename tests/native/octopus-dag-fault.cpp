@@ -174,6 +174,7 @@ static int call(uint8_t* output, uint64_t* nonce) {
   return octopus(0, 0, input, sizeof(input), output, nullptr, nonce, target, nullptr,
                  8, false, true, "fixture");
 }
+#include "describe-exception.inc"
 static void send_error(const std::string& error) {
   ++counts.errors;
   last_error = error;

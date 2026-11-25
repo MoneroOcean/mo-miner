@@ -95,8 +95,6 @@ int TlsSession::verify(int valid, X509_STORE_CTX *context) {
   return valid || !session->rejectUnauthorized_;
 }
 
-namespace {
-// Match Node's IPv6 zone syntax; malformed scopes must not turn a DNS/IPv4 name into an IP identity.
 bool validIpv6Scope(const std::string &hostname, size_t zone) {
   if (!zone || zone + 1 >= hostname.size() || hostname.find('%', zone + 1) != std::string::npos) {return false;}
   for (size_t index = zone + 1; index < hostname.size(); ++index) {
@@ -108,6 +106,7 @@ bool validIpv6Scope(const std::string &hostname, size_t zone) {
   return true;
 }
 
+namespace {
 // Certificate IP SANs contain address bytes, not the routing scope retained by the socket layer.
 std::unique_ptr<ASN1_OCTET_STRING, decltype(&ASN1_OCTET_STRING_free)> verificationIp(
     const std::string &hostname) {

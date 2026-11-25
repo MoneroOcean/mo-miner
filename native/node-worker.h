@@ -266,9 +266,7 @@ class AsyncWorkerWrapper {
       AsyncWorker* worker = nullptr;
       check(env, napi_unwrap(env, self, reinterpret_cast<void**>(&worker)));
 
-      debug_async_worker("sendToCpp reading message name");
       std::string message_name = to_string(env, args[0]);
-      debug_async_worker("sendToCpp read message name");
 
       MessageValues values;
       if (argc > 1) {
@@ -279,7 +277,6 @@ class AsyncWorkerWrapper {
             napi_throw_type_error(env, nullptr, "sendToCpp values must be an object");
             return nullptr;
           }
-          debug_async_worker("sendToCpp reading values");
           napi_value names = nullptr;
           uint32_t length = 0;
           check(env, napi_get_property_names(env, args[1], &names));
@@ -294,11 +291,9 @@ class AsyncWorkerWrapper {
         }
       }
 
-      debug_async_worker("sendToCpp constructing message");
-      Message message(std::move(message_name), std::move(values));
-      debug_async_worker("sendToCpp queueing message");
-      worker->post(std::move(message));
-      debug_async_worker("sendToCpp queued message");
+      // post() can block on the first message (it starts the compute thread) and on the queue lock.
+      debug_async_worker("sendToCpp queueing ", message_name);
+      worker->post(Message(std::move(message_name), std::move(values)));
       debug_async_worker("sendToCpp done");
     } catch (...) {
       NodeWorkerEvents::report_current_exception(env);
