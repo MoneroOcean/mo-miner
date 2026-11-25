@@ -42,21 +42,21 @@ the GPUs on adjacent rows; the last column names the comparison source.
 
 | Algo / coin / pool      | GPU     | Linux               | Windows             | Reference / evidence           |
 | ----------------------- | ------- | ------------------- | ------------------- | ------------------------------ |
-| `c29` / TARI / MO       | B580    | 6.44 g/s (246%)     | 6.33 g/s (248%)     | BZMiner                        |
-|                         | A770    | 4.13 g/s (56%*)     | -                   | best peer*                     |
+| `c29` / TARI / MO       | B580    | 6.37 g/s (240%)     | 6.33 g/s (248%)     | BZMiner                        |
+|                         | A770    | 4.63 g/s (63%*)     | -                   | best peer*                     |
 |                         | 5060 Ti | 9.15 g/s (119%)     | 9.07 g/s (146%)     | BZMiner                        |
-|                         | 9060 XT | 7.52 g/s (114%)     | 7.39 g/s (112%)     | BZMiner                        |
-| `c30` / CTXC            | B580    | 1.41 g/s (124%*)    | 1.49 g/s (135%*)    | MoM 12-GiB-limited peer*       |
+|                         | 9060 XT | 7.52 g/s (107%)     | 7.39 g/s (112%)     | BZMiner                        |
+| `c30` / CTXC            | B580    | 1.54 g/s (135%*)    | 1.49 g/s (135%*)    | MoM 12-GiB-limited peer*       |
 |                         | A770    | 1.41 g/s (124%*)    | -                   | MoM 12-GiB-limited peer*       |
 |                         | 5060 Ti | 2.89 g/s (89%*)     | 2.83 g/s (87%*)     | Hashrate.no/cross-GPU*         |
-|                         | 9060 XT | 1.64 g/s (103%*)    | 1.35 g/s (84%*)     | Hashrate.no/cross-GPU*         |
+|                         | 9060 XT | 1.59 g/s (100%*)    | 1.35 g/s (84%*)     | Hashrate.no/cross-GPU*         |
 | `kawpow` / RVN / MO     | B580    | 20.97 MH/s (110%)   | 20.93 MH/s (110%)   | SRBMiner                       |
 |                         | A770    | 13.96 MH/s (148%*)  | -                   | WildRig*                       |
 |                         | 5060 Ti | 21.98 MH/s (85%)    | 21.75 MH/s (82%)    | Rigel                          |
 |                         | 9060 XT | 19.45 MH/s (99%)    | 16.74 MH/s (84%)    | SRBMiner                       |
 | `evrprogpow` / EVR      | B580    | 21.03 MH/s (110%)   | 21.02 MH/s (110%)   | SRBMiner                       |
 |                         | A770    | 21.67 MH/s (122%)   | -                   | WildRig                        |
-|                         | 5060 Ti | 21.08 MH/s (80%)    | 21.12 MH/s (81%)    | SRBMiner                       |
+|                         | 5060 Ti | 21.32 MH/s (81%)    | 21.12 MH/s (81%)    | SRBMiner                       |
 |                         | 9060 XT | 19.49 MH/s (99%)    | 17.35 MH/s (88%)    | SRBMiner                       |
 | `firopow` / FIRO        | B580    | 20.96 MH/s (112%)   | 20.97 MH/s (112%)   | SRBMiner                       |
 |                         | A770    | 15.33 MH/s (165%)   | -                   | WildRig                        |
@@ -66,45 +66,45 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | A770    | 17.79 MH/s (99%)    | -                   | WildRig                        |
 |                         | 5060 Ti | 25.09 MH/s (99%)    | 25.04 MH/s (94%)    | SRBMiner                       |
 |                         | 9060 XT | 19.56 MH/s (100%)   | 17.29 MH/s (86%)    | SRBMiner                       |
-| `fishhash` / IRON       | B580    | 12.60 MH/s (98%)    | 13.07 MH/s (102%)   | SRBMiner                       |
+| `fishhash` / IRON       | B580    | 12.76 MH/s (99%)    | 13.07 MH/s (102%)   | SRBMiner                       |
 |                         | A770    | 7.79 MH/s (49%*)    | -                   | SRBMiner*                      |
 |                         | 5060 Ti | 31.20 MH/s (88%)    | 31.32 MH/s (91%)    | miniZ                          |
 |                         | 9060 XT | 13.07 MH/s (100%)   | 11.57 MH/s (100%)   | lolMiner                       |
 | `karlsenhashv2` / KLS   | B580    | 12.75 MH/s (102%)   | 12.44 MH/s (100%)   | SRBMiner                       |
-|                         | A770    | 14.69 MH/s (97%)    | -                   | SRBMiner                       |
+|                         | A770    | 14.54 MH/s (96%)    | -                   | SRBMiner                       |
 |                         | 5060 Ti | 31.52 MH/s (89%)    | 32.98 MH/s (95%)    | miniZ                          |
 |                         | 9060 XT | 13.09 MH/s (100%)   | 11.58 MH/s (100%)   | SRBMiner                       |
-| `beamhash3` / BEAM      | B580    | 24.72 Sol/s (60%*)  | 23.78 Sol/s (58%*)  | best peer*                     |
-|                         | A770    | 24.16 Sol/s (105%*) | -                   | lolMiner*                      |
+| `beamhash3` / BEAM      | B580    | 23.02 Sol/s (56%*)  | 23.78 Sol/s (58%*)  | best peer*                     |
+|                         | A770    | 26.77 Sol/s (116%*) | -                   | lolMiner*                      |
 |                         | 5060 Ti | 32.42 Sol/s (78%)   | 32.99 Sol/s (80%)   | miniZ                          |
-|                         | 9060 XT | 22.05 Sol/s (113%)  | 21.81 Sol/s (110%)  | lolMiner                       |
+|                         | 9060 XT | 22.49 Sol/s (115%)  | 21.81 Sol/s (110%)  | lolMiner                       |
 | `zelhash` / CS          | B580    | 47.12 Sol/s (153%)  | 45.59 Sol/s (148%)  | lolMiner                       |
 |                         | A770    | 44.40 Sol/s (118%*) | -                   | lolMiner*                      |
-|                         | 5060 Ti | 63.68 Sol/s (83%)   | 61.70 Sol/s (81%)   | lolMiner                       |
+|                         | 5060 Ti | 67.86 Sol/s (88%)   | 66.09 Sol/s (87%)   | lolMiner                       |
 |                         | 9060 XT | 43.41 Sol/s (93%)   | 43.29 Sol/s (94%)   | lolMiner                       |
 | `equihash192_7` / ZCL   | B580    | 15.64 I/s (51%*)    | 15.93 I/s (52%*)    | best peer*                     |
-|                         | A770    | 17.16 I/s (55%*)    | -                   | best peer*                     |
-|                         | 5060 Ti | 26.85 I/s (87%)     | 24.70 I/s (80%)     | miniZ                          |
-|                         | 9060 XT | 20.00 I/s (99%)     | 19.31 I/s (96%)     | lolMiner                       |
-| `zhash` / BTG           | B580    | 60.77 Sol/s (56%*)  | 61.70 Sol/s (58%*)  | best peer*                     |
+|                         | A770    | 17.78 I/s (57%*)    | -                   | best peer*                     |
+|                         | 5060 Ti | 26.04 I/s (84%)     | 24.70 I/s (80%)     | miniZ                          |
+|                         | 9060 XT | 19.76 I/s (98%)     | 19.31 I/s (96%)     | lolMiner                       |
+| `zhash` / BTG           | B580    | 61.68 Sol/s (57%*)  | 61.70 Sol/s (58%*)  | best peer*                     |
 |                         | A770    | 57.10 Sol/s (86%*)  | -                   | lolMiner*                      |
-|                         | 5060 Ti | 87.63 Sol/s (81%)   | 86.32 Sol/s (80%)   | miniZ                          |
-|                         | 9060 XT | 74.92 Sol/s (90%)   | 71.16 Sol/s (86%)   | lolMiner                       |
+|                         | 5060 Ti | 86.44 Sol/s (80%)   | 86.32 Sol/s (80%)   | miniZ                          |
+|                         | 9060 XT | 72.81 Sol/s (87%)   | 71.16 Sol/s (86%)   | lolMiner                       |
 | `autolykos2` / ERG / MO | B580    | 39.02 MH/s (96%)    | 38.84 MH/s (102%)   | BZMiner                        |
 |                         | A770    | 27.09 MH/s (100%*)  | -                   | SRBMiner*                      |
 |                         | 5060 Ti | 104.30 MH/s (87%)   | 101.85 MH/s (85%)   | BZMiner                        |
-|                         | 9060 XT | 37.44 MH/s (100%)   | 31.44 MH/s (86%)    | lolMiner / BZMiner             |
-| `cn/gpu` / RYO / MO     | B580    | 2.94 KH/s (107%)    | 2.89 KH/s (105%)    | SRBMiner                       |
+|                         | 9060 XT | 37.44 MH/s (100%)   | 31.44 MH/s (82%)    | lolMiner / BZMiner             |
+| `cn/gpu` / RYO / MO     | B580    | 2.94 KH/s (107%)    | 2.96 KH/s (108%)    | SRBMiner                       |
 |                         | A770    | 2.41 KH/s (106%*)   | -                   | SRBMiner*                      |
-|                         | 5060 Ti | 3.39 KH/s (88%)     | 3.48 KH/s (90%)     | XMR-Stak                       |
-|                         | 9060 XT | 3.17 KH/s (118%)    | 2.81 KH/s (107%)    | SRBMiner / BZMiner             |
+|                         | 5060 Ti | 3.54 KH/s (92%)     | 3.61 KH/s (93%)     | XMR-Stak                       |
+|                         | 9060 XT | 3.21 KH/s (119%)    | 2.81 KH/s (96%)     | SRBMiner / BZMiner             |
 | `pearlhash` / PRL       | B580    | 88.45 TH/s (104%)   | 86.87 TH/s (102%)   | BZMiner                        |
 |                         | A770    | 88.56 TH/s (104%*)  | 89.00 TH/s (105%*)  | best peer*                     |
 |                         | 5060 Ti | 94.93 TH/s (106%)   | 94.95 TH/s (104%)   | BZMiner                        |
-|                         | 9060 XT | 72.41 TH/s (106%)   | 69.54 TH/s (102%)   | BZMiner                        |
-| `hoohash` / HTN         | B580    | 3.03 MH/s (174%*)   | 2.99 MH/s (180%*)   | best peer*                     |
+|                         | 9060 XT | 72.41 TH/s (101%)   | 69.54 TH/s (98%)    | BZMiner                        |
+| `hoohash` / HTN         | B580    | 3.08 MH/s (177%*)   | 2.99 MH/s (180%*)   | best peer*                     |
 |                         | A770    | Unsupported         | -                   | No FP64                        |
-|                         | 5060 Ti | 1.44 MH/s (83%)     | 1.42 MH/s (81%*)    | hoo_gpu (Linux)                |
+|                         | 5060 Ti | 1.39 MH/s (80%)     | 1.37 MH/s (78%*)    | hoo_gpu (Linux)                |
 |                         | 9060 XT | 1.71 MH/s (115%)    | 1.66 MH/s (111%*)   | hoo_gpu_amd (Linux)            |
 | `octopus` / CFX         | B580    | 31.27 MH/s (61%*)   | 31.24 MH/s (61%*)   | best peer*                     |
 |                         | A770    | 16.60 MH/s (32%*)   | -                   | best peer*                     |
@@ -115,11 +115,11 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | 5060 Ti | 5.88 KH/s (85%)     | 5.90 KH/s (85%)     | Rigel                          |
 |                         | 9060 XT | 2.62 KH/s (99%)     | 2.61 KH/s (110%)    | SRBMiner / BZMiner             |
 | `verthash` / VTC        | B580    | 299.83 KH/s (95%)   | 298.59 KH/s (94%)   | SRBMiner                       |
-|                         | A770    | 607.68 KH/s (62%)   | -                   | SRBMiner                       |
+|                         | A770    | 959.49 KH/s (98%)   | -                   | SRBMiner                       |
 |                         | 5060 Ti | 908.06 KH/s (98%)   | 873.84 KH/s (94%)   | TBMiner                        |
 |                         | 9060 XT | 293.48 KH/s (101%)  | 292.17 KH/s (100%)  | TBMiner                        |
 | `walahash` / WALA       | B580    | 623.38 MH/s (172%)  | 566.97 MH/s (140%)  | SRBMiner                       |
-|                         | A770    | 686.08 MH/s (106%*) | -                   | SRBMiner*                      |
+|                         | A770    | 748.48 MH/s (116%*) | -                   | SRBMiner*                      |
 |                         | 5060 Ti | 873.49 MH/s (85%)   | 892.07 MH/s (87%)   | SRBMiner                       |
 |                         | 9060 XT | 679.50 MH/s (87%)   | 667.68 MH/s (85%)   | SRBMiner                       |
 | `etchash` / ETC / MO    | B580    | 21.13 MH/s (100%)   | 21.13 MH/s (100%)   | lolMiner                       |
@@ -128,29 +128,34 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | 9060 XT | 19.60 MH/s (100%)   | 17.39 MH/s (89%)    | SRBMiner                       |
 | `nexapow` / NEXA        | B580    | 28.06 MH/s (37%*)   | 27.01 MH/s (35%*)   | best peer*                     |
 |                         | A770    | 25.04 MH/s (86%*)   | -                   | WildRig*                       |
-|                         | 5060 Ti | 76.10 MH/s (80%)    | 77.97 MH/s (82%)    | lolMiner                       |
+|                         | 5060 Ti | 77.24 MH/s (81%)    | 77.97 MH/s (82%)    | lolMiner                       |
 |                         | 9060 XT | 28.21 MH/s (87%)    | 26.79 MH/s (86%)    | WildRig                        |
 
 Rates are steady-state measurements from the listed local GPUs on Ubuntu 26.04 LTS and Windows 11
 24H2, one GPU per process. The RTX 5060 Ti and RX 9060 XT used 150 W and 145 W limits; the B580 was
 not power-limited. Actual speed varies with drivers, clocks, power limits, and pool workload.
 
+Linux rates are measured with release executables. The Intel Arc rates use Intel's current
+compute runtime (26.31 with the B580, 26.22 with the A770); with Ubuntu 26.04's packaged 26.05
+runtime the B580 runs `c29` at 5.35 instead of 6.39 g/s and `autolykos2` at 38.3 instead of
+39.8 MH/s.
+
 A770 measurements are Linux-only, with an observed 190 W cap, except the community-reported Windows
 PearlHash result below. Starred miner names use measured averages where available; thermal
 throttling, short benchmarks or different pool workloads make
 these approximate comparisons. When a matched A770 reference is unavailable, `best peer*` uses a
-measured reference from another GPU. Some A770 rates use earlier MoM builds:
-KarlsenHashV2, BeamHash3, Equihash192_7, Verthash, Walahash and Etchash. The A770 FishHash rate is
-the scalar kernel's: the faster cooperative kernel computes nothing on that card and is rejected.
+measured reference from another GPU. The A770 Etchash rate uses an earlier MoM build. The A770
+FishHash rate is the scalar kernel's: the faster cooperative kernel computes nothing on that card
+and is rejected.
 
 The A770 Windows PearlHash rate is reported by [@friskens in discussion #8](https://github.com/MoneroOcean/mo-miner/discussions/8),
 who also reports a 91.1 TH/s 15-minute average with undervolting. These are community results, not
 controlled same-system measurements; the percentage uses the B580 Linux reference.
 
-PearlHash references use BZMiner 100.52: Linux rates are 85.00 TH/s for B580, 89.52 TH/s for
-RTX 5060 Ti and 68.00 TH/s for RX 9060 XT; Windows rates are 85.04, 90.84 and 68.07 TH/s,
-respectively. Both miners use rank 128 and their own tuned matrix dimensions; rates count the
-same consensus matrix work. A770 uses the B580 Linux reference.
+PearlHash references use BZMiner 100.52 on B580 (85.00 TH/s Linux, 85.04 Windows) and RTX
+5060 Ti (89.52 TH/s Linux, 90.84 Windows). On RX 9060 XT, BZMiner 100.83 reaches 71.49 TH/s
+on Linux and 70.70 TH/s on Windows. Both miners use rank 128 and their own tuned matrix
+dimensions. Rates count the same consensus matrix work. A770 uses the B580 Linux reference.
 
 ## GPU memory requirements
 
