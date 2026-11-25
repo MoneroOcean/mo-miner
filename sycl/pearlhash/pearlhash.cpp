@@ -116,10 +116,11 @@ static bool selected(int m,int n,int k,int rank);
 } // namespace mom_pearlhash
 
 namespace mom_pearlhash {
-// Keep unqualified Windows/compiler profiles on their existing discovery shape.
+// Whether discovery may default to the compact sm120a shape. Windows qualifies like Linux: its
+// release embeds the compact image, and a build whose NVRTC is older than 13.3 declines here.
 // Optional dependency/property failures must not hide an otherwise usable GPU.
 bool compact_available(const sycl::device& device) noexcept {
-#if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__) && !defined(_WIN32) && \
+#if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__) && \
     (!defined(MOM_SYCL_ADAPTIVECPP) || defined(MOM_EMBEDDED_NVRTC_HEADERS) || \
      defined(MOM_EMBEDDED_CUDA_IMAGES))
   try {
