@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {validatePearlHashShape} = require("./gpu-tuning");
+const {isSafeIntegerAtLeast} = require("./helper/validate");
 
 /** @typedef {{m: number, n: number, k: number, rank: number}} PearlHashProfile */
 /** @typedef {{linux: string, win32: string}} CompilerArtifact */
@@ -192,6 +193,20 @@ function osName(platform) {
   return platform === "win32" ? "windows" : "linux";
 }
 
+/** @returns {CompilerConfig} */
+function policyConfig() {
+  return cached || (cached = parse());
+}
+
+// The platform's worker addon path for a compiler key from the artifact table.
+/** @param {string} key @param {unknown} platform */
+function artifactAddon(key, platform) {
+  const artifacts = policyConfig().artifacts;
+  const artifact = Object.hasOwn(artifacts, key) ? artifacts[key] : undefined;
+  if (!artifact) {throw new Error(`Unknown GPU compiler key: ${key}`);}
+  return artifact[platform === "win32" ? "win32" : "linux"];
+}
+
 // The algorithms output is user-facing and annotates each GPU job with the selected backend. Callers that
 // feed a reported job back to mom must remove that annotation first; otherwise mom would append it
 // again and eventually hand an invalid device string such as gpu1*[intensity=8]:auto[sycl]:auto[sycl] to a
@@ -230,11 +245,10 @@ function selection(algo, gpu, platform = process.platform, nvidiaSm = null) {
   if (typeof algo !== "string") {throw new Error("GPU algorithm must be a string");}
   if (typeof gpu !== "string") {throw new Error("GPU name must be a string");}
   if (typeof platform !== "string") {throw new Error("Platform must be a string");}
-  if (nvidiaSm !== null && (!Number.isSafeInteger(nvidiaSm) || nvidiaSm < 0)) {
+  if (nvidiaSm !== null && !isSafeIntegerAtLeast(nvidiaSm, 0)) {
     throw new Error("Invalid NVIDIA compute capability: expected a non-negative safe integer or null");
   }
-  const config = cached || (cached = parse());
-  const row = config.policies.find((p) => p.os === osName(platform) && p.gpu === gpu.toLowerCase());
+  const row = policyConfig().policies.find((p) => p.os === osName(platform) && p.gpu === gpu.toLowerCase());
   if (!row) {
     return null;
   }
@@ -244,10 +258,7 @@ function selection(algo, gpu, platform = process.platform, nvidiaSm = null) {
   if (legacyNvidia) {
     key = "acpp-cuda";
   }
-  const artifact = Object.hasOwn(config.artifacts, key) ? config.artifacts[key] : undefined;
-  if (!artifact) {
-    throw new Error(`Unknown GPU compiler key: ${key}`);
-  }
+  const addon = artifactAddon(key, platform);
   let backend = override?.backend ?? row.defaultBackend;
   if (legacyNvidia && (legacyNvidiaPortableAlgos.has(algo) ||
       (algo === "walahash" && nvidiaSm < 61))) {
@@ -257,8 +268,7 @@ function selection(algo, gpu, platform = process.platform, nvidiaSm = null) {
   if (legacyNvidia && algo === "pearlhash" && nvidiaSm >= 61) {
     backend = "sycl-native";
   }
-  return {key, addon: artifact[platform === "win32" ? "win32" : "linux"],
-    backend, pearlhashProfile: row.pearlhashProfile};
+  return {key, addon, backend, pearlhashProfile: row.pearlhashProfile};
 }
 
 // Parse a compute capability ("8.6", "86", or a number) into its SM number, or null.
@@ -512,15 +522,8 @@ function workerEnv(algo, env = process.env, platform = process.platform, request
     explicitBackend !== "auto" && genericBackend && backend !== selected.backend;
   if ((genericFallback || nvidiaNexaPortable) &&
       selected.key !== (nvidiaNexaPortable ? "acpp-cuda" : "dpcpp-opencl")) {
-    const config = cached || (cached = parse());
     const key = nvidiaNexaPortable ? "acpp-cuda" : "dpcpp-opencl";
-    const artifact = Object.hasOwn(config.artifacts, key) ? config.artifacts[key] : undefined;
-    if (!artifact) {throw new Error(`Unknown GPU compiler key: ${key}`);}
-    selected = {
-      ...selected,
-      key,
-      addon: artifact[platform === "win32" ? "win32" : "linux"],
-    };
+    selected = {...selected, key, addon: artifactAddon(key, platform)};
   }
   // Native workers use the same policy, but never search for an addon or set application-DLL paths.
   if (globalThis.__momNativeCore !== undefined) {
@@ -563,46 +566,62 @@ function workerEnv(algo, env = process.env, platform = process.platform, request
     result["MOM_JIT_CACHE_DIR"] = path.join(localBuild, ".jit-cache");
   }
   if (dpcppCompilerKeys.has(selected.key)) {
-    // Runtime caching defaults off; avoid recompiling large GPU kernels on every miner restart.
-    // Windows Intel workers isolate algorithms because sharing one persistent cache can make a
-    // WalaHash compile return incorrect XelisHashV3 code. Other workers preserve their cache path.
-    result["SYCL_CACHE_PERSISTENT"] = env["SYCL_CACHE_PERSISTENT"] ?? "1";
-    if (platform === "win32" && intelGpu) {
-      const cacheRoot = env["SYCL_CACHE_DIR"] || (fs.existsSync(localBuild)
-        ? path.join(localBuild, ".sycl-cache")
-        : env["LOCALAPPDATA"] && path.join(env["LOCALAPPDATA"], "mom-sycl-cache"));
-      if (cacheRoot) {
-        const algoKey = algo.replace(/[^A-Za-z0-9_.-]/g, "_");
-        result["SYCL_CACHE_DIR"] = path.join(cacheRoot, selected.key, algoKey);
-      }
-    } else if (platform === "win32" && fs.existsSync(localBuild) &&
-               env["SYCL_CACHE_DIR"] === undefined) {
-      result["SYCL_CACHE_DIR"] = path.join(localBuild, ".sycl-cache");
-    }
+    Object.assign(result, dpcppCacheEnv(algo, selected.key, intelGpu, platform, env, localBuild));
   }
-  // Each compiler ships beside its own SYCL runtime. Workers are separate processes, so putting
-  // only the selected directory first avoids same-SONAME collisions (notably DPC++ libsycl) while
-  // still allowing the policy to switch compilers when an algorithm changes.
-  // Windows portable SYCL/UR uses oneAPI, including its shared JIT library; Linux keeps DPC++.
-  const sharedRuntime = selected.key === "dpcpp-opencl"
+  return Object.assign(result, runtimeSearchPathEnv(libDir, selected.key, gpu, platform, env));
+}
+
+// Runtime caching defaults off; avoid recompiling large GPU kernels on every miner restart.
+// Windows Intel workers isolate algorithms because sharing one persistent cache can make a
+// WalaHash compile return incorrect XelisHashV3 code. Other workers preserve their cache path.
+/** @param {string} algo @param {string} key @param {boolean} intelGpu
+ * @param {NodeJS.Platform} platform @param {NodeJS.ProcessEnv} env @param {string} localBuild
+ * @returns {NodeJS.ProcessEnv} */
+function dpcppCacheEnv(algo, key, intelGpu, platform, env, localBuild) {
+  /** @type {NodeJS.ProcessEnv} */
+  const result = {SYCL_CACHE_PERSISTENT: env["SYCL_CACHE_PERSISTENT"] ?? "1"};
+  if (platform === "win32" && intelGpu) {
+    const cacheRoot = env["SYCL_CACHE_DIR"] || (fs.existsSync(localBuild)
+      ? path.join(localBuild, ".sycl-cache")
+      : env["LOCALAPPDATA"] && path.join(env["LOCALAPPDATA"], "mom-sycl-cache"));
+    if (cacheRoot) {
+      const algoKey = algo.replace(/[^A-Za-z0-9_.-]/g, "_");
+      result["SYCL_CACHE_DIR"] = path.join(cacheRoot, key, algoKey);
+    }
+  } else if (platform === "win32" && fs.existsSync(localBuild) &&
+             env["SYCL_CACHE_DIR"] === undefined) {
+    result["SYCL_CACHE_DIR"] = path.join(localBuild, ".sycl-cache");
+  }
+  return result;
+}
+
+// Each compiler ships beside its own SYCL runtime. Workers are separate processes, so putting
+// only the selected directory first avoids same-SONAME collisions (notably DPC++ libsycl) while
+// still allowing the policy to switch compilers when an algorithm changes.
+// Windows portable SYCL/UR uses oneAPI, including its shared JIT library; Linux keeps DPC++.
+/** @param {string} libDir @param {string} key @param {string} gpu @param {NodeJS.Platform} platform
+ * @param {NodeJS.ProcessEnv} env @returns {NodeJS.ProcessEnv} */
+function runtimeSearchPathEnv(libDir, key, gpu, platform, env) {
+  const sharedRuntime = key === "dpcpp-opencl"
     ? path.join(path.dirname(libDir), platform === "win32" ? "oneapi" : "dpcpp")
     : null;
   if (platform !== "win32") {
     const vendorRuntime = linuxVendorRuntimeDirectory(gpu, env);
-    result["LD_LIBRARY_PATH"] = [libDir, path.join(libDir, "hipSYCL"), sharedRuntime,
-      vendorRuntime, env["LD_LIBRARY_PATH"]]
-      .filter(Boolean).join(path.delimiter);
-  } else {
-    // Windows loads compiler runtimes and AdaptiveCpp backend-plugin dependencies through PATH.
-    // Keep the selected worker ahead of the shared package root so same-named oneAPI/DPC++/ACPP
-    // DLLs cannot cross-load when policy switches compiler for the next algorithm.
-    const pathKey = Object.hasOwn(env, "Path") ? "Path" :
-      Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
-    result[pathKey] = [libDir, path.join(libDir, "hipSYCL"), sharedRuntime,
-      env[pathKey]]
-      .filter(Boolean).join(path.delimiter);
+    return {
+      LD_LIBRARY_PATH: [libDir, path.join(libDir, "hipSYCL"), sharedRuntime,
+        vendorRuntime, env["LD_LIBRARY_PATH"]]
+        .filter(Boolean).join(path.delimiter),
+    };
   }
-  return result;
+  // Windows loads compiler runtimes and AdaptiveCpp backend-plugin dependencies through PATH.
+  // Keep the selected worker ahead of the shared package root so same-named oneAPI/DPC++/ACPP
+  // DLLs cannot cross-load when policy switches compiler for the next algorithm.
+  const pathKey = Object.hasOwn(env, "Path") ? "Path" :
+    Object.keys(env).find((name) => name.toLowerCase() === "path") || "PATH";
+  return {
+    [pathKey]: [libDir, path.join(libDir, "hipSYCL"), sharedRuntime, env[pathKey]]
+      .filter(Boolean).join(path.delimiter),
+  };
 }
 
 /** Kernel/device selection is shared by static workers and Engineering addons; it must not

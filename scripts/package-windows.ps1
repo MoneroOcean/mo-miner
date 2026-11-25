@@ -170,7 +170,7 @@ $releaseFiles = @(
 )
 Copy-Item $releaseFiles "$packageDir/"
 New-Item -ItemType Directory -Force "$packageDir/helper", "$packageDir/miner" | Out-Null
-Copy-Item 'helper/hash.js' "$packageDir/helper/"
+Copy-Item 'helper/hash.js', 'helper/validate.js' "$packageDir/helper/"
 Copy-Item 'miner/algorithms.js' "$packageDir/miner/"
 Copy-Item "$multiCompilerDir/*" $libsDir -Recurse -Force
 # Older cached build trees predate the AdaptiveCpp deployment-manifest copy. Repair them while

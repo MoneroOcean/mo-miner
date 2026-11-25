@@ -16,6 +16,14 @@ function errorMessage(value) {
   return isObject(value) && typeof value["message"] === "string" ? value["message"] : String(value);
 }
 
+// Keys that would reach Object.prototype when an external name is used as a record key.
+const reservedKeys = new Set(["__proto__", "constructor", "prototype"]);
+
+/** @param {string} key */
+function isReservedKey(key) {
+  return reservedKeys.has(key);
+}
+
 /** @param {unknown} value @returns {value is number} */
 function isPositiveNumber(value) {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -43,5 +51,6 @@ function parseUint64Decimal(value) {
 }
 
 module.exports = {
-  isObject, errorMessage, isPositiveNumber, isSafeIntegerAtLeast, parseUnsignedDecimal, parseUint64Decimal,
+  isObject, errorMessage, isReservedKey, isPositiveNumber, isSafeIntegerAtLeast, parseUnsignedDecimal,
+  parseUint64Decimal,
 };

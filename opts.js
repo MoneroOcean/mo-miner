@@ -7,9 +7,9 @@ const path = require("node:path");
 const h = require("./helper.js");
 const compilerPolicy = require("./compiler-policy.js");
 const gpuTuning = require("./gpu-tuning.js");
-const {normalizeAlgoName} = require("./miner/algorithms");
+const {normalizeAlgoName, POOL_PROTOCOL_BY_ALGO} = require("./miner/algorithms");
 const {normalizeFingerprint: normalizeTlsFingerprint} = require("./pool/tls");
-const {errorMessage} = require("./helper/validate");
+const {errorMessage, isReservedKey, isSafeIntegerAtLeast} = require("./helper/validate");
 
 const VERSION = require("./package.json").version;
 const momMultiAlgoProxyHost = "mom.moneroocean.stream";
@@ -34,7 +34,49 @@ function isMomMultiAlgoProxyUrl(url) {
 module.exports.agent_str = "mom v" + VERSION;
 const releaseCommandNames = new Set(["mom", "mom.exe"]);
 
-// A pool with every public field at its default plus fresh runtime state.
+// Pool fields with their defaults and help. Public keys are pool options (undefined marks a
+// required one); "_" keys are per-connection runtime state that set_internal_opts resets.
+const poolTemplate = {
+  url:                [ undefined, "pool DNS or IP address" ],
+  port:               [ undefined, "pool port" ],
+  is_tls:             [ false, "is pool port is encrypted using TLS/SSL" ],
+  protocol:           [ null, "pool protocol override (normally inferred from the algorithm)" ],
+  tls_verify:         [ false, "verify pool TLS/SSL certificate" ],
+  tls_fingerprint:    [ "", "pin TLS leaf certificate SHA-256 (64 hex digits, optional colons)" ],
+  is_nicehash:        [ false, "nicehash nonce mining mode support; nicehash hosts default to true" ],
+  is_keepalive:       [ true, "sends keepalive messages to the pool to avoid disconnect" ],
+  use_subscribe:      [ true, "use the algorithm's normal pool handshake; false forces XMR login with pushed jobs" +
+    " (the MoM proxy host defaults to false)" ],
+  worker:             [ "", "PearlHash/XELIS worker name (mining.authorize); overrides a login's .worker suffix" ],
+  pearlhash_target_format: [ "base", "PearlHash subscribe target: base (scaled) or jackpot (final)" ],
+  login:              [ undefined, "pool login data" ],
+  pass:               [ "", "pool password" ],
+  _socket:            [ null, "network socket object" ],
+  _keepalive:         [ null, "keepalive timer object" ],
+  _pending_subscribe: [ false, "subscribe request is waiting for response" ],
+  _pending_authorize: [ false, "authorize request is waiting for response" ],
+  _pending_submit_count: [ 0, "share submissions waiting for responses" ],
+  _logged_in:         [ false, "pool login completed" ],
+  _last_connect_time: [ 0, "last connect time for throttling purposes" ],
+  _last_job:          [ null, "last job object" ],
+  _job_state:         [ {}, "negotiated job controls" ],
+  _good_shares:       [ 0, "number of accepted shares" ],
+  _bad_shares:        [ 0, "number of invalid shares" ],
+};
+
+// Defaults that follow from the pool host; a field set explicitly in a pool option wins. JSON login
+// permits the multi-algo MoM proxy (subscribe needs a preset algorithm), and NiceHash assigns the
+// nonce's high byte, so its hosts need nicehash mode. Both the positional pool and --add.pool
+// (including config-file pools) use these.
+/** @param {unknown} url */
+function hostPoolDefaults(url) {
+  return {
+    is_nicehash: typeof url === "string" && url.toLowerCase().includes("nicehash"),
+    use_subscribe: !isMomMultiAlgoProxyUrl(url),
+  };
+}
+
+// A pool with every field at its template default, fresh runtime state, and the host defaults.
 /**
  * @param {string} url
  * @param {number} port
@@ -44,39 +86,23 @@ const releaseCommandNames = new Set(["mom", "mom.exe"]);
  * @returns {PoolConfig}
  */
 module.exports.pool_create = function(url, port, is_tls, login, pass) {
-  return {
-    url, port, is_tls, login, pass,
-    protocol:          null,
-    tls_verify:        false,
-    tls_fingerprint:   "",
-    is_nicehash:       url.includes("nicehash"),
-    is_keepalive:      true,
-    // JSON login permits the multi-algo MoM proxy; subscribe needs a preset algorithm.
-    use_subscribe:     !isMomMultiAlgoProxyUrl(url),
-    worker:            "",
-    pearlhash_target_format: "base",
-    socket:            null,
-    keepalive:         null,
-    pending_subscribe: false,
-    pending_authorize: false,
-    pending_submit_count: 0,
-    logged_in:         false,
-    last_connect_time: 0,
-    last_job:          null,
-    job_state:         {},
-    good_shares:       0,
-    bad_shares:        0,
-  };
+  /** @type {UnknownRecord} */
+  const pool = {};
+  for (const [key, definition] of Object.entries(poolTemplate)) {
+    pool[key.replace(/^_/, "")] = cloneDefault(definition[0]);
+  }
+  Object.assign(pool, {url, port, is_tls, login, pass}, hostPoolDefaults(url));
+  if (!isDefaultPool(pool)) {throw new Error("Default pool is malformed");}
+  return pool;
 };
 
+// The MO donation endpoint: the multi-algo MoM proxy, which the host defaults put on the XMR
+// `login` dialect. mom.js re-applies it before mining, so this is also what a config's donation
+// pool is reset to.
 /** @returns {PoolConfig} */
-function defaultDonationPool() {
-  // The MoM donation proxy speaks the XMR `login` dialect.
-  return {
-    ...module.exports.pool_create("mom.moneroocean.stream", 20001, true, "user", "pass"),
-    use_subscribe: false,
-  };
-}
+module.exports.donation_pool_create = function() {
+  return module.exports.pool_create(momMultiAlgoProxyHost, 20001, true, "user", "mom");
+};
 
 const dev_help = 'device config "[<dev>[*MAIN|*[name=value;...]][^P],]+", dev = ' +
                  "{cpu, gpu<N>, cpu<N>}, N = device number, MAIN = algorithm primary tuning value, " +
@@ -109,33 +135,8 @@ module.exports.opt_help = {
   },
   pool: {
     _help: "add backup pool, defined by the following keys:",
-    _template: {
-      url:                [ undefined, "pool DNS or IP address" ],
-      port:               [ undefined, "pool port" ],
-      is_tls:             [ false, "is pool port is encrypted using TLS/SSL" ],
-      protocol:           [ null, "pool protocol override (normally inferred from the algorithm)" ],
-      tls_verify:         [ false, "verify pool TLS/SSL certificate" ],
-      tls_fingerprint:    [ "", "pin TLS leaf certificate SHA-256 (64 hex digits, optional colons)" ],
-      is_nicehash:        [ false, "nicehash nonce mining mode support" ],
-      is_keepalive:       [ true, "sends keepalive messages to the pool to avoid disconnect" ],
-      use_subscribe:      [ true, "use the algorithm's normal pool handshake; false forces XMR login with pushed jobs" ],
-      worker:             [ "", "PearlHash/XELIS worker name (mining.authorize)" ],
-      pearlhash_target_format: [ "base", "PearlHash subscribe target: base (scaled) or jackpot (final)" ],
-      login:              [ undefined, "pool login data" ],
-      pass:               [ "", "pool password" ],
-      _socket:            [ null, "network socket object" ],
-      _keepalive:         [ null, "keepalive timer object" ],
-      _pending_subscribe: [ false, "subscribe request is waiting for response" ],
-      _pending_authorize: [ false, "authorize request is waiting for response" ],
-      _pending_submit_count: [ 0, "share submissions waiting for responses" ],
-      _logged_in:         [ false, "pool login completed" ],
-      _last_connect_time: [ 0, "last connect time for throttling purposes" ],
-      _last_job:          [ null, "last job object" ],
-      _job_state:         [ {}, "negotiated job controls" ],
-      _good_shares:       [ 0, "number of accepted shares" ],
-      _bad_shares:        [ 0, "number of invalid shares" ],
-    },
-    _array: [defaultDonationPool()]
+    _template: poolTemplate,
+    _array: [module.exports.donation_pool_create()]
   },
   default_msr: {
     _help: "stores default MSR register values to restore them without reboot, " +
@@ -195,7 +196,6 @@ function nestedOptionSchema(value, key) {
 function isPlainObjectArray(value) {
   return Array.isArray(value) && value.every(isPlainObject);
 }
-const reservedKeys = new Set(["__proto__", "constructor", "prototype"]);
 const jobJsonFields = new Set([
   "algo", "dev", "blob_hex", "seed_hex", "height", "backend", "target", "nonce",
   "nicehash_mask", "noncebytes", "nonceoffset", "proofsize", "pearlhash_cert_version",
@@ -208,10 +208,7 @@ const poolRuntimeFields = new Set(
   Object.keys(module.exports.opt_help.pool._template)
     .filter((key) => key.startsWith("_")).map((key) => key.slice(1))
 );
-const poolProtocols = new Set([
-  "login", "raven", "eth", "erg", "pearlhash", "zelhash", "verthash",
-  "kaspa", "hoosat", "beam", "ironfish", "xelis", "conflux", "echelon", "cortex",
-]);
+const poolProtocols = new Set(["login", ...POOL_PROTOCOL_BY_ALGO.values()]);
 const boundedIntegerOptions = new Map([
   ["log_level", 3],
   ["bench_algo_params", 2],
@@ -498,8 +495,8 @@ function validatePoolOption(arg, parsed, value) {
   if (err) {
     return optionError(arg, "has invalid pool " + err);
   }
-  if (!Object.hasOwn(parsed, "use_subscribe")) {
-    value["use_subscribe"] = !isMomMultiAlgoProxyUrl(value["url"]);
+  for (const [field, fallback] of Object.entries(hostPoolDefaults(value["url"]))) {
+    if (!Object.hasOwn(parsed, field)) {value[field] = fallback;}
   }
   return value;
 }
@@ -584,7 +581,7 @@ function addMapTemplateOption(opt, key, keyHelp, newPrefix, arg, val) {
     return false;
   }
   const key2 = mapNameFromOption(arg, key);
-  if (!key2 || reservedKeys.has(key2)) {
+  if (!key2 || isReservedKey(key2)) {
     return module.exports.print_help("Invalid option map key: " + key2);
   }
   const values = opt[key + "s"];
@@ -801,7 +798,7 @@ function applyConfigMap(opt, key, option, values) {
   }
   opt[key] = {};
   for (const [name, value] of Object.entries(values)) {
-    if (!name || reservedKeys.has(name)) {
+    if (!name || isReservedKey(name)) {
       return configError("invalid " + key + " key: " + name);
     }
     applyConfigOption(opt, "--new." + option + "." + name, value);
@@ -840,7 +837,7 @@ function applyPoolIds(opt, value) {
       opt.pool_ids.donate = null;
       continue;
     }
-    if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 0) {
+    if (!isSafeIntegerAtLeast(id, 0)) {
       return configError("pool_ids." + key + " must be a non-negative integer");
     }
     if (key === "primary") {opt.pool_ids.primary = id;}
@@ -850,8 +847,7 @@ function applyPoolIds(opt, value) {
 
 /** @param {MinerOptions} opt */
 function validateConfigPoolIds(opt) {
-  const validId = (/** @type {unknown} */ id) =>
-    typeof id === "number" && Number.isSafeInteger(id) && id >= 0 && id < opt.pools.length;
+  const validId = (/** @type {unknown} */ id) => isSafeIntegerAtLeast(id, 0) && id < opt.pools.length;
   if (!validId(opt.pool_ids.primary)) {
     return configError("pool_ids.primary does not select a pool");
   }
@@ -911,7 +907,7 @@ module.exports.apply_config = function(opt, values) {
   // rather than letting pool_ids.donate=0 silently turn the user's first pool into it.
   if (Object.hasOwn(values, "pools") &&
       !(isPlainObject(values["pool_ids"]) && Object.hasOwn(values["pool_ids"], "donate"))) {
-    opt.pools.push(defaultDonationPool());
+    opt.pools.push(module.exports.donation_pool_create());
     opt.pool_ids.donate = opt.pools.length - 1;
   }
   validateConfigPoolIds(opt);

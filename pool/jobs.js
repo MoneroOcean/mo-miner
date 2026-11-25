@@ -5,7 +5,7 @@ const {isObject, parseUnsignedDecimal, parseUint64Decimal} = require("../helper/
 const {MAX_WORKER_ID_CHARS, hasValidJobNumbers, isIdentifier, isJobId, isJobNonce} = require("../helper/worker-protocol");
 const {hexWithoutPrefix, reverseHexBytes} = require("../miner/submission");
 
-const maxXelisDifficulty = (1n << 256n) - 1n;
+const UINT256_MAX = (1n << 256n) - 1n;
 
 /**
  * @param {{
@@ -263,20 +263,29 @@ module.exports = ({
     return Number.isSafeInteger(height) ? height : null;
   }
 
+  // A non-negative safe integer sent as a JSON number or a decimal/0x-hex string.
   /** @param {unknown} value @param {string} label */
-  function poolHeight(value, label) {
+  function poolUnsignedInteger(value, label) {
     if (typeof value !== "number" && typeof value !== "string") {
-      throw new Error(`Invalid ${label} height`);
+      throw new Error(`Invalid ${label}`);
     }
     const text = String(value);
     if (typeof value === "string" && !/^(?:\d+|0x[0-9a-f]+)$/i.test(text)) {
-      throw new Error(`Invalid ${label} height`);
+      throw new Error(`Invalid ${label}`);
     }
-    const height = Number(text);
-    if (!Number.isSafeInteger(height) || height < 0) {
-      throw new Error(`Invalid ${label} height`);
+    const number = Number(text);
+    if (!Number.isSafeInteger(number) || number < 0) {
+      throw new Error(`Invalid ${label}`);
     }
-    return height;
+    return number;
+  }
+
+  // A full 256-bit share target sent as an unsigned decimal (Erg always, Conflux optionally).
+  /** @param {unknown} value @param {string} label */
+  function decimalTarget(value, label) {
+    const target = parseUnsignedDecimal(value, UINT256_MAX, `${label} target`);
+    if (target === 0n) {throw new Error(`${label} target must be positive`);}
+    return target.toString(16).padStart(64, "0");
   }
 
   // Build a NexaPoW job from the four-field WildRig dialect (fixed 4-byte extranonce prefix) or the
@@ -306,7 +315,7 @@ module.exports = ({
         ...common,
         blob: Buffer.from(header, "hex").reverse().toString("hex") +
           extraNonce + "00".repeat(8),
-        height: poolHeight(p[2], "Nexa"), nbits, extra_nonce2_size: 4, nonceoffset: 36,
+        height: poolUnsignedInteger(p[2], "Nexa height"), nbits, extra_nonce2_size: 4, nonceoffset: 36,
         nonce: "0000000000000000", nicehash_mask: "0000000000000000",
       };
     }
@@ -440,7 +449,7 @@ module.exports = ({
 
   /** @param {unknown} value */
   function xelisDifficulty(value) {
-    const diff = parseUnsignedDecimal(value, maxXelisDifficulty, "XELIS difficulty");
+    const diff = parseUnsignedDecimal(value, UINT256_MAX, "XELIS difficulty");
     if (diff === 0n) {throw new Error("XELIS difficulty must be positive");}
     return diff;
   }
@@ -449,7 +458,7 @@ module.exports = ({
   /** @param {unknown} difficulty */
   function xelisDiffToTarget(difficulty) {
     const diff = xelisDifficulty(difficulty);
-    return (maxXelisDifficulty / diff).toString(16).padStart(64, "0");
+    return (UINT256_MAX / diff).toString(16).padStart(64, "0");
   }
 
   /** @param {unknown} value @param {string} label */
@@ -567,7 +576,7 @@ module.exports = ({
       ? pearlhashDiffFromJobId(jobId) || pool.job_state.pearlhash_difficulty
       : positiveDifficulty(suppliedDifficulty, "PearlHash");
     const certVersion = params["cert_version"] === undefined
-      ? 3 : poolHeight(params["cert_version"], "PearlHash certificate version");
+      ? 3 : poolUnsignedInteger(params["cert_version"], "PearlHash certificate version");
     if (certVersion !== 3) {
       throw new Error("Unsupported PearlHash certificate version");
     }
@@ -585,7 +594,7 @@ module.exports = ({
       algo: normalizeAlgoName(markedAlgo || global.opt.job.algo || "pearlhash") || "pearlhash",
       blob: header, // 76-byte incomplete header (input for the kernel)
       job_id: jobId,
-      height: params["height"] === undefined ? 0 : poolHeight(params["height"], "PearlHash"),
+      height: params["height"] === undefined ? 0 : poolUnsignedInteger(params["height"], "PearlHash height"),
       pearlhash_cert_version: certVersion,
     };
     if (difficulty !== undefined) {job.difficulty = difficulty;}
@@ -847,6 +856,132 @@ module.exports = ({
     };
   }
 
+  // mining.notify [job_id, header_hash, seed_hash, target, clean, height] of the raven dialect.
+  /** @param {PoolConfig} pool @param {ArrayPoolMessage} json @returns {PoolJob | null} */
+  function ravenNotifyJob(pool, json) {
+    const jobId = poolJobId(json.params[0]);
+    const headerHash = validHexBytes(json.params[1], 32);
+    const seedHash = validHexBytes(json.params[2], 32);
+    if (jobId === null || !headerHash || !seedHash) {return null;}
+    return nonceAt32Job(pool, {
+      // raven dialect is shared by kawpow/firopow/evrprogpow; resolve the actual algo from the job,
+      // the configured global job, or the pool pass (falling back to kawpow) so firopow/evrprogpow
+      // pools select the right seal/epoch instead of always hashing kawpow.
+      algo: fixedAlgoJobName(json, algoFromPass(pool) || "kawpow"),
+      header_hash: headerHash,
+      seed_hash: seedHash,
+      target: ravenTarget(pool, json.params[3]),
+      job_id: jobId,
+      height: poolUnsignedInteger(json.params[5], "Raven height"),
+    });
+  }
+
+  // EthereumStratum mining.notify [job_id, seed_hash, header_hash, clean]; the target comes from
+  // the pool's last difficulty.
+  /** @param {PoolConfig} pool @param {ArrayPoolMessage} json @returns {PoolJob | null} */
+  function ethNotifyJob(pool, json) {
+    const jobId = poolJobId(json.params[0]);
+    const seedHash = validHexBytes(json.params[1], 32);
+    const headerHash = validHexBytes(json.params[2], 32);
+    if (jobId === null || !seedHash || !headerHash) {return null;}
+    return nonceAt32Job(pool, {
+      algo: fixedAlgoJobName(json, "etchash"),
+      header_hash: headerHash,
+      seed_hash: seedHash,
+      target: ethTarget(pool),
+      job_id: jobId,
+    });
+  }
+
+  // Conflux mining.notify [job_id, height, header_hash, target].
+  /** @param {PoolConfig} pool @param {ArrayPoolMessage} json @returns {PoolJob | null} */
+  function confluxNotifyJob(pool, json) {
+    const jobId = poolJobId(json.params[0]);
+    const headerHash = validHexBytes(json.params[2], 32);
+    if (jobId === null || !headerHash) {return null;}
+    const rawTarget = json.params[3];
+    if (typeof rawTarget !== "string") {throw new Error("Invalid Conflux target");}
+    // Conflux pools send either 0x-prefixed hex or a decimal integer.
+    const target = /^0x[0-9a-f]{1,64}$/i.test(rawTarget)
+      ? rawTarget.slice(2).padStart(64, "0") : decimalTarget(rawTarget, "Conflux");
+    if (/^0+$/.test(target)) {throw new Error("Conflux target must be positive");}
+    return nonceAt32Job(pool, {
+      algo: "octopus",
+      header_hash: headerHash,
+      target,
+      job_id: jobId,
+      height: poolUnsignedInteger(json.params[1], "Conflux height"),
+    });
+  }
+
+  // Ergo mining.notify [job_id, height, header_hash, , , , target, ntime?] with the subscribe
+  // extranonce.
+  /** @param {PoolConfig} pool @param {ArrayPoolMessage} json @returns {PoolJob | null} */
+  function ergNotifyJob(pool, json) {
+    const jobId = poolJobId(json.params[0]);
+    const headerHash = validHexBytes(json.params[2], 32);
+    const rawNtime = json.params[7];
+    const ntime = rawNtime === undefined || rawNtime === "" ? "" : validHexBytes(rawNtime, 4);
+    if (jobId === null || !headerHash || (rawNtime !== undefined && rawNtime !== "" && !ntime)) {
+      return null;
+    }
+    const target = decimalTarget(json.params[6], "Autolykos2");
+    const extraNonce = poolExtraNonce(pool);
+    return nonceAt32Job(pool, {
+      algo: fixedAlgoJobName(json, "autolykos2"),
+      header_hash: headerHash,
+      target,
+      job_id: jobId,
+      height: poolUnsignedInteger(json.params[1], "Autolykos2 height"),
+      ntime,
+      extra_nonce: extraNonce,
+      extra_nonce2_size: pool.job_state.extra_nonce2_size ?? Math.max(0, 8 - Math.ceil(extraNonce.length / 2)),
+    });
+  }
+
+  // Iron Fish mining.notify body {miningRequestId, header} with the subscribed nonce prefix and
+  // the last mining.set_target.
+  /** @param {PoolConfig} pool @param {BodyPoolMessage} json @returns {PoolJob | null} */
+  function ironfishNotifyJob(pool, json) {
+    const body = json.body;
+    const requestId = poolJobId(body["miningRequestId"]);
+    const header = validHexBytes(body["header"], 180);
+    if (requestId === null || !header) {return null;}
+    /** @type {PoolJob} */
+    const job = {
+      algo: fixedAlgoJobName(json, "fishhash"),
+      blob: header, // 180-byte FishHash v3 header; the 8-byte randomness field starts at offset 172.
+      job_id: requestId,
+      noncebytes: 8,
+      nonceoffset: 172,
+      xn: pool.job_state.ironfish_xn || "",
+    };
+    if (pool.job_state.ironfish_target !== undefined) {job.target = pool.job_state.ironfish_target;}
+    return job;
+  }
+
+  // Beam job {id, input, difficulty?}: a packed difficulty, remembered for jobs that omit it.
+  /** @param {PoolConfig} pool @param {PoolMessage & {input: string}} json @returns {PoolJob | null} */
+  function beamNotifyJob(pool, json) {
+    const jobId = poolJobId(json.id);
+    const input = validHexBytes(json.input, 32);
+    if (jobId === null || !input) {return null;}
+    const rawPacked = json.difficulty ?? pool.job_state.beam_difficulty;
+    const target = beamPackedTarget(rawPacked);
+    const packed = typeof rawPacked === "number" ? rawPacked : Number(rawPacked);
+    const job = {
+      algo:        "beamhash3",
+      header_hash: input,                           // 64hex = 32-byte prework (goes at blob offset 0)
+      job_id:      jobId,
+      difficulty:  packed,                          // raw packed int32, for reporting
+      target,                                       // native re-derives the packed int from the target
+      // A retained job resumes with its accepted prefix, even after later pool settings change.
+      xn: pool.job_state.beam_nonceprefix ?? "",
+    };
+    pool.job_state.beam_difficulty = packed;
+    return job;
+  }
+
   // Decode a pool message into a PoolJob for the pool's dialect, or return null if it is not a job.
   // A login result with an embedded job also marks the pool logged in. Each job records its submit
   // mode so results are submitted in the dialect that produced the job. Malformed fields of a
@@ -891,111 +1026,28 @@ module.exports = ({
       return commitSubmitMode(null, json.params);
     }
     if (protocol === "raven" && isMiningNotification(json, 6)) {
-      const jobId = poolJobId(json.params[0]);
-      const headerHash = validHexBytes(json.params[1], 32);
-      const seedHash = validHexBytes(json.params[2], 32);
-      if (jobId === null || !headerHash || !seedHash) {return null;}
-      const job = nonceAt32Job(pool, {
-        // raven dialect is shared by kawpow/firopow/evrprogpow; resolve the actual algo from the job,
-        // the configured global job, or the pool pass (falling back to kawpow) so firopow/evrprogpow
-        // pools select the right seal/epoch instead of always hashing kawpow.
-        algo: fixedAlgoJobName(json, algoFromPass(pool) || "kawpow"),
-        header_hash: headerHash,
-        seed_hash: seedHash,
-        target: ravenTarget(pool, json.params[3]),
-        job_id: jobId,
-        height: poolHeight(json.params[5], "Raven"),
-      });
-      return commitSubmitMode("raven", job);
+      return commitSubmitMode("raven", ravenNotifyJob(pool, json));
     }
     if (protocol === "verthash" && isMiningNotification(json, 9)) {
       return commitSubmitMode("verthash", verthashNotifyJob(pool, json));
     }
     if (protocol === "eth" && isMiningNotification(json, 4)) {
-      const jobId = poolJobId(json.params[0]);
-      const seedHash = validHexBytes(json.params[1], 32);
-      const headerHash = validHexBytes(json.params[2], 32);
-      if (jobId === null || !seedHash || !headerHash) {return null;}
-      const job = nonceAt32Job(pool, {
-        algo: fixedAlgoJobName(json, "etchash"),
-        header_hash: headerHash,
-        seed_hash: seedHash,
-        target: ethTarget(pool),
-        job_id: jobId,
-      });
-      return commitSubmitMode("eth", job);
+      return commitSubmitMode("eth", ethNotifyJob(pool, json));
     }
     if (protocol === "conflux" && isMiningNotification(json, 4)) {
-      const jobId = poolJobId(json.params[0]);
-      const headerHash = validHexBytes(json.params[2], 32);
-      if (jobId === null || !headerHash) {return null;}
-      const rawTarget = json.params[3];
-      let target;
-      if (typeof rawTarget === "string" && /^0x[0-9a-f]{1,64}$/i.test(rawTarget)) {
-        target = rawTarget.slice(2).padStart(64, "0");
-      } else {
-        if (typeof rawTarget !== "string") {throw new Error("Invalid Conflux target");}
-        const targetValue = parseUnsignedDecimal(
-          rawTarget, (1n << 256n) - 1n, "Conflux target");
-        if (targetValue === 0n) {throw new Error("Conflux target must be positive");}
-        target = h.decimalTargetToHex(targetValue.toString());
-      }
-      if (/^0+$/.test(target)) {throw new Error("Conflux target must be positive");}
-      const job = nonceAt32Job(pool, {
-        algo: "octopus",
-        header_hash: headerHash,
-        target,
-        job_id: jobId,
-        height: poolHeight(json.params[1], "Conflux"),
-      });
-      return commitSubmitMode("conflux", job);
+      return commitSubmitMode("conflux", confluxNotifyJob(pool, json));
     }
     if (protocol === "echelon" && isNexaJobNotification(json)) {
       return commitSubmitMode("echelon", nexaNotifyJob(pool, json));
     }
     if (protocol === "erg" && isMiningNotification(json, 7)) {
-      const jobId = poolJobId(json.params[0]);
-      const headerHash = validHexBytes(json.params[2], 32);
-      const rawNtime = json.params[7];
-      const ntime = rawNtime === undefined || rawNtime === "" ? "" : validHexBytes(rawNtime, 4);
-      if (jobId === null || !headerHash || (rawNtime !== undefined && rawNtime !== "" && !ntime)) {
-        return null;
-      }
-      const targetValue = parseUnsignedDecimal(
-        json.params[6], (1n << 256n) - 1n, "Autolykos2 target");
-      if (targetValue === 0n) {throw new Error("Autolykos2 target must be positive");}
-      const extraNonce = poolExtraNonce(pool);
-      const job = nonceAt32Job(pool, {
-        algo: fixedAlgoJobName(json, "autolykos2"),
-        header_hash: headerHash,
-        target: h.decimalTargetToHex(targetValue.toString()),
-        job_id: jobId,
-        height: poolHeight(json.params[1], "Autolykos2"),
-        ntime,
-        extra_nonce: extraNonce,
-        extra_nonce2_size: pool.job_state.extra_nonce2_size ?? Math.max(0, 8 - Math.ceil(extraNonce.length / 2)),
-      });
-      return commitSubmitMode("erg", job);
+      return commitSubmitMode("erg", ergNotifyJob(pool, json));
     }
     if (protocol === "zelhash" && isMiningNotification(json, 8)) {
       return commitSubmitMode("zelhash", equihashNotifyJob(pool, json));
     }
     if (protocol === "ironfish" && isIronfishJobNotification(json)) {
-      const body = json.body;
-      const requestId = poolJobId(body["miningRequestId"]);
-      const header = validHexBytes(body["header"], 180);
-      if (requestId === null || !header) {return null;}
-      /** @type {PoolJob} */
-      const job = {
-        algo: fixedAlgoJobName(json, "fishhash"),
-        blob: header, // 180-byte FishHash v3 header; the 8-byte randomness field starts at offset 172.
-        job_id: requestId,
-        noncebytes: 8,
-        nonceoffset: 172,
-        xn: pool.job_state.ironfish_xn || "",
-      };
-      if (pool.job_state.ironfish_target !== undefined) {job.target = pool.job_state.ironfish_target;}
-      return commitSubmitMode("ironfish", job);
+      return commitSubmitMode("ironfish", ironfishNotifyJob(pool, json));
     }
     if ((protocol === "kaspa" || protocol === "hoosat") && isKaspaJobNotification(json)) {
       return commitSubmitMode(protocol, kaspaNotifyJob(pool, json));
@@ -1004,23 +1056,7 @@ module.exports = ({
       return commitSubmitMode("xelis", xelisNotifyJob(pool, json));
     }
     if (protocol === "beam" && isBeamJobNotification(json)) {
-      const jobId = poolJobId(json.id);
-      const input = validHexBytes(json.input, 32);
-      if (jobId === null || !input) {return null;}
-      const rawPacked = json.difficulty ?? pool.job_state.beam_difficulty;
-      const target = beamPackedTarget(rawPacked);
-      const packed = typeof rawPacked === "number" ? rawPacked : Number(rawPacked);
-      const job = {
-        algo:        "beamhash3",
-        header_hash: input,                           // 64hex = 32-byte prework (goes at blob offset 0)
-        job_id:      jobId,
-        difficulty:  packed,                          // raw packed int32, for reporting
-        target,                                       // native re-derives the packed int from the target
-        // A retained job resumes with its accepted prefix, even after later pool settings change.
-        xn: pool.job_state.beam_nonceprefix ?? "",
-      };
-      pool.job_state.beam_difficulty = packed;
-      return commitSubmitMode("beam", job);
+      return commitSubmitMode("beam", beamNotifyJob(pool, json));
     }
     return null;
   }

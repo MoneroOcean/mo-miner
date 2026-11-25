@@ -71,6 +71,13 @@ describe("Raven, Eth, and Conflux jobs and submissions", () => {
     };
     Reflect.set(numericMaskJob, "nicehash_mask", 1);
     assert.throws(() => setJob(numericMaskJob), /Invalid cn\/0 nonce mask/);
+    // Zero targets passed JS admission and then failed in every worker as "Bad target hex".
+    assert.throws(() => setJob({
+      algo: "cn/0", blob_hex: "00".repeat(43), target: "0x00000000", job_id: "zero-target",
+    }), /Invalid cn\/0 target/);
+    assert.throws(() => setJob({
+      algo: "kawpow", blob: "00".repeat(32), difficulty: 1e100, job_id: "oversized-difficulty",
+    }), /Invalid kawpow target/);
     assert.equal(miner.sentMessages.length, initialMessages);
   });
 
@@ -301,6 +308,27 @@ describe("PearlHash proof negotiation and claims", () => {
           expected === 3 ? ["none", "gzip"] : undefined);
       });
     }
+  });
+
+  test("PearlHash pools name a malformed certificate version in the pool error", async () => {
+    const previousLogError = s.helper.log_err;
+    /** @type {string[]} */
+    const logs = [];
+    s.helper.log_err = (message) => logs.push(message);
+    try {
+      await withMockPool({pool: {protocol: "pearlhash", logged_in: true, use_subscribe: true},
+        opt: {job: {algo: "pearlhash"}}}, async ({socket, switched}) => {
+        pool.connect_pool_throttle(0, s.unexpectedPoolJob);
+        socket.emit("data", Buffer.from(JSON.stringify({
+          method: "mining.notify",
+          params: {job_id: "pearl-job", header: "00".repeat(76), cert_version: "v3"},
+        }) + "\n"));
+        assert.equal(switched(), true);
+      });
+    } finally {
+      s.helper.log_err = previousLogError;
+    }
+    assert.match(logs.join("\n"), /: "Invalid PearlHash certificate version"$/m);
   });
 
   test("PearlHash login-dialect jobs preserve a supplied target", async () => {

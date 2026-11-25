@@ -57,10 +57,11 @@ const WORKER_MESSAGE_PREFIX = "MOM_WORKER_MESSAGE ";
 const MAX_WORKER_MESSAGE_LINE = 1024 * 1024;
 const {
   MAX_PEARL_PROOF_BASE64, MAX_PROOF_EVENT_OVERHEAD, hasValidJobNumbers, isIdentifier, isJobNonce, isNonceHex,
+  isTargetHex,
 } = require("./helper/worker-protocol");
 const MAX_WORKER_PROOF_LINE = MAX_PEARL_PROOF_BASE64 + MAX_PROOF_EVENT_OVERHEAD;
 const {filterWorkerStderr, filterWorkerStdoutLine} = require("./helper/diagnostics");
-const {isObject, errorMessage} = require("./helper/validate");
+const {isObject, errorMessage, isSafeIntegerAtLeast} = require("./helper/validate");
 
 const miningJobStringFields = [
   "backend", "backend_request", "blob", "extra_nonce", "extranonce2", "header_hash",
@@ -131,7 +132,7 @@ function isWorkerCommand(value) {
   }
   if (type !== "job") {return true;}
   const job = value["job"];
-  return typeof job.target === "string" && /^(?:0x)?[0-9a-f]{1,64}$/i.test(job.target) &&
+  return isTargetHex(job.target) &&
     isIdentifier(job.job_id) && isIdentifier(job.pool_id) && isIdentifier(job.worker_id) &&
     typeof job.job_token === "string" && job.job_token.length > 0;
 }
@@ -139,8 +140,7 @@ function isWorkerCommand(value) {
 /** @param {unknown} value @returns {value is WorkerEvent} */
 function isWorkerEvent(value) {
   return isObject(value) && isObject(value["value"]) && typeof value["type"] === "string" &&
-    typeof value["thread_id"] === "number" && Number.isSafeInteger(value["thread_id"]) &&
-    value["thread_id"] >= 0;
+    isSafeIntegerAtLeast(value["thread_id"], 0);
 }
 module.exports.is_worker_event = isWorkerEvent;
 
@@ -925,7 +925,6 @@ module.exports.repeat = function(step) {
 
 // The hash and target arithmetic is part of helper's API for pool, miner, and test callers.
 const hash = require("./helper/hash");
-module.exports.decimalTargetToHex = hash.decimalTargetToHex;
 module.exports.diff2target = hash.diff2target;
 module.exports.edge_hex2arr = hash.edge_hex2arr;
 module.exports.ethDiff2Target = hash.ethDiff2Target;

@@ -22,4 +22,17 @@ const ZCASH_HEADER_ALGOS = new Set(["equihash192_7", "zelhash", "zhash"]);
 // 80-byte Kaspa-style headers with an 8-byte little-endian nonce at offset 72.
 const KASPA_HEADER_ALGOS = new Set(["karlsenhashv2", "hoohash", "walahash"]);
 
-module.exports = {normalizeAlgoName, PROGPOW_ALGOS, ZCASH_HEADER_ALGOS, KASPA_HEADER_ALGOS};
+// Stratum dialect of each algorithm whose pools do not use the default `login` dialect. Together
+// with "login", its values are the accepted pool `protocol` overrides.
+const POOL_PROTOCOL_BY_ALGO = new Map([
+  ["karlsenhashv2", "kaspa"], ["walahash", "kaspa"], ["hoohash", "hoosat"],
+  ["etchash", "eth"], ["octopus", "conflux"], ["nexapow", "echelon"], ["c30", "cortex"],
+  ["autolykos2", "erg"], ["pearlhash", "pearlhash"], ["fishhash", "ironfish"],
+  ["beamhash3", "beam"], ["verthash", "verthash"], ["xelishashv3", "xelis"],
+]);
+for (const algo of PROGPOW_ALGOS) {POOL_PROTOCOL_BY_ALGO.set(algo, "raven");}
+for (const algo of ZCASH_HEADER_ALGOS) {POOL_PROTOCOL_BY_ALGO.set(algo, "zelhash");}
+
+module.exports = {
+  normalizeAlgoName, PROGPOW_ALGOS, ZCASH_HEADER_ALGOS, KASPA_HEADER_ALGOS, POOL_PROTOCOL_BY_ALGO,
+};

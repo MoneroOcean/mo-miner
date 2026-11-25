@@ -6,9 +6,12 @@ const net = require("node:net");
 const tls = require("node:tls");
 const h = require("./helper.js");
 const o = require("./opts.js");
-const {normalizeAlgoName, PROGPOW_ALGOS, ZCASH_HEADER_ALGOS} = require("./miner/algorithms");
-const {hexWithoutPrefix, xelisWorkerName} = require("./miner/submission");
+const {
+  normalizeAlgoName, PROGPOW_ALGOS, ZCASH_HEADER_ALGOS, POOL_PROTOCOL_BY_ALGO,
+} = require("./miner/algorithms");
+const {hexWithoutPrefix, loginWorker} = require("./miner/submission");
 const {isObject} = require("./helper/validate");
+const {isIdentifier} = require("./helper/worker-protocol");
 
 // Correctness tests may use normal network services, but must never contact a mining pool. Capture
 // the actual socket functions before logic tests substitute their in-memory sockets, so the guard
@@ -73,18 +76,22 @@ function poolLogErr(pool_id, str) {
 }
 
 // Remove the pool's login, wallet, worker, and password (including their JSON-escaped forms) from
-// text that is about to be logged. Short credentials are replaced only as whole tokens.
+// text that is about to be logged. Short credentials are replaced only as whole tokens. The login is
+// split at its first dot (the loginWorker() wallet and worker suffix) and, since a pool may echo a
+// dotted login in its own way, also at its last dot.
 /** @param {number} pool_id @param {unknown} value @returns {string} */
 function redactPoolText(pool_id, value) {
   const pool = poolAt(pool_id);
   const login = String(pool.login || "");
-  const workerSeparator = login.lastIndexOf(".");
+  const firstSeparator = login.indexOf(".");
+  const lastSeparator = login.lastIndexOf(".");
   let text = String(value);
   const credentials = [
     login,
     login.split(".")[0] || "",
-    workerSeparator > 0 ? login.slice(0, workerSeparator) : "",
-    workerSeparator > 0 ? login.slice(workerSeparator + 1) : "",
+    firstSeparator > 0 ? login.slice(firstSeparator + 1) : "",
+    lastSeparator > 0 ? login.slice(0, lastSeparator) : "",
+    lastSeparator > 0 ? login.slice(lastSeparator + 1) : "",
     String(pool.worker || ""),
     String(pool.pass || ""),
   ].filter(Boolean);
@@ -202,19 +209,9 @@ function isCurrentPoolSocket(pool_id, socket) {
   return poolAt(pool_id).socket === socket;
 }
 
-// Stratum dialect of each algorithm whose pools do not use the default `login` dialect.
-const protocolByAlgo = new Map([
-  ["karlsenhashv2", "kaspa"], ["walahash", "kaspa"], ["hoohash", "hoosat"],
-  ["etchash", "eth"], ["octopus", "conflux"], ["nexapow", "echelon"], ["c30", "cortex"],
-  ["autolykos2", "erg"], ["pearlhash", "pearlhash"], ["fishhash", "ironfish"],
-  ["beamhash3", "beam"], ["verthash", "verthash"], ["xelishashv3", "xelis"],
-]);
-for (const algo of PROGPOW_ALGOS) {protocolByAlgo.set(algo, "raven");}
-for (const algo of ZCASH_HEADER_ALGOS) {protocolByAlgo.set(algo, "zelhash");}
-
 /** @param {string | null | undefined} algo @returns {string | null} */
 function protocolForAlgo(algo) {
-  return protocolByAlgo.get(normalizeAlgoName(algo) || "") ?? null;
+  return POOL_PROTOCOL_BY_ALGO.get(normalizeAlgoName(algo) || "") ?? null;
 }
 
 // Beam packs the network difficulty into a 32-bit int (top 8 bits = order, low 24 = mantissa). The
@@ -288,9 +285,7 @@ function pearlhashUsesSubscribe(pool) {
 // field that pearlpool.cloud sends); used to derive the 2^256/diff kernel target.
 /** @param {unknown} job_id @returns {number | undefined} */
 function pearlhashDiffFromJobId(job_id) {
-  const text = typeof job_id === "string" ? job_id :
-    typeof job_id === "number" && Number.isSafeInteger(job_id) ? String(job_id) : "";
-  const m = text.match(/_(\d+)$/);
+  const m = (isIdentifier(job_id) ? String(job_id) : "").match(/_(\d+)$/);
   const difficulty = m && m[1] ? Number(m[1]) : Number.NaN;
   return Number.isSafeInteger(difficulty) && difficulty > 0 ? difficulty : undefined;
 }
@@ -408,18 +403,15 @@ function applyLoginExtensions(pool_id, extensions) {
 function algoFromPass(pool) {
   for (const field of String(pool.pass || "").split(/[~;,]/)) {
     const algo = normalizeAlgoName(field.replace(/^algo=/i, ""));
-    if (algo && protocolByAlgo.has(algo)) {return algo;}
+    if (algo && POOL_PROTOCOL_BY_ALGO.has(algo)) {return algo;}
   }
   return "";
 }
 
 /** @param {PoolConfig} pool @returns {string[]} */
 function xelisAuthorizeParams(pool) {
-  const login = String(pool.login || "");
-  const separator = login.indexOf(".");
-  const wallet = separator < 0 ? login : login.slice(0, separator);
-  // Pools may bind submits to the authorized name, so both must use one rule.
-  return [wallet, xelisWorkerName(pool), pool.pass];
+  const {wallet, worker} = loginWorker(pool);
+  return [wallet, worker, pool.pass];
 }
 
 // Infer the dialect of a pool without an explicit protocol from the algorithm named by a login
@@ -811,10 +803,7 @@ function rememberPoolResponseMetadata(pool_id, result) {
 
   const pool = poolAt(pool_id);
   const workerId = result["id"];
-  if (typeof workerId === "string" ||
-      (typeof workerId === "number" && Number.isSafeInteger(workerId))) {
-    pool.worker_id = workerId;
-  }
+  if (isIdentifier(workerId)) {pool.worker_id = workerId;}
   applyLoginExtensions(pool_id, result["extensions"]);
   const algo = messageAlgorithm(result);
   if (algo && pool.extensions?.includes("mo-native")) {
@@ -842,10 +831,7 @@ function normalizedResponseId(id) {
 /** @param {number} pool_id @param {unknown} id @returns {PoolResponseHandler} */
 function poolResponseHandler(pool_id, id) {
   const pool = poolAt(pool_id);
-  if (typeof id !== "string" &&
-      !(typeof id === "number" && Number.isSafeInteger(id))) {
-    return ignorePoolResponse;
-  }
+  if (!isIdentifier(id)) {return ignorePoolResponse;}
   if (usesCortex(pool)) {
     if (id === 72) {
       return pool.pending_cortex_login ? handleLoginResponse : ignorePoolResponse;
@@ -941,8 +927,8 @@ function handleIronfishMessage(pool_id, json, setJob) {
     const nestedId = isObject(json.error) ? json.error["id"] : undefined;
     const responseId = nestedId ?? json.id;
     const errMsg = poolErrorText(pool_id, json.error);
+    // handleLoginResponse also drops a job held for authorization.
     if (json.method === "mining.subscribed") {
-      delete poolAt(pool_id).job_state.pending_job;
       handleLoginResponse(pool_id, true, false, errMsg, json);
       return true;
     }
@@ -951,7 +937,6 @@ function handleIronfishMessage(pool_id, json, setJob) {
       return true;
     }
     if (responseId === 1 || responseId === "1") {
-      delete poolAt(pool_id).job_state.pending_job;
       handleLoginResponse(pool_id, true, false, errMsg, json);
       return true;
     }
@@ -960,7 +945,6 @@ function handleIronfishMessage(pool_id, json, setJob) {
       return true;
     }
     if (!pool.logged_in || pool.job_state.pending_job) {
-      delete pool.job_state.pending_job;
       handleLoginResponse(pool_id, true, false, errMsg, json);
     } else {
       poolLogErr(pool_id, "Iron Fish error" + errMsg);
@@ -1015,6 +999,36 @@ function handleBeamResult(pool_id, json) {
   return handleShareResponse(pool_id, false, json.code === 1, desc);
 }
 
+// A mo-native pool may push a control before the job that selects its algorithm family. Retain one
+// control per kind and advertised family (plus unmarked) until that job arrives; a stale marked
+// control must not overwrite an unmarked setting intended for the next job.
+/** @param {PoolConfig} pool @param {PoolMessage} json @param {string} kind */
+function deferNativeControl(pool, json, kind) {
+  const algo = messageAlgorithm(json);
+  if (algo && !pool.requested_algos?.includes(algo)) {return;}
+  pool.pending_controls = (pool.pending_controls || []).filter((pending) =>
+    controlKind(pending) !== kind || messageAlgorithm(pending) !== algo);
+  pool.pending_controls.push(json);
+}
+
+// Switch a mo-native pool to its new job's family (the marked algorithm, else the current one)
+// and apply the controls deferred for that family or left unmarked. Returns the job tagged with
+// its algorithm.
+/** @param {number} pool_id @param {PoolMessage} json @param {string} markedAlgo @returns {PoolMessage} */
+function startNativeJob(pool_id, json, markedAlgo) {
+  const pool = poolAt(pool_id);
+  const algo = markedAlgo || pool.job_algo;
+  if (!algo) {throw new Error("Native pool job has no algorithm");}
+  preparePoolFamily(pool_id, algo);
+  const controls = pool.pending_controls || [];
+  delete pool.pending_controls;
+  for (const control of controls) {
+    const controlAlgo = messageAlgorithm(control);
+    if (!controlAlgo || controlAlgo === algo) {applyPoolControl(pool_id, control);}
+  }
+  return {...json, algo};
+}
+
 // Dispatch one parsed pool message: normalize response ids, queue or apply controls (mo-native
 // pools defer controls until the job for their algorithm arrives), hold jobs that arrive before
 // authorization, then decode jobs or route responses. Throws on malformed protocol data; the
@@ -1048,27 +1062,10 @@ function routePoolMessage(pool_id, json, setJob) {
   }
   const kind = controlKind(json);
   if (kind) {
-    if (!nativeSwitching) {return applyPoolControl(pool_id, json);}
-    const algo = messageAlgorithm(json);
-    if (algo && !pool.requested_algos?.includes(algo)) {return;}
-    // Retain one control per kind/advertised family (plus unmarked). A stale marked control
-    // must not overwrite an unmarked setting intended for the next job.
-    pool.pending_controls = (pool.pending_controls || []).filter((pending) =>
-      controlKind(pending) !== kind || messageAlgorithm(pending) !== algo);
-    pool.pending_controls.push(json);
-    return;
+    return nativeSwitching ? deferNativeControl(pool, json, kind) : applyPoolControl(pool_id, json);
   }
   if (nativeSwitching && jobAnnouncement) {
-    const algo = markedAlgo || pool.job_algo;
-    if (!algo) {throw new Error("Native pool job has no algorithm");}
-    preparePoolFamily(pool_id, algo);
-    const controls = pool.pending_controls || [];
-    delete pool.pending_controls;
-    for (const control of controls) {
-      const markedAlgo = messageAlgorithm(control);
-      if (!markedAlgo || markedAlgo === algo) {applyPoolControl(pool_id, control);}
-    }
-    json = {...json, algo};
+    json = startNativeJob(pool_id, json, markedAlgo);
   }
   if (poolProtocol(pool) === "beam" && isBeamResult(json)) {
     return handleBeamResult(pool_id, json);

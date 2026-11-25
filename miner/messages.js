@@ -6,7 +6,7 @@ const gpuTuning = require("../gpu-tuning");
 const {
   MAX_PEARL_PROOF_BYTES, MAX_PEARL_PROOF_BASE64, MAX_WORKER_ID_CHARS, isJobId, isNonceHex,
 } = require("../helper/worker-protocol");
-const {isObject} = require("../helper/validate");
+const {isObject, isSafeIntegerAtLeast} = require("../helper/validate");
 const MAX_JOB_TOKEN_CHARS = 256;
 const MAX_HEADER_HASH_HEX_CHARS = 256 * 2;
 // CompactSize plus the largest supported Equihash proof: (192,7) at 403 bytes.
@@ -158,31 +158,12 @@ module.exports = ({
         ...(body["method"] === "mining.submit" && nativeResult !== null ? {result: nativeResult} : {})});
     const submit = (/** @type {unknown[] | UnknownRecord | null} */ params) => params
       ? send({method: "mining.submit", params}) : invalidWorkerMessage();
-    // The native worker may stringify IDs; forward the stored pool ID after token/string matching.
+    // The native worker may stringify IDs, so every dialect forwards the stored pool jobId.
 
     // PearlHash: relay each captured proof; distinct winning seeds can share a job/header.
     // Token matching above excludes stale work without suppressing subsequent proofs.
     if (submitMode === "pearlhash") {
-      if (typeof v.plain_proof !== "string" || typeof v.jackpot !== "string" ||
-          typeof v.adjustment_factor !== "string") {return invalidWorkerMessage();}
-      const rawProof = decodePearlProof(v.plain_proof);
-      if (rawProof === null) {return invalidWorkerMessage();}
-      const gzip = pool.job_state.pearlhash_proof_encodings?.includes("gzip") === true;
-      let plainProof = v.plain_proof;
-      if (gzip) {
-        try {
-          plainProof = zlib.gzipSync(rawProof).toString("base64");
-        } catch {
-          return invalidWorkerMessage();
-        }
-      }
-      return submit({
-        job_id: jobId,
-        plain_proof: plainProof,
-        ...(gzip ? {proof_encoding: "gzip"} : {}),
-        jackpot: v.jackpot,
-        adjustment_factor: Number(v.adjustment_factor),
-      });
+      return submit(pearlhashSubmitParams(pool, jobId, v));
     }
     if (submitMode === "erg") {
       return submit(submission.ergSubmitParams(pool, job, v));
@@ -218,7 +199,7 @@ module.exports = ({
     }
     if (submitMode === "xelis") {
       // Preserve an opaque numeric pool ID; the worker string is used only to match the current job.
-      return submit([submission.xelisWorkerName(pool), jobId, v.nonce]);
+      return submit([submission.loginWorker(pool).worker, jobId, v.nonce]);
     }
     if (submitMode === "conflux") {
       const headerHash = resultHeaderHash(v, job);
@@ -267,6 +248,43 @@ module.exports = ({
       if (!headerHash) {return invalidWorkerMessage();}
       return submit([pool.login, jobId, "0x" + v.nonce, "0x" + headerHash, "0x" + v.mix_hash]);
     }
+    const params = loginSubmitParams(job, jobId, v);
+    return params ? send({method: "submit", params}) : invalidWorkerMessage();
+  }
+
+  // PearlHash mining.submit object, re-encoding the proof with gzip when the pool advertised it;
+  // null for a malformed result.
+  /** @param {PoolConfig} pool @param {string | number} jobId @param {WorkerResult} v
+   * @returns {UnknownRecord | null} */
+  function pearlhashSubmitParams(pool, jobId, v) {
+    if (typeof v.plain_proof !== "string" || typeof v.jackpot !== "string" ||
+        typeof v.adjustment_factor !== "string") {return null;}
+    const rawProof = decodePearlProof(v.plain_proof);
+    if (rawProof === null) {return null;}
+    const gzip = pool.job_state.pearlhash_proof_encodings?.includes("gzip") === true;
+    let plainProof = v.plain_proof;
+    if (gzip) {
+      try {
+        plainProof = zlib.gzipSync(rawProof).toString("base64");
+      } catch {
+        return null;
+      }
+    }
+    return {
+      job_id: jobId,
+      plain_proof: plainProof,
+      ...(gzip ? {proof_encoding: "gzip"} : {}),
+      jackpot: v.jackpot,
+      adjustment_factor: Number(v.adjustment_factor),
+    };
+  }
+
+  // XMR `login` dialect submit params; the result's proof fields (hash, mix hash, commitment, or
+  // cycle edges) select the extra fields. null for a malformed result or one without any proof.
+  /** @param {PoolJob} job @param {string | number} jobId @param {WorkerResult} v
+   * @returns {SubmitParams | null} */
+  function loginSubmitParams(job, jobId, v) {
+    if (!v.hash && !v.mix_hash && !v.commitment && !v.edges) {return null;}
     /** @type {SubmitParams} */
     const params = {job_id: jobId, nonce: v.nonce, id: v.worker_id};
     if (v.hash !== undefined) {params.result = v.hash;}
@@ -284,7 +302,7 @@ module.exports = ({
       const proofsize = job.proofsize ?? 42;
       if (typeof proofsize !== "number" || !Number.isSafeInteger(proofsize) || proofsize <= 0 ||
           v.edges.length !== proofsize * 8) {
-        return invalidWorkerMessage();
+        return null;
       }
       params.pow = h.edge_hex2arr(v.edges);
       // for proofsize == 42 (Tari C29) we return nonce hex as usual
@@ -292,8 +310,7 @@ module.exports = ({
         params.nonce = Number.parseInt(v.nonce, 16);
       }
     }
-    if (!v.hash && !v.mix_hash && !v.commitment && !v.edges) {return invalidWorkerMessage();}
-    return send({method: "submit", params});
+    return params;
   }
 
   /** @param {WorkerResult} value @param {PoolJob} job */
@@ -437,8 +454,7 @@ module.exports = ({
 
   /** @param {unknown} thread_id @param {string} dev @returns {thread_id is number} */
   function validThreadId(thread_id, dev) {
-    return typeof thread_id === "number" && Number.isSafeInteger(thread_id) &&
-      thread_id >= 0 && thread_id < h.get_dev_threads(dev);
+    return isSafeIntegerAtLeast(thread_id, 0) && thread_id < h.get_dev_threads(dev);
   }
 
   // A worker error fails a test run, ends a running benchmark with rate 0, and exits on a fatal

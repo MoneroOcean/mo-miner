@@ -265,6 +265,36 @@ test("XELIS authorize falls back to the configured worker after an empty login s
   });
 });
 
+test("XELIS configured worker overrides the login suffix in authorize and submit", async () => {
+  const miner = await loadMinerWithStubs();
+  const poolConfig = miner.global.opt.pools[0];
+  assert.ok(poolConfig);
+  Object.assign(poolConfig, {
+    login: "xel:wallet.embedded", worker: "configured",
+    last_job: {job_id: "job", job_token: "token", submit_mode: "xelis"},
+  });
+  miner.messageHandler({
+    thread_id: 0,
+    type: "result",
+    value: {
+      pool_id: "0", worker_id: "worker", job_id: "job", job_token: "token",
+      nonce: "0011223344556677", hash: "00".repeat(32),
+    },
+  });
+  assert.deepEqual(miner.poolWrites[0]?.json.params, ["configured", "job", "0011223344556677"]);
+  await withMockPool({
+    pool: {login: "xel:wallet.embedded", worker: "configured"},
+    opt: {job: {algo: "xelishashv3"}},
+  }, async ({socket, writes}) => {
+    pool.connect_pool_throttle(0, unexpectedPoolJob);
+    socket.emit("connect");
+    socket.emit("data", Buffer.from(JSON.stringify({
+      jsonrpc: "2.0", id: 1, result: ["session", "22".repeat(32), 32, "33".repeat(32)],
+    }) + "\n"));
+    assert.deepEqual(writes[1]?.params, ["xel:wallet", "configured", "x"]);
+  });
+});
+
 test("XELIS submit uses the worker suffix without a 0x nonce prefix", async () => {
   const miner = await loadMinerWithStubs();
   miner.global.opt.pools[0].login = "xel:wallet.worker";

@@ -45,6 +45,13 @@ function isNonceHex(value) {
   return typeof value === "string" && /^[0-9a-f]{1,16}$/i.test(value);
 }
 
+// A share target as the native core parses it: 1..32 whole bytes of hex, optionally 0x-prefixed.
+// An odd digit count is invalid because a compact little-endian target cannot be padded.
+/** @param {unknown} value @returns {value is string} */
+function isTargetHex(value) {
+  return typeof value === "string" && /^(?:0x)?(?:[0-9a-f]{2}){1,32}$/i.test(value);
+}
+
 // Jobs may also carry a resumable nonce as a non-negative safe integer.
 /** @param {unknown} value @returns {value is string | number} */
 function isJobNonce(value) {
@@ -53,5 +60,5 @@ function isJobNonce(value) {
 
 module.exports = {
   MAX_PEARL_PROOF_BYTES, MAX_PEARL_PROOF_BASE64, MAX_PROOF_EVENT_OVERHEAD, MAX_WORKER_ID_CHARS,
-  hasValidJobNumbers, isIdentifier, isJobId, isNonceHex, isJobNonce,
+  hasValidJobNumbers, isIdentifier, isJobId, isNonceHex, isJobNonce, isTargetHex,
 };

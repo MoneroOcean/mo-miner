@@ -373,7 +373,7 @@ chmod +x "$package_dir/mom"
 
 cp package.json compiler-policy.js gpu-tuning.js README.md GPU-CONFIG.md LICENSE "$package_dir/"
 mkdir -p "$package_dir/helper" "$package_dir/miner"
-cp helper/hash.js "$package_dir/helper/"
+cp helper/hash.js helper/validate.js "$package_dir/helper/"
 cp miner/algorithms.js "$package_dir/miner/"
 cp scripts/install.sh scripts/install-cutlass.sh scripts/install-nvrtc-current.sh "$package_dir/"
 for key in "${compilers[@]}"; do

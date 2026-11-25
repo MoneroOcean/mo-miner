@@ -3,7 +3,7 @@
 const crypto = require("node:crypto");
 const {hexWithoutPrefix, isValidNonce} = require("./submission");
 const {normalizeAlgoName, PROGPOW_ALGOS, ZCASH_HEADER_ALGOS, KASPA_HEADER_ALGOS} = require("./algorithms");
-const {isIdentifier} = require("../helper/worker-protocol");
+const {isIdentifier, isTargetHex} = require("../helper/worker-protocol");
 
 // Supported headers are small; leave ample room without forwarding an unbounded pool blob.
 const MAX_MINING_BLOB_HEX_CHARS = 64 * 1024 * 2;
@@ -272,9 +272,6 @@ module.exports = ({
     if (job.pearlhash_cert_version === undefined) {job.pearlhash_cert_version = 3;}
     if (job.pearlhash_cert_version !== 3) {
       throw new Error("Unsupported PearlHash certificate version");
-    }
-    if (shape.rank < 128) {
-      throw new Error("PearlHash certificate version 3 requires rank >= 128");
     }
     job.noncebytes = 8;
     job.intensity = shape.m;
@@ -612,8 +609,10 @@ module.exports = ({
   /** @param {MiningJob} job @returns {LiveNativeJob} */
   function validateLiveMiningJob(job) {
     const nativeJob = validateMiningBlob(job);
-    const target = nativeJob.target;
-    if (typeof target !== "string" || !/^(?:0x)?[0-9a-f]{1,64}$/i.test(target)) {
+    // Every native target parser also rejects zero, which a zero pool target or a difficulty too
+    // large for the target width produces. Fail such a job once here, not as "Bad target hex" in
+    // every worker. The "0x" prefix has no nonzero digit.
+    if (!isTargetHex(nativeJob.target) || !/[1-9a-f]/i.test(nativeJob.target)) {
       throw new Error(`Invalid ${job.algo} target`);
     }
     const {job_token: jobToken, job_id: jobId, pool_id: poolId, worker_id: workerId} = nativeJob;

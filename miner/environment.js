@@ -1,6 +1,6 @@
 "use strict";
 
-const {errorMessage} = require("../helper/validate");
+const {errorMessage, isObject, isReservedKey} = require("../helper/validate");
 
 /** @typedef {{cpu_sockets: number, cpu_threads: number, cpu_l3cache: number}} CpuInfo */
 /** @typedef {{
@@ -31,7 +31,6 @@ module.exports = ({
   requestedJobBackend, jobBackend, resolvedDeviceList, configuredTuning,
 }) => {
 
-  const reservedAlgoParamKeys = new Set(["__proto__", "constructor", "prototype"]);
   // Device selection and donation respect discovery's per-device/VRAM eligibility.
   /** @type {Map<string, ReturnType<typeof gpuTuning.parseDeviceList>>} */
   const discoveredDevices = new Map();
@@ -120,14 +119,14 @@ module.exports = ({
   // Validate the core's algo_params map: algorithm (or @backend:<algo>) keys to non-empty strings.
   /** @param {Record<string, string>} params @returns {Array<[string, string]>} */
   function validatedAlgoParamEntries(params) {
-    if (params === null || typeof params !== "object" || Array.isArray(params)) {
+    if (!isObject(params)) {
       throw new Error("Algorithm parameters must be an object");
     }
     const entries = Object.entries(params);
     for (const [key, value] of entries) {
       const algo = key.startsWith("@backend:") ? key.slice("@backend:".length) : key;
       if (!/^[a-z0-9][a-z0-9_./-]*$/i.test(algo) ||
-          reservedAlgoParamKeys.has(algo) ||
+          isReservedKey(algo) ||
           (key.startsWith("@") && !key.startsWith("@backend:"))) {
         throw new Error(`Invalid algorithm parameter key: ${key}`);
       }
@@ -168,7 +167,7 @@ module.exports = ({
         };
       } else {
         configured.dev = resolvedDeviceList(
-          algo, configured.dev, rawDev, configured.tuning || {});
+          algo, configured.dev, rawDev, configured.tuning);
       }
     }
   }
@@ -227,7 +226,7 @@ module.exports = ({
         ...algoParam,
         dev: resolvedDeviceList(
           algo, requestedDev, detected ? detected.dev : requestedDev,
-          algoParam.tuning || {}),
+          algoParam.tuning),
       };
     }
     if (algo) {opt.job.algo = algo;}
@@ -289,7 +288,7 @@ module.exports = ({
         const selectedMatches = bounded ? matches.slice(0, 1) : matches;
         for (const match of selectedMatches) {
           const resolved = resolvedDeviceList(candidateAlgo, part,
-            gpuTuning.formatDeviceEntry(match), candidate.tuning || {});
+            gpuTuning.formatDeviceEntry(match), candidate.tuning);
           for (const entry of gpuTuning.parseDeviceList(resolved, candidateAlgo)) {
             result.push({...entry, processes: bounded ? entry.processes : match.processes});
           }

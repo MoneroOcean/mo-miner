@@ -2672,23 +2672,23 @@ int main() {
       assert.throws(() => policyModule.parse(policyFixture("—", "—", "128x128x16/16")),
         /PearlHash profile/);
       assert.throws(() => gpuTuning.parseDeviceEntry("gpu1*[m=96]", "pearlhash"),
-        /at least 128/);
+        /between 128 and 16777216/);
       assert.deepEqual(gpuTuning.parseDeviceEntry(`gpu1*[m=${maxDimension}]`, "pearlhash").tuning,
         {m: maxDimension});
       assert.throws(() => gpuTuning.parseDeviceEntry(`gpu1*[m=${maxDimension + 32}]`, "pearlhash"),
-        /at most 16777216/);
+        /between 128 and 16777216/);
       assert.throws(() => gpuTuning.parseDeviceEntry(`gpu1*[n=${maxDimension + 32}]`, "pearlhash"),
-        /at most 16777216/);
+        /between 128 and 16777216/);
       assert.throws(() => gpuTuning.parseDeviceEntry("gpu1*[m=161]", "pearlhash"),
         /multiple of 32/);
       assert.throws(() => gpuTuning.parseDeviceEntry("gpu1*[k=960]", "pearlhash"),
-        /at least 1024/);
+        /between 1024 and 65536/);
       assert.deepEqual(gpuTuning.parseDeviceEntry("gpu1*[k=1024]", "pearlhash").tuning,
         {k: 1024});
       assert.deepEqual(gpuTuning.parseDeviceEntry("gpu1*[k=65536]", "pearlhash").tuning,
         {k: 65536});
       assert.throws(() => gpuTuning.parseDeviceEntry("gpu1*[k=65600]", "pearlhash"),
-        /at most 65536/);
+        /between 1024 and 65536/);
       assert.deepEqual(gpuTuning.parseDeviceEntry("gpu1*[rank=1024]", "pearlhash").tuning,
         {rank: 1024});
       assert.throws(() => gpuTuning.parseDeviceEntry("gpu1*[rank=48]", "pearlhash"),

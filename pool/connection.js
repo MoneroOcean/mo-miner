@@ -2,6 +2,7 @@
 
 const {StringDecoder} = require("node:string_decoder");
 const {normalizeAlgoName} = require("../miner/algorithms");
+const {loginWorker} = require("../miner/submission");
 const {normalizeFingerprint} = require("./tls");
 const {isObject, isPositiveNumber, parseUint64Decimal} = require("../helper/validate");
 
@@ -101,18 +102,6 @@ module.exports = ({
       algo: algos, "algo-perf": algo_perfs,
       ...(pool.requested_extensions.length ? {extensions: pool.requested_extensions} : {}),
     };
-  }
-
-  /** @param {PoolConfig} pool @returns {{wallet: string, worker: string, pass: string}} */
-  function pearlhashAuthorizeParams(pool) {
-    const login = typeof pool.login === "string" ? pool.login : "";
-    const separator = login.lastIndexOf(".");
-    const hasWorker = separator > 0 && separator < login.length - 1;
-    const wallet = hasWorker ? login.slice(0, separator) : login;
-    const embeddedWorker = hasWorker ? login.slice(separator + 1) : "";
-    const worker = typeof pool.worker === "string" && pool.worker.length > 0
-      ? pool.worker : embeddedWorker || "mom";
-    return {wallet, worker, pass: pool.pass};
   }
 
   /** @param {string} message @returns {PoolMessage | undefined} */
@@ -256,7 +245,7 @@ module.exports = ({
       poolWrite(pool_id, {jsonrpc: "2.0", id: 1, method: "mining.subscribe", params: [o.agent_str]});
       return poolWrite(pool_id, {
         jsonrpc: "2.0", id: 2, method: "mining.authorize",
-        params: pearlhashAuthorizeParams(pool)
+        params: {...loginWorker(pool), pass: pool.pass}
       });
     }
     if (poolProtocol(pool) === "beam") {

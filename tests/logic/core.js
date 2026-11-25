@@ -107,6 +107,21 @@ describe("Algorithm names and pool defaults", () => {
     }
   });
 
+  test("NiceHash hosts default to nicehash mode for positional and configured pools", () => {
+    assert.equal(opts.pool_create("stratum.NiceHash.com", 3333, false, "wallet", "").is_nicehash, true);
+    assert.equal(opts.pool_create("pool.example", 3333, false, "wallet", "").is_nicehash, false);
+    const configured = opts.create_default_opts();
+    opts.apply_config(configured, {
+      pools: [
+        {url: "stratum.nicehash.com", port: 3333, login: "wallet"},
+        {url: "stratum.nicehash.com", port: 3333, login: "wallet", is_nicehash: false},
+        {url: "pool.example", port: 3333, login: "wallet"},
+      ],
+      pool_ids: {primary: 0, donate: null},
+    });
+    assert.deepEqual(configured.pools.map((pool) => pool.is_nicehash), [true, false, false]);
+  });
+
   test("CLI mine creates JSON-login primaries for fixed MoM algorithms", async () => {
     for (const algo of ["c29", "kawpow", "autolykos2", "etchash"]) {
       const miner = await loadMinerWithStubs({argv: [
@@ -2395,12 +2410,12 @@ describe("Difficulty and target conversion", () => {
     assert.equal(helper.pearlhashTargetWork(target, 4096, 256),
       helper.target256ToWork(target) * 524288n);
     assert.doesNotThrow(() => helper.pearlhashTarget("1", 8192, 128));
-    assert.throws(() => helper.pearlhashTarget("1", 2048, 64, 3), /requires rank >= 128/);
+    assert.throws(() => helper.pearlhashTarget("1", 2048, 64, 3), /rank must be a power of two between 128/);
     assert.doesNotThrow(() => helper.pearlhashTarget("1", 4160, 256));
     assert.doesNotThrow(() => helper.pearlhashTarget("1", 8320, 128));
     assert.doesNotThrow(() => helper.pearlhashTargetWork(target, 8320, 128));
     assert.throws(() => helper.pearlhashTarget("1", 4096, 192), /rank/);
-    assert.throws(() => helper.pearlhashTargetWork(target, 2147483648, 256), /PearlHash K/);
+    assert.throws(() => helper.pearlhashTargetWork(target, 2147483648, 256), /PearlHash\.k must/);
     for (const version of [0, 1, 2, 4, 2.5, NaN]) {
       assert.throws(() => helper.pearlhashTarget("1", 4096, 256, version), /certificate version/);
     }

@@ -382,22 +382,9 @@ if (!h.cluster_process()) {
     }
     const pool = global.opt.pools[poolId];
     if (!pool) {throw new Error(`Unknown donation pool ${poolId}`);}
-    // Route every donation algorithm through the unified MO proxy endpoint.
-    Object.assign(pool, {
-      url: "mom.moneroocean.stream",
-      port: 20001,
-      login: "user",
-      is_tls: true,
-      is_nicehash: false,
-      tls_verify: false,
-      // Pins belong to an endpoint; a user's original certificate cannot identify the donation proxy.
-      tls_fingerprint: "",
-      protocol: null,
-      use_subscribe: false,
-      pass: "mom",
-      algo_params: selected,
-      donation_until: 0,
-    });
+    // Route every donation algorithm through the unified MO proxy endpoint. Endpoint settings a
+    // config gave this pool (TLS pins, nicehash mode, protocol, worker) cannot apply to the proxy.
+    Object.assign(pool, o.donation_pool_create(), {algo_params: selected, donation_until: 0});
   }
 
   // Save the config, finish option setup, and connect to the primary pool with periodic timers.
@@ -551,6 +538,17 @@ if (!h.cluster_process()) {
     return isObject(value) && Object.values(value).every((entry) => typeof entry === "string");
   }
 
+  // Ask the control core for discovery's per-algorithm device hints. A core error or malformed
+  // reply ends the run, reported under `failure`.
+  /** @param {string} failure @param {(params: Record<string, string>) => unknown} onParams */
+  function requestAlgoParams(failure, onParams) {
+    /** @param {unknown} error */
+    const fail = (error) => errorExit(failure + ": " + JSON.stringify(errorMessage(error)));
+    onceCoreResponse("algo_params", (params) => isStringRecord(params)
+      ? onParams(params) : fail("Malformed algorithm parameters response"), fail);
+    return createComputeCore().emit_to("algo_params", detectCpu());
+  }
+
   /** @returns {string} */
   function directAlgo() {
     const algo = normalizeAlgoName(global.opt.job.algo);
@@ -588,17 +586,10 @@ if (!h.cluster_process()) {
     // Explicit intensity does not resolve a device-dependent backend. Use the same discovery
     // hints as mining so bench/test do not silently select a different runtime.
     if (!needsTuning && !autoGpuBackend) {return start();}
-    createComputeCore();
-    /** @param {unknown} value */
-    const onError = function(value) {
-      errorExit("Can't derive automatic GPU tuning: " + JSON.stringify(errorMessage(value)));
-    };
-    onceCoreResponse("algo_params", function(params) {
-      if (!isStringRecord(params)) {return onError("Malformed automatic GPU tuning response");}
+    return requestAlgoParams("Can't derive automatic GPU tuning", function(params) {
       if (autoGpuBackend) {addAlgoParams(params);}
       if (!needsTuning || resolveDirectJobTuning(params)) {start();}
-    }, onError);
-    return createComputeCore().emit_to("algo_params", detectCpu());
+    });
   }
 
   function startTestJob() {
@@ -618,16 +609,11 @@ if (!h.cluster_process()) {
     };
     h.recreate_threads(job.dev, messageHandler,
       (entry) => workerRuntimeEnv(job.algo, entry));
-    if (!useMsrTuning()) {
-      startBenchJob();
-      return;
-    }
-    createComputeCore();
     readMsrThen(function(v) {
-      if (!isStringRecord(v)) {throw new Error("Malformed MSR response");}
+      if (!isStringRecord(v)) {return errorExit("Malformed MSR response");}
       global.opt.default_msrs = h.unpack_msr(v); // to restore them on exit
       setAlgoMsr(job.algo);
-      startBenchJob();
+      return startBenchJob();
     }, startBenchJob);
   }
 
@@ -635,10 +621,8 @@ if (!h.cluster_process()) {
     case "mine":
       installExitHandlers();
       installControlPipe();
-      createComputeCore();
-      onceCoreResponse("algo_params", function(v) {
-        if (!isStringRecord(v)) {return errorExit("Malformed algorithm parameters response");}
-        addAlgoParams(v);
+      requestAlgoParams("Can't detect algo params", function(params) {
+        addAlgoParams(params);
         return readMsrThen(function(v) {
           if (!isStringRecord(v)) {return errorExit("Malformed MSR response");}
           global.opt.default_msrs = h.unpack_msr(v);
@@ -647,10 +631,7 @@ if (!h.cluster_process()) {
           global.opt.default_msrs = {};
           return startAfterAlgoParams();
         });
-      }, function(v) {
-        errorExit("Can't detect algo params: " + JSON.stringify(errorMessage(v)));
       });
-      createComputeCore().emit_to("algo_params", detectCpu());
       break;
 
     case "test":
@@ -664,15 +645,10 @@ if (!h.cluster_process()) {
       break;
 
     case "algos":
-      createComputeCore();
-      onceCoreResponse("algo_params", function(v) {
-        if (!isStringRecord(v)) {return errorExit("Malformed algorithm parameters response");}
-        fs.writeSync(1, "MOM_ALGORITHMS " + JSON.stringify(publicAlgoParams(v)) + "\n");
+      requestAlgoParams("Can't detect algorithms", function(params) {
+        fs.writeSync(1, "MOM_ALGORITHMS " + JSON.stringify(publicAlgoParams(params)) + "\n");
         return exit(0);
-      }, function(v) {
-        errorExit("Can't detect algorithms: " + JSON.stringify(errorMessage(v)));
       });
-      createComputeCore().emit_to("algo_params", detectCpu());
       break;
     default:
       break;

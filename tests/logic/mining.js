@@ -1114,6 +1114,7 @@ describe("Native donation tuning and protocol configuration", () => {
         {
           url: "nicehash.example", port: 3333, login: "nicehash-wallet", pass: "x",
           is_nicehash: true, is_tls: true, tls_verify: true, tls_fingerprint: "ab".repeat(32), use_subscribe: false,
+          is_keepalive: false, worker: "rig",
         },
         {url: "pool.example", port: 1, login: "wallet", pass: "x"},
       ],
@@ -1139,6 +1140,9 @@ describe("Native donation tuning and protocol configuration", () => {
       assert.equal(donation.is_nicehash, false);
       assert.equal(donation.tls_verify, false);
       assert.equal(donation.tls_fingerprint, "");
+      assert.equal(donation.is_keepalive, true);
+      assert.equal(donation.worker, "");
+      assert.equal(donation.pass, "mom");
     } finally {
       fs.rmSync(directory, {recursive: true, force: true});
     }
@@ -1957,7 +1961,8 @@ describe("Pool login advertisement and worker identity", () => {
   });
 
   test("PearlHash splits a dotted CLI login for subscribe and authorize", async () => {
-    const defaultPool = opts.pool_create("pool.example", 1, false, "prl.wallet.rig", "x");
+    // The first dot ends the bech32 wallet, so a dotted worker name stays whole.
+    const defaultPool = opts.pool_create("pool.example", 1, false, "prl1wallet.rig.1", "x");
     assert.equal(defaultPool.worker, "");
     await withMockPool({
       pool: {
@@ -1974,13 +1979,15 @@ describe("Pool login advertisement and worker identity", () => {
       assert.ok(writes[1]);
       assert.equal(writes[0].method, "mining.subscribe");
       assert.equal(writes[1].method, "mining.authorize");
-      assert.deepEqual(writes[1].params, {wallet: "prl.wallet", worker: "rig", pass: "x"});
+      assert.deepEqual(writes[1].params, {wallet: "prl1wallet", worker: "rig.1", pass: "x"});
       poolConfig.last_job = {};
     });
   });
 
   test("PearlHash uses the normal worker fallback for an unusable login suffix", async () => {
-    for (const login of ["prl-wallet", ".worker", "prl-wallet."]) {
+    /** @type {[string, string][]} */
+    const cases = [["prl-wallet", "prl-wallet"], [".worker", ".worker"], ["prl-wallet.", "prl-wallet"]];
+    for (const [login, wallet] of cases) {
       const defaultPool = opts.pool_create("pool.example", 1, false, login, "x");
       await withMockPool({
         pool: {
@@ -1991,7 +1998,7 @@ describe("Pool login advertisement and worker identity", () => {
       }, async ({socket, writes, poolConfig}) => {
         pool.connect_pool_throttle(0, unexpectedPoolJob);
         socket.emit("connect");
-        assert.deepEqual(writes[1]?.params, {wallet: login, worker: "mom", pass: "x"});
+        assert.deepEqual(writes[1]?.params, {wallet, worker: "mom", pass: "x"});
         poolConfig.last_job = {};
       });
     }
@@ -2000,7 +2007,7 @@ describe("Pool login advertisement and worker identity", () => {
   test("PearlHash config worker overrides a dotted login worker", async () => {
     await withMockPool({
       pool: {
-        login: "prl.wallet.embedded", worker: "configured", protocol: "pearlhash", use_subscribe: true,
+        login: "prl1wallet.embedded", worker: "configured", protocol: "pearlhash", use_subscribe: true,
       },
       opt: {job: {algo: "pearlhash"}},
     }, async ({socket, writes, poolConfig}) => {
@@ -2008,7 +2015,7 @@ describe("Pool login advertisement and worker identity", () => {
       socket.emit("connect");
 
       assert.ok(writes[1]);
-      assert.deepEqual(writes[1].params, {wallet: "prl.wallet", worker: "configured", pass: "x"});
+      assert.deepEqual(writes[1].params, {wallet: "prl1wallet", worker: "configured", pass: "x"});
       poolConfig.last_job = {};
     });
   });

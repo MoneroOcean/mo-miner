@@ -106,12 +106,18 @@ function equihashSubmitParams(pool, job, value) {
     equihashNonce2(job, value.nonce), solution];
 }
 
-// XELIS worker name for both mining.authorize and mining.submit: the login's ".worker" suffix,
-// else the configured worker, else "mom" (a trailing dot leaves the suffix empty).
-/** @param {Pick<PoolConfig, "login" | "worker">} pool @returns {string} */
-function xelisWorkerName(pool) {
+// Wallet and worker for the PearlHash and XELIS mining.authorize (XELIS submits repeat the worker,
+// and pools may bind them to the authorized name). Both coins use bech32 addresses ("prl1...",
+// "xel:..."), which contain no dot, so the first dot ends the wallet and a dotted worker name stays
+// whole. A configured worker wins over the login's suffix; "mom" is the last resort. A leading dot
+// is not a separator: it would leave an empty wallet.
+/** @param {Pick<PoolConfig, "login" | "worker">} pool @returns {{wallet: string, worker: string}} */
+function loginWorker(pool) {
   const separator = pool.login.indexOf(".");
-  return (separator < 0 ? "" : pool.login.slice(separator + 1)) || pool.worker || "mom";
+  const split = separator > 0;
+  const wallet = split ? pool.login.slice(0, separator) : pool.login;
+  const suffix = split ? pool.login.slice(separator + 1) : "";
+  return {wallet, worker: pool.worker || suffix || "mom"};
 }
 
 module.exports = {
@@ -120,6 +126,6 @@ module.exports = {
   hexWithoutPrefix,
   isValidNonce,
   reverseHexBytes,
-  xelisWorkerName,
+  loginWorker,
   equihashSubmitParams,
 };

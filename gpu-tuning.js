@@ -1,6 +1,9 @@
 "use strict";
 
-const {pearlhashTarget} = require("./helper/hash");
+// Release packages ship this module with only its listed local requires (tests/release-archive.js);
+// adding one means packaging it too.
+const {checkPearlHashLimits, pearlhashTarget} = require("./helper/hash");
+const {isObject} = require("./helper/validate");
 const {PROGPOW_ALGOS} = require("./miner/algorithms");
 
 const fishhashAlgos = ["fishhash", "karlsenhashv2"];
@@ -47,9 +50,6 @@ const enumFields = {
   tile: new Set(["auto", "1x1", "2x2", "2x4", "4x2", "4x4", "8x2"]),
 };
 const INT32_MAX = 0x7fffffff;
-const PEARLHASH_MAX_DIMENSION = 1 << 24;
-const PEARLHASH_MAX_K = 1 << 16;
-const PEARLHASH_MAX_RANK = 1024;
 const UINT64_MAX = (1n << 64n) - 1n;
 
 /** @param {string} field @returns {field is keyof GpuTuning} */
@@ -84,6 +84,20 @@ function allowedFields(algo) {
   return allAlgoFields;
 }
 
+// Parse a tuning or PearlHash shape integer given as a number or as base-10 digits (device-list
+// text) and check its range.
+/** @param {unknown} value @param {string} label @param {number} minimum @param {number} maximum */
+function parseInteger(value, label, minimum, maximum) {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^\d+$/.test(value))) {
+    throw new Error(`${label} must be a base-10 integer`);
+  }
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < minimum || number > maximum) {
+    throw new Error(`${label} must be an integer between ${minimum} and ${maximum}`);
+  }
+  return number;
+}
+
 // Parse one integer tuning value and apply its field-specific allowed values.
 /**
  * @param {keyof GpuTuning} field
@@ -91,14 +105,7 @@ function allowedFields(algo) {
  * @param {string} label
  */
 function validateInteger(field, value, label) {
-  if (typeof value !== "number" && (typeof value !== "string" || !/^\d+$/.test(value))) {
-    throw new Error(`${label} must be a base-10 integer`);
-  }
-  const number = Number(value);
-  const minimum = zeroAllowedFields.has(field) ? 0 : 1;
-  if (!Number.isSafeInteger(number) || number < minimum || number > 0xffffffff) {
-    throw new Error(`${label} must be an integer between ${minimum} and 4294967295`);
-  }
+  const number = parseInteger(value, label, zeroAllowedFields.has(field) ? 0 : 1, 0xffffffff);
   if (field === "seed_workgroup" && ![64, 128, 256].includes(number)) {
     throw new Error(`${label} must be 64, 128, or 256`);
   }
@@ -122,43 +129,12 @@ function validateInteger(field, value, label) {
  */
 function validatePearlHashShape(m, n, k, rank, context = "PearlHash shape") {
   /** @param {unknown} value @param {string} field */
-  function normalize(value, field) {
-    if (typeof value !== "number" &&
-        (typeof value !== "string" || !/^\d+$/.test(value))) {
-      throw new Error(`${context}.${field} must be a decimal integer`);
-    }
-    const number = typeof value === "number" ? value : Number(value);
-    if (!Number.isSafeInteger(number) || number < 1 || number > INT32_MAX) {
-      throw new Error(`${context}.${field} must be a positive integer at most ${INT32_MAX}`);
-    }
-    return number;
-  }
-
+  const normalize = (value, field) => parseInteger(value, `${context}.${field}`, 1, INT32_MAX);
   const shape = {
     m: normalize(m, "m"), n: normalize(n, "n"),
     k: normalize(k, "k"), rank: normalize(rank, "rank"),
   };
-  /** @type {("m" | "n")[]} */
-  const matrixFields = ["m", "n"];
-  for (const field of matrixFields) {
-    const value = shape[field];
-    if (value < 128 || value > PEARLHASH_MAX_DIMENSION || value % 32 !== 0) {
-      throw new Error(`${context}.${field} must be a multiple of 32 between 128 and ` +
-        PEARLHASH_MAX_DIMENSION);
-    }
-  }
-  if (shape.k < 1024 || shape.k > PEARLHASH_MAX_K || shape.k % 64 !== 0) {
-    throw new Error(`${context}.k must be a multiple of 64 between 1024 and ` +
-      PEARLHASH_MAX_K);
-  }
-  if (shape.rank < 128 || shape.rank > PEARLHASH_MAX_RANK ||
-      (shape.rank & (shape.rank - 1)) !== 0) {
-    throw new Error(`${context}.rank must be a power of two between 128 and ` +
-      PEARLHASH_MAX_RANK);
-  }
-  if (shape.k < 16 * shape.rank || shape.k > 4 * shape.rank * shape.rank) {
-    throw new Error(`${context}.k must be between 16*rank and 4*rank^2`);
-  }
+  checkPearlHashLimits(shape, context);
   if (shape.m * shape.rank > INT32_MAX || shape.n * shape.rank > INT32_MAX ||
       shape.m * shape.k > INT32_MAX) {
     throw new Error(`${context} exceeds the supported signed-index range`);
@@ -180,7 +156,7 @@ function validatePearlHashShape(m, n, k, rank, context = "PearlHash shape") {
  * @returns {GpuTuning}
  */
 function validateTuning(algo, tuning, context = "tuning") {
-  if (!tuning || typeof tuning !== "object" || Array.isArray(tuning)) {
+  if (!isObject(tuning)) {
     throw new Error(`${context} must be an object`);
   }
   const allowed = allowedFields(algo);
@@ -226,35 +202,7 @@ function validateTuning(algo, tuning, context = "tuning") {
       throw new Error(`${context}.${field} must be a multiple of 16 between 16 and ${maximum}`);
     }
   }
-  if (algo === "pearlhash") {
-    /** @type {("m" | "n")[]} */
-    const matrixFields = ["m", "n"];
-    for (const field of matrixFields) {
-      const value = result[field];
-      if (value !== undefined && value > PEARLHASH_MAX_DIMENSION) {
-        throw new Error(`${context}.${field} must be at most ${PEARLHASH_MAX_DIMENSION}`);
-      }
-      if (value !== undefined && (value < 128 || value % 32 !== 0)) {
-        throw new Error(`${context}.${field} must be at least 128 and a multiple of 32`);
-      }
-    }
-    if (result.k !== undefined && result.k > PEARLHASH_MAX_K) {
-      throw new Error(`${context}.k must be at most ${PEARLHASH_MAX_K}`);
-    }
-    if (result.k !== undefined && (result.k < 1024 || result.k % 64 !== 0)) {
-      throw new Error(`${context}.k must be at least 1024 and a multiple of 64`);
-    }
-    if (result.rank !== undefined &&
-        (result.rank < 128 || result.rank > PEARLHASH_MAX_RANK ||
-         (result.rank & (result.rank - 1)) !== 0)) {
-      throw new Error(`${context}.rank must be a power of two between 128 and ` +
-        PEARLHASH_MAX_RANK);
-    }
-    if (result.k !== undefined && result.rank !== undefined &&
-        (result.k < 16 * result.rank || result.k > 4 * result.rank * result.rank)) {
-      throw new Error(`${context}.k must be between 16*rank and 4*rank^2`);
-    }
-  }
+  if (algo === "pearlhash") {checkPearlHashLimits(result, context);}
   return result;
 }
 
@@ -307,7 +255,7 @@ function parseDeviceEntry(entry, algo = "") {
   const tuning = parseExpandedTuning(algo, match[3], text);
   if (match[2]) {
     const mainValue = Number.parseInt(match[2], 10);
-    const field = device.startsWith("cpu") ? "intensity" : (mainFieldByAlgo.get(algo) || "intensity");
+    const field = device.startsWith("cpu") ? "intensity" : primaryTuningField(algo);
     if (fixedIntensityAlgos.has(algo) && field === "intensity" && mainValue !== 1) {
       throw new Error(`${text}.intensity must be 1 for ${algo}`);
     }
@@ -353,10 +301,9 @@ function needsPrimaryTuning(dev, algo) {
 // Inverse of parseDeviceEntry with fields in a stable order; CPU intensity uses the `*N` form.
 /** @param {DeviceEntry} entry */
 function formatDeviceEntry(entry) {
-  const tuningValues = entry.tuning || {};
   const isCpu = entry.device.startsWith("cpu");
-  const cpuIntensity = isCpu ? tuningValues.intensity : undefined;
-  const fields = Object.entries(tuningValues).filter(
+  const cpuIntensity = isCpu ? entry.tuning.intensity : undefined;
+  const fields = Object.entries(entry.tuning).filter(
     ([key]) => !(isCpu && key === "intensity")
   ).sort(([left], [right]) =>
     (tuningFieldPosition.get(left) ?? tuningFieldOrder.length) -
@@ -376,14 +323,14 @@ function formatDeviceList(entries) {
 /** @param {DeviceEntry} entry */
 function nativeJobDevice(entry) {
   if (!entry.device.startsWith("cpu")) {return entry.device;}
-  const intensity = entry.tuning && entry.tuning.intensity;
+  const intensity = entry.tuning.intensity;
   return `${entry.device}${intensity ? `*${intensity}` : ""}`;
 }
 
 /** @param {DeviceEntry} entry @param {string} [algo] */
 function nativeJobIntensity(entry, algo = "") {
   if (!entry.device.startsWith("gpu")) {return 0;}
-  const value = (entry.tuning || {})[algo === "pearlhash" ? "m" : "intensity"];
+  const value = entry.tuning[algo === "pearlhash" ? "m" : "intensity"];
   if (value === undefined) {return 1;}
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error("GPU tuning intensity must be a finite number");
@@ -405,7 +352,7 @@ function applyNativeJobTuning(job, entry, algo = "") {
   job.intensity = algo === "pearlhash" && pearlM !== undefined
     ? pearlM : nativeJobIntensity(entry, algo);
   if (algo !== "pearlhash") {return job;}
-  const tuning = entry.tuning || {};
+  const tuning = entry.tuning;
   // Pearl workers are independent processes, so each may use its own matrix
   // shape. When only m is specified, retain the established square-matrix
   // behavior by using it as n as well.
@@ -413,31 +360,23 @@ function applyNativeJobTuning(job, entry, algo = "") {
   if (tuning.n !== undefined) {job.pearlhash_n = tuning.n;}
   if (tuning.k !== undefined) {job.pearlhash_k = tuning.k;}
   if (tuning.rank !== undefined) {job.pearlhash_rank = tuning.rank;}
-  const hasShape = Boolean(job.pearlhash_base_target) ||
-    tuning.m !== undefined || tuning.n !== undefined ||
-    tuning.k !== undefined || tuning.rank !== undefined ||
-    job.pearlhash_n !== undefined || job.pearlhash_k !== undefined ||
-    job.pearlhash_rank !== undefined;
-  if (hasShape) {
-    if (job.pearlhash_n === undefined || job.pearlhash_k === undefined ||
-        job.pearlhash_rank === undefined) {
-      throw new Error("PearlHash job shape is incomplete");
-    }
-    const shape = validatePearlHashShape(
-      job.intensity, job.pearlhash_n, job.pearlhash_k, job.pearlhash_rank, "PearlHash job");
-    job.intensity = shape.m;
-    job.pearlhash_n = shape.n;
-    job.pearlhash_k = shape.k;
-    job.pearlhash_rank = shape.rank;
+  // Any tuned dimension has been copied into the job above, so these cover it too.
+  if (!job.pearlhash_base_target && job.pearlhash_n === undefined &&
+      job.pearlhash_k === undefined && job.pearlhash_rank === undefined) {return job;}
+  if (job.pearlhash_n === undefined || job.pearlhash_k === undefined ||
+      job.pearlhash_rank === undefined) {
+    throw new Error("PearlHash job shape is incomplete");
   }
+  const shape = validatePearlHashShape(
+    job.intensity, job.pearlhash_n, job.pearlhash_k, job.pearlhash_rank, "PearlHash job");
+  job.intensity = shape.m;
+  job.pearlhash_n = shape.n;
+  job.pearlhash_k = shape.k;
+  job.pearlhash_rank = shape.rank;
   if (job.pearlhash_base_target) {
-    if (job.pearlhash_k === undefined || job.pearlhash_rank === undefined) {
-      throw new Error("PearlHash job shape is incomplete");
-    }
     // Retuning a worker's matrix must preserve the job's certificate scaling.
     job.target = pearlhashTarget(
-      job.pearlhash_base_target, job.pearlhash_k, job.pearlhash_rank,
-      job.pearlhash_cert_version);
+      job.pearlhash_base_target, shape.k, shape.rank, job.pearlhash_cert_version);
   }
   return job;
 }
@@ -476,6 +415,8 @@ const envByAlgo = {
     ],
   },
   "zelhash": {slots: "MOM_ZELHASH_SLOTS"},
+  // workgroup also sizes the compact layout (native clamps that to 512); an explicit
+  // compact_workgroup is written after it and therefore wins.
   "beamhash3": {
     workgroup: ["MOM_BEAMHASH3_WORKGROUP", "MOM_BEAMHASH3_COMPACT_WG"],
     compact_workgroup: "MOM_BEAMHASH3_COMPACT_WG",
@@ -515,7 +456,7 @@ function tuningCandidate(entry, changes) {
   return {
     device: entry.device,
     processes: entry.processes,
-    tuning: {...(entry.tuning || {}), ...changes},
+    tuning: {...entry.tuning, ...changes},
   };
 }
 
@@ -533,7 +474,7 @@ function alignedScale(value, numerator, denominator, alignment = 256) {
 /** @param {string} algo @param {DeviceEntry} entry @returns {DeviceEntry[]} */
 function autotuneCandidates(algo, entry) {
   if (!entry.device.startsWith("gpu")) {return [entry];}
-  const base = entry.tuning || {};
+  const base = entry.tuning;
   const candidates = [tuningCandidate(entry, {})];
   /** @param {keyof GpuTuning} field @param {(number | string)[]} values */
   const add = (field, values) => {

@@ -357,8 +357,9 @@ Donation mining defaults to a 60-second window every 100 minutes through
 `mom.moneroocean.stream`. It reuses the current algorithm when supported, including fixed
 PearlHash, or uses measured compatible MoneroOcean algorithms on the same selected devices.
 Donation mining is disabled when no compatible algorithm is available. A configuration that sets
-`pools` without `pool_ids.donate` keeps this donation pool, appended after your pools; set
-`pool_ids.donate` to a pool index or `null` (disabled) to choose otherwise.
+`pools` without `pool_ids.donate` keeps this donation pool, appended after your pools. Set
+`pool_ids.donate` to `null` to disable donation; a pool index there names the slot that MoM
+rewrites to this donation endpoint, so it never sends donation work to one of your own pools.
 
 A pool that stops answering is dropped and MoM fails over to the next pool: a request unanswered
 for 60 seconds, or no traffic at all for 20 minutes, counts as a dead connection.

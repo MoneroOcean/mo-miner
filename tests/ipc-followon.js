@@ -16,7 +16,7 @@ const cp = require("node:child_process");
 const cluster = /** @type {typeof import("node:cluster").default} */
   (/** @type {unknown} */ (require("node:cluster")));
 const {MAX_PEARL_PROOF_BYTES, MAX_PEARL_PROOF_BASE64,
-  MAX_PROOF_EVENT_OVERHEAD} = require("../helper/worker-protocol");
+  MAX_PROOF_EVENT_OVERHEAD, isTargetHex} = require("../helper/worker-protocol");
 const prefix = "MOM_WORKER_MESSAGE ";
 
 /** @typedef {import("node:events").EventEmitter & {id: number,
@@ -261,5 +261,17 @@ test.describe("Worker origin validation and diagnostic privacy", {concurrency: f
     f.workers[0].stdout.emit("end");
     f.workers[0].emit("exit", 7, null);
     assert.ok((/** @type {string} */ (/** @type {FixtureEvent} */ (f.events[0]).value.message)).includes("ordinary partial diagnostic"));
+  });
+});
+
+test.describe("Worker job admission", () => {
+  test("share targets are whole hex bytes, as the native core parses them", () => {
+    for (const target of ["ff", "0x00ff", "b88d0600", "f".repeat(64)]) {
+      assert.equal(isTargetHex(target), true, target);
+    }
+    // Odd digit counts used to pass JS admission and then fail in every worker as "Bad target hex".
+    for (const target of ["", "0x", "abc", "0xabc", "f".repeat(66), "zz", 255]) {
+      assert.equal(isTargetHex(target), false, String(target));
+    }
   });
 });
