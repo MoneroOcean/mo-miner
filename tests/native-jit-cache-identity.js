@@ -1,7 +1,8 @@
 "use strict";
 const {describe, test} = require("node:test"), assert = require("node:assert/strict");
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const fs = require("node:fs"), path = require("node:path");
 const {nativeJitCacheTag, nativeJitCacheHeader, admittedJitCacheTag} = require("../scripts/native-jit-cache-tag");
+const {tempDir} = require("./common/temp-dir");
 
 describe("Native JIT closure identity", () => {
   const a = "a".repeat(64), b = "b".repeat(64), recipes = {"runtime/main.cpp": a},
@@ -33,8 +34,7 @@ describe("Native JIT closure identity", () => {
     assert.throws(() => nativeJitCacheTag("linux-x64", [first], recipes, ["bad\noption"]), /link plan/);
   });
   test("admitted file relocation preserves identity but changed bytes invalidate it", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-jit-tag-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-jit-tag-");
     const left = path.join(root, "left.lib"), right = path.join(root, "right.lib"), repo = path.resolve(__dirname, "..");
     fs.writeFileSync(left, "same admitted bytes"); fs.copyFileSync(left, right);
     const tag = admittedJitCacheTag(repo, "windows-x64", {sdk: [left]});

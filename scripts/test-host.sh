@@ -88,7 +88,7 @@ extract_cpp beam_compact_flush.inc sycl/beamhash3/compact-solver.inc \
   '          for (unsigned r = subgroup; r < lsz; r += subgroups) {'
 extract_cpp beam_generic_flush.inc sycl/beamhash3/generic-solver.inc \
   '            for (unsigned r = warp_id; r < lsz; r += wg_warps) {'
-build_run beam-scatter -UNDEBUG -I "$out" "$root/tests/native/beam-scatter.cpp"
+build_run beamhash3-scatter -UNDEBUG -I "$out" "$root/tests/native/beamhash3-scatter.cpp"
 extract_cpp beam_workgroup_helpers.inc sycl/lib-internal.h 'inline bool mom_parse_env_ulong(' \
   'inline std::optional<bool> mom_env_flag(' 'inline bool sycl_local_memory_fits(' \
   'inline bool sycl_workgroup_fits(' 'inline unsigned sycl_default_workgroup('

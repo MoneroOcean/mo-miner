@@ -7,6 +7,7 @@ const {isolateCoffCompilerArchives, verifyCoffArchive, auditCoffArchiveInputs} =
 const {validateProducerReceipt, validateArchiveGraph, validateFreshOutput, validateStageAncestry, verifyRecordedArtifacts,
   validateToolsManifest, validateRecipeRecord, readPinnedProducerResult, hashTools, inspectWindowsJitSdk,
   windowsJitIsolationHandoff} = require("../scripts/isolate-native-windows-jit");
+const {tempDir} = require("./common/temp-dir");
 
 /** @param {Array<{name: string, data: Buffer}>} rows */
 function makeArchive(rows) {
@@ -101,8 +102,7 @@ function run(name, args, cwd) {
  * shared CRT/OS-style imports. No Windows SDK, executable runtime, network or GPU is needed.
  * @param {import("node:test").TestContext} t @param {boolean} [directive] */
 function fixture(t, directive = false) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-coff-archive-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-coff-archive-");
   const archives = [];
   for (const [name, value] of [["one", 7], ["two", 11]]) {
     const helper = path.join(root, name + "-long-compiler-helper-name.cpp"), factory = path.join(root, name + "-factory.cpp");
@@ -139,8 +139,7 @@ test.describe("Source-preserving Windows compiler archives", {skip}, () => {
     assert.equal(result.transformed[0]?.members, 2);
   });
   test("preserves the MSVC x64 _setjmp hidden frame argument when builtin lowering is enabled", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-coff-setjmp-abi-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-coff-setjmp-abi-");
     const source = path.join(root, "setjmp-abi.c");
     fs.writeFileSync(source, [
       "extern int _setjmp(void *buffer);",
@@ -291,7 +290,7 @@ test.describe("Source-preserving Windows compiler archives", {skip}, () => {
 test.describe("Windows native compiler stack policy", {skip}, () => {
   test("native executables inherit LLVM's stack reserve, not the one-MiB PE default", t => {
     const readobj = discover("llvm-readobj"); if (!readobj) {t.skip("llvm-readobj unavailable for PE header inspection"); return;}
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-stack-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-windows-stack-");
     const repo = path.resolve(__dirname, ".."), source = path.join(root, "main.cpp");
     fs.writeFileSync(source, "#ifdef MOM_TEST_NATIVE_STACK\n#include " + JSON.stringify(path.join(repo, "runtime/windows-stack.h")) +
       "\n#endif\nextern \"C\" int mainCRTStartup() {return 0;}\n");
@@ -351,7 +350,7 @@ test.describe("Windows source-JIT archive handoff", () => {
   });
 
   test("pins the producer receipt, validates recorded recipe shape and explicit LLVM tools", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-jit-inputs-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-windows-jit-inputs-");
     const receipt = path.join(root, "result.json"); fs.writeFileSync(receipt, "{\"producer\":true}\n");
     const pinned = readPinnedProducerResult(receipt, fileHash(receipt)); assert.equal(pinned.result.producer, true);
     assert.throws(() => readPinnedProducerResult(receipt, "0".repeat(64)), /does not match/);

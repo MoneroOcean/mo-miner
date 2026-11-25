@@ -2,46 +2,26 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const test = require("node:test");
+const {tempDir} = require("./common/temp-dir");
+const {extractCppBlock} = require("./common/cpp-source");
 
 const sourceFile = path.join(__dirname, "..", "xmrig", "hw", "msr", "Msr_linux.cpp");
 const source = fs.readFileSync(sourceFile, "utf8");
 
-/** @param {string} name */
-function sourceFunction(name) {
-  const start = source.indexOf(`inline bool ${name}()`);
-  assert.notEqual(start, -1, `missing inline ${name}() in ${sourceFile}`);
-  const opening = source.indexOf("{", start);
-  assert.notEqual(opening, -1, `missing body for ${name}()`);
-  let depth = 0;
-  for (let index = opening; index < source.length; index++) {
-    if (source[index] === "{") {depth++;}
-    if (source[index] === "}" && --depth === 0) {return source.slice(start, index + 1);}
-  }
-  assert.fail(`unterminated ${name}()`);
-}
-
-const constructorStart = source.indexOf("inline MsrPrivate()");
-assert.notEqual(constructorStart, -1, "missing MsrPrivate constructor");
-const constructorOpening = source.indexOf("{", constructorStart);
-let constructorDepth = 0, constructorEnd = -1;
-for (let index = constructorOpening; index < source.length; index++) {
-  if (source[index] === "{") {constructorDepth++;}
-  if (source[index] === "}" && --constructorDepth === 0) {constructorEnd = index + 1; break;}
-}
-assert.notEqual(constructorEnd, -1, "unterminated MsrPrivate constructor");
+// Members of the vendored MsrPrivate class, anchored at its four-space member indentation.
+/** @param {string} declaration */
+const sourceMember = declaration => extractCppBlock(source, "    " + declaration);
 
 test.describe("Native Linux MSR helper boundary", {skip: process.platform !== "linux"}, () => {
   test("uses prepared MSR access without shelling out; Engineering keeps its mocked fallback", async t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-msr-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-msr-");
 
-    const allowWrites = sourceFunction("msr_allow_writes").replace(
+    const allowWrites = sourceMember("inline bool msr_allow_writes()").replace(
       '"/sys/module/msr/parameters/allow_writes"', '"/proc/self/fd/3"');
-    assert.notEqual(allowWrites, sourceFunction("msr_allow_writes"), "fixture must redirect only the sysfs path");
+    assert.notEqual(allowWrites, sourceMember("inline bool msr_allow_writes()"), "fixture must redirect only the sysfs path");
     const fixture = path.join(root, "msr-policy.cpp");
     const body = [
       "#include <cstdlib>", "#include <cstring>", "#include <fcntl.h>", "#include <fstream>",
@@ -68,11 +48,11 @@ test.describe("Native Linux MSR helper boundary", {skip: process.platform !== "l
       "#define system fakeSystem",
       "class MsrPrivate {",
       "public:",
-      source.slice(constructorStart, constructorEnd),
+      sourceMember("inline MsrPrivate()"),
       "  bool isAvailable() const { return m_available; }",
       allowWrites,
-      sourceFunction("msr_device_available"),
-      sourceFunction("msr_modprobe"),
+      sourceMember("inline bool msr_device_available()"),
+      sourceMember("inline bool msr_modprobe()"),
       "private:",
       "  const bool m_available;",
       "};",

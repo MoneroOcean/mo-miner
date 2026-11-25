@@ -50,6 +50,7 @@ const {staticSyclSdkPlan} = require("../scripts/build-native-sycl-sdk");
 const {nativeSdkConfig} = require("../scripts/build-native-release");
 const {nativeSourceInputs, fileHash} = require("../scripts/build-source-inputs");
 const {coffObject} = require("./common/native-windows-component");
+const {tempDir} = require("./common/temp-dir");
 
 const root = path.resolve(__dirname, "..");
 const linuxFixedTmpSkip = process.platform === "linux" ? false : "public CI state roots are fixed under Linux /tmp";
@@ -60,8 +61,7 @@ const linuxOnlySkip = process.platform !== "linux" && "Linux-specific path/archi
 test.describe("Native release runtime workflow", () => {
   test("runtime input commands admit only the selected executable on its runner", t => {
     const {admitCandidate, admitBinary, runtimeLocation} = require("../scripts/ci/runtime-input");
-    const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-runtime-validator-")));
-    t.after(() => fs.rmSync(temp, {recursive: true, force: true}));
+    const temp = fs.realpathSync(tempDir(t, "mom-native-ci-runtime-validator-"));
     const runnerPlatform = process.platform === "win32" ? "win32" : process.platform === "linux" ? "linux" : "unsupported";
     assert.notEqual(runnerPlatform, "unsupported", "the reusable runtime validator tests run on Linux or Windows");
     const mismatchedPlatform = runnerPlatform === "linux" ? "win32" : "linux", artifactPlatform = runnerPlatform === "win32" ? "windows" : "linux";
@@ -263,8 +263,7 @@ test.describe("Native prerequisite acquisition workflow", () => {
   });
 
   test("SDK producer timeout terminates its grandchild process group", {skip: process.platform !== "linux"}, async t => {
-    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-process-group-"));
-    t.after(() => fs.rmSync(temporary, {recursive: true, force: true}));
+    const temporary = tempDir(t, "mom-native-ci-process-group-");
     const {runNodeProcessGroup} = require("../scripts/native-ci-job"),
       timeoutPath = fs.realpathSync("/usr/bin/timeout"), version = spawnSync(timeoutPath, ["--version"], {encoding: "utf8", timeout: 30000});
     if (version.error || version.status !== 0 || !((version.stdout || "") + (version.stderr || "")).includes("GNU coreutils")) {
@@ -325,8 +324,7 @@ setInterval(() => {}, 1000);
 
   test("seal admits canonical handoff files and appends every hash only after all pass", t => {
     const {seal} = require("../scripts/ci/seal");
-    const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-seal-")));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = fs.realpathSync(tempDir(t, "mom-native-ci-seal-"));
     const archive = path.join(directory, "sdk.tar"), result = path.join(directory, "result.json"), output = path.join(directory, "github-output"),
       env = {GITHUB_OUTPUT: output};
     fs.writeFileSync(archive, "Hermes fixture\n"); fs.writeFileSync(result, "{}\n"); fs.writeFileSync(output, "");
@@ -362,8 +360,7 @@ setInterval(() => {}, 1000);
   });
 
   test("GNU target headers have a bounded independent data-only same-run producer", {skip: linuxOnlySkip}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-gnu-ci-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-gnu-ci-");
     const paths = {suffix: "123-1", runnerTemp: fs.realpathSync(runnerTemp)}, environment = {MOM_NATIVE_GNU_HEADERS_DIR: "/tmp/mom-native-gnu-headers-123-1"},
       state = gnuHeadersStatePaths(paths, environment);
     assert.equal(state.root, environment.MOM_NATIVE_GNU_HEADERS_DIR);
@@ -507,8 +504,7 @@ setInterval(() => {}, 1000);
   });
 
   test("Linux JIT resource stage binds exact same-run inputs and public producer commands", {skip: linuxOnlySkip}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-jit-resources-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-jit-resources-");
     const suffix = "ci-123456-2", paths = {suffix, runnerTemp: fs.realpathSync(runnerTemp)}, environment = {
         MOM_NATIVE_LINUX_SOURCES_DIR: "/tmp/mom-native-linux-source-prerequisites-" + suffix,
         MOM_NATIVE_DPCPP_CUDA_INPUTS_DIR: "/tmp/mom-native-dpcpp-cuda-inputs-" + suffix,
@@ -597,8 +593,7 @@ setInterval(() => {}, 1000);
   });
 
   test("local and CI JIT resource trees share the producer without archive or installer work", {skip: linuxOnlySkip}, t => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-shared-jit-tree-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-shared-jit-tree-");
     assert.throws(() => buildLinuxJitResourceTree(
       /** @type {Parameters<typeof buildLinuxJitResourceTree>[0]} */ (/** @type {unknown} */ ({root: directory})),
       {cmake: "/unused/cmake", ninja: "/unused/ninja", cc: "/unused/icx", cxx: "/unused/icpx"}, {}), /refuses an existing output/);
@@ -624,16 +619,14 @@ setInterval(() => {}, 1000);
   });
 
   test("Linux JIT resource artifact rejects stale or substituted same-run input roots", {skip: linuxOnlySkip}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-jit-input-tars-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-jit-input-tars-");
     const suffix = "ci-123456-2", paths = {suffix, runnerTemp: fs.realpathSync(runnerTemp)}, environment = {
         MOM_NATIVE_LINUX_SOURCES_DIR: "/tmp/mom-native-linux-source-prerequisites-" + suffix,
         MOM_NATIVE_DPCPP_CUDA_INPUTS_DIR: "/tmp/mom-native-dpcpp-cuda-inputs-" + suffix,
         MOM_NATIVE_GNU_HEADERS_DIR: "/tmp/mom-native-gnu-headers-" + suffix,
         MOM_NATIVE_LINUX_JIT_RESOURCES_DIR: "/tmp/mom-native-linux-jit-resources-" + suffix,
       }, state = linuxJitResourcesStatePaths(paths, environment), wrongSuffix = "123456-1";
-    const archiveDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-jit-input-archives-"));
-    t.after(() => fs.rmSync(archiveDirectory, {recursive: true, force: true}));
+    const archiveDirectory = tempDir(t, "mom-native-ci-jit-input-archives-");
     /** @type {Array<[string,string,string]>} */ const cases = [
       [state.linux.sourceName, "mom-native-linux-source-prerequisites-" + wrongSuffix, "wrong-sources.tar"],
       [state.dpcpp.name, "mom-native-dpcpp-cuda-inputs-" + wrongSuffix, "wrong-dpcpp.tar"],
@@ -649,8 +642,7 @@ setInterval(() => {}, 1000);
 
   test("Linux JIT resource seal binds the unchanged tar, result and build-only manifest", {skip: linuxOnlySkip}, t => {
     const {sealLinuxJitResources, assertLinuxJitResourceResult} = require("../scripts/ci/linux-sdk");
-    const runnerTemp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-jit-seal-")));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = fs.realpathSync(tempDir(t, "mom-native-ci-jit-seal-"));
     const suffix = "ci-123456-2", name = "mom-native-linux-jit-resources-" + suffix, base = path.join(runnerTemp, "state"),
       linuxJitResourcesRoot = path.join(base, name), manifestFile = path.join(linuxJitResourcesRoot, "resources", "manifest.json"),
       resultFile = path.join(linuxJitResourcesRoot, "ci-result.json"), archive = path.join(runnerTemp, "native-linux-jit-resources-" + suffix + ".tar"),
@@ -695,8 +687,7 @@ setInterval(() => {}, 1000);
     }
   });
   test("shared ROCm/COMGR core checks fresh outputs and LLVM admission before mutation", {skip: linuxOnlySkip}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-rocm-comgr-core-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-rocm-comgr-core-");
     const suffix = process.pid + "-fixture", paths = {suffix, runnerTemp: fs.realpathSync(runnerTemp),
         source: "/tmp/mom-native-prerequisites-" + suffix, sourceName: "mom-native-prerequisites-" + suffix,
         ioSourceName: "mom-native-io-prerequisites-" + suffix,
@@ -721,8 +712,7 @@ setInterval(() => {}, 1000);
   });
 
   test("static OpenMP stage reuses the same-run pinned LLVM source tar and preserves only a build-only SDK handoff", {skip: linuxOnlySkip}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-openmp-paths-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-openmp-paths-");
     const paths = {suffix: "ci-123456-2", source: "/tmp/mom-native-prerequisites-ci-123456-2", sourceName: "mom-native-prerequisites-ci-123456-2",
         runnerTemp: fs.realpathSync(runnerTemp)},
       state = openmpStatePaths(paths, {MOM_NATIVE_OPENMP_SDK_DIR: "/tmp/mom-native-openmp-sdk-ci-123456-2"});
@@ -779,8 +769,7 @@ setInterval(() => {}, 1000);
   });
 
   test("same-run ACPP CUDA/HIP stage consumes admitted same-run DPC++/CUDA and ROCm inputs", {skip: linuxOnlySkip}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-acpp-cuda-hip-paths-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-acpp-cuda-hip-paths-");
     const suffix = "ci-123456-2", paths = {suffix, runnerTemp: fs.realpathSync(runnerTemp),
       source: "/tmp/mom-native-prerequisites-" + suffix, sourceName: "mom-native-prerequisites-" + suffix,
       ioSourceName: "mom-native-io-prerequisites-" + suffix,
@@ -919,8 +908,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("ACPP prepared-source bridge binds the exact run path and shared revision", {skip: linuxOnlySkip}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-acpp-paths-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-acpp-paths-");
     const paths = {suffix: "ci-123456-2", runnerTemp: fs.realpathSync(runnerTemp)},
       environment = {MOM_NATIVE_ACPP_SOURCE_DIR: "/tmp/mom-native-acpp-prerequisites-ci-123456-2"},
       state = acppStatePaths(paths, environment), receipt = {target: "acpp", prepared: {acpp: {root: state.preparedCheckout, revision: syclRevision}}};
@@ -940,8 +928,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("Linux source handoff fetches one compiler cohort and binds both prepared target views", {skip: linuxOnlySkip}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-linux-source-paths-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-linux-source-paths-");
     const source = "/tmp/mom-native-linux-source-prerequisites-ci-123456-2", git = "/usr/bin/git",
       gitSha256 = "a".repeat(64), fetcherSha256 = "b".repeat(64), recipe = sourceRecipe("compiler"), selected = sdkComponents("compiler"),
       names = /** @type {(keyof typeof selected)[]} */ (Object.keys(selected).sort()), linux = sdkComponents("linux"),
@@ -1045,8 +1032,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("real CMake FindCUDAToolkit accepts only a minimal synthetic CUDA root", {skip: process.platform !== "linux" || !fs.existsSync("/usr/bin/cmake")}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-cmake-cuda-probe-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-cmake-cuda-probe-");
     const suffix = process.pid + "-cmake-fixture", paths = {suffix, runnerTemp: fs.realpathSync(runnerTemp)},
       environment = {MOM_NATIVE_LINUX_SOURCES_DIR: "/tmp/mom-native-linux-source-prerequisites-" + suffix,
         MOM_NATIVE_DPCPP_CUDA_INPUTS_DIR: "/tmp/mom-native-dpcpp-cuda-inputs-" + suffix},
@@ -1125,8 +1111,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("synthetic DPC++23/CUDA 12.6 handoff manifest is run-scoped and hash-bound", {skip: process.platform !== "linux"}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-dpcpp-inputs-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-dpcpp-inputs-");
     const suffix = process.pid + "-fixture", paths = {suffix, runnerTemp: fs.realpathSync(runnerTemp)},
       environment = {MOM_NATIVE_LINUX_SOURCES_DIR: "/tmp/mom-native-linux-source-prerequisites-" + suffix,
         MOM_NATIVE_DPCPP_CUDA_INPUTS_DIR: "/tmp/mom-native-dpcpp-cuda-inputs-" + suffix},
@@ -1407,8 +1392,7 @@ test.describe("Native prerequisite provenance and transport", () => {
 
     /** @param {import("node:test").TestContext} t */
     function fixture(t) {
-      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-rocm-parser-"));
-      t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+      const directory = tempDir(t, "mom-native-ci-rocm-parser-");
       const suffix = "ci-123456-2", paths = {suffix, runnerTemp: fs.realpathSync(directory)},
         source = path.join("/tmp", "mom-native-rocm-prerequisites-" + suffix),
         state = {...rocmSourceStatePaths(paths, {MOM_NATIVE_ROCM_SOURCE_DIR: source}),
@@ -1635,8 +1619,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("ROCm source handoff binds pinned roots and parser sdist without rewriting the Git receipt", {skip: linuxOnlySkip}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-rocm-source-paths-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-rocm-source-paths-");
     const source = "/tmp/mom-native-rocm-prerequisites-ci-123456-2", git = "/usr/bin/git",
       gitSha256 = "a".repeat(64), fetcherSha256 = "b".repeat(64), selected = gitSourceComponents("rocm"), recipe = sourceRecipe("rocm"),
       names = /** @type {(keyof typeof origins)[]} */ (Object.keys(selected).sort()), roots = Object.fromEntries(names.map(name => [name, path.join(source, "roots", name)])),
@@ -1681,8 +1664,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("ROCm/COMGR build handoff consumes the exact same-run source and LLVM SDK roots", {skip: linuxOnlySkip}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-rocm-comgr-paths-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-rocm-comgr-paths-");
     const suffix = "ci-123456-2", paths = {suffix, runnerTemp: fs.realpathSync(runnerTemp),
         source: "/tmp/mom-native-prerequisites-" + suffix, sourceName: "mom-native-prerequisites-" + suffix,
         ioSourceName: "mom-native-io-prerequisites-" + suffix,
@@ -1720,8 +1702,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("ROCm host SDK output and COMGR input paths are exact per run attempt", {skip: linuxOnlySkip}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-rocm-host-paths-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-rocm-host-paths-");
     const suffix = "ci-123456-2", paths = {suffix, runnerTemp: fs.realpathSync(runnerTemp),
         source: "/tmp/mom-native-prerequisites-" + suffix, sourceName: "mom-native-prerequisites-" + suffix,
         ioSourceName: "mom-native-io-prerequisites-" + suffix,
@@ -1743,8 +1724,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("ROCm HIP headers include pinned common, CLR AMD, and generated version files", {skip: linuxOnlySkip}, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-hip-headers-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-ci-hip-headers-");
     const common = path.join(root, "hip-common/include/hip"), clr = path.join(root, "clr-hipamd/include/hip/amd_detail"),
       buildInclude = path.join(root, "build/include/hip"), output = path.join(root, "package");
     /** @param {string} file @param {string} [value] */
@@ -1799,8 +1779,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("Hermes run roots, input/output tar paths, and stage budgets are exact and bounded", {skip: process.platform !== "linux"}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-hermes-paths-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-hermes-paths-");
     const paths = {suffix: "ci-123456-2", runnerTemp: fs.realpathSync(runnerTemp)},
       environment = {MOM_NATIVE_HERMES_SOURCE_DIR: "/tmp/mom-native-hermes-prerequisites-ci-123456-2",
         MOM_NATIVE_HERMES_SDK_DIR: "/tmp/mom-native-hermes-sdk-ci-123456-2"}, state = hermesStatePaths(paths, environment);
@@ -1821,8 +1800,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("Hermes SDK fingerprints accept only one canonical producer patch prefix", {skip: process.platform !== "linux"}, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-hermes-fingerprints-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-ci-hermes-fingerprints-");
     const tools = /** @type {ReturnType<typeof import("../scripts/native-ci-linux-support").hermesBuildTools>} */ ({
         git: path.join(root, "git"), cmake: path.join(root, "cmake"), cc: path.join(root, "icx"),
         cxx: path.join(root, "icpx"), ninja: path.join(root, "ninja")}), relative = "runtime/hermes-host-rejections.patch",
@@ -1856,8 +1834,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("run-scoped I/O roots are canonical and remain separate from LLVM artifacts", {skip: process.platform !== "linux"}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-paths-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-paths-");
     const names = ["MOM_NATIVE_CI_SUFFIX", "RUNNER_TEMP", "MOM_AOT_BUILD_ONLY", "MOM_BUILD_JOBS",
       "MOM_NATIVE_SOURCE_DIR", "MOM_NATIVE_LINUX_SDK_DIR", "MOM_NATIVE_IO_SOURCE_DIR", "MOM_NATIVE_IO_SDK_DIR",
       "MOM_NATIVE_LINUX_SOURCES_DIR", "MOM_NATIVE_LINUX_JIT_RESOURCES_DIR", "MOM_NATIVE_ZSTD_SOURCE_DIR", "MOM_NATIVE_ZSTD_SDK_DIR", "MOM_NATIVE_ROCM_COMGR_SDK_DIR",
@@ -1896,8 +1873,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("zstd source and SDK handoffs preserve the producer root and pinned original path", {skip: process.platform !== "linux"}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-zstd-paths-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-zstd-paths-");
     const names = ["MOM_NATIVE_CI_SUFFIX", "RUNNER_TEMP", "MOM_AOT_BUILD_ONLY", "MOM_BUILD_JOBS",
       "MOM_NATIVE_SOURCE_DIR", "MOM_NATIVE_LINUX_SDK_DIR", "MOM_NATIVE_IO_SOURCE_DIR", "MOM_NATIVE_IO_SDK_DIR",
       "MOM_NATIVE_LINUX_SOURCES_DIR", "MOM_NATIVE_LINUX_JIT_RESOURCES_DIR", "MOM_NATIVE_ZSTD_SOURCE_DIR", "MOM_NATIVE_ZSTD_SDK_DIR", "MOM_NATIVE_ROCM_COMGR_SDK_DIR",
@@ -1934,8 +1910,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("zstd audit joins the verified original archive hash to nativeZstdInputs(SDKROOT)", {skip: process.platform !== "linux"}, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-zstd-audit-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-ci-zstd-audit-");
     const source = path.join(root, "mom-native-zstd-source"), sdkRoot = path.join(root, "mom-native-zstd-sdk"),
       archive = path.join(source, "zstd-" + zstdPin.version + ".tar.gz"), receipt = path.join(sdkRoot, "result.json"),
       library = path.join(sdkRoot, "lib/libzstd.a"), toolsFile = path.join(root, "tools.json");
@@ -2090,8 +2065,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("NVRTC verification uses run-scoped roots and uploads receipts plus proof outputs only", {skip: linuxOnlySkip}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-nvrtc-paths-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-nvrtc-paths-");
     const paths = {suffix: "ci-123456-2", runnerTemp: fs.realpathSync(runnerTemp), output: "/tmp/mom-native-llvm21-sdk-ci-123456-2/linux-llvm21-sdk",
         env: {}}, environment = {
         MOM_NATIVE_NVRTC_LINUX_SOURCE_DIR: "/tmp/mom-native-nvrtc-linux-prerequisites-ci-123456-2",
@@ -2224,8 +2198,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("CUTLASS installer retains the pinned license and repairs only a missing cached copy", {skip: process.platform !== "linux"}, t => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-cutlass-license-"));
-    t.after(() => fs.rmSync(workspace, {recursive: true, force: true}));
+    const workspace = tempDir(t, "mom-native-ci-cutlass-license-");
     /** @param {string | Buffer} data */
     const hash = data => createHash("sha256").update(data).digest("hex"),
       license = Buffer.from("CUTLASS license fixture\n"), tensor = Buffer.from("pinned header fixture\n"),
@@ -2296,8 +2269,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("same-run CUDA notice-source handoff binds bounded source receipts and rejects mutation", {skip: process.platform !== "linux"}, t => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-cuda-notice-sources-"));
-    t.after(() => fs.rmSync(workspace, {recursive: true, force: true}));
+    const workspace = tempDir(t, "mom-native-ci-cuda-notice-sources-");
     /** @param {string} file @param {string | Buffer} data */
     const put = (file, data) => {fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, data); return fileHash(file);};
     /** @param {string} suffix */
@@ -2337,8 +2309,7 @@ test.describe("Native prerequisite provenance and transport", () => {
   });
 
   test("CUDA workers bind public SDK/license hashes and reject a 13.3-only header root", {skip: process.platform !== "linux"}, t => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-cuda-worker-"));
-    t.after(() => fs.rmSync(workspace, {recursive: true, force: true}));
+    const workspace = tempDir(t, "mom-native-ci-cuda-worker-");
     /** @param {string | Buffer} data */
     const hash = data => createHash("sha256").update(data).digest("hex");
     /** @param {string} file @param {string | Buffer} [data] */
@@ -2620,8 +2591,7 @@ test.describe("Linux source-JIT prerequisite handoffs", () => {
   });
 
   test("proof-only runtime handoff preserves original bytes and rejects substituted archives", {skip: linuxOnlySkip}, t => {
-    const base = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-jit-runtime-proof-"));
-    t.after(() => fs.rmSync(base, {recursive: true, force: true}));
+    const base = tempDir(t, "mom-native-ci-jit-runtime-proof-");
     const source = path.join(base, "source"), packageBase = path.join(base, "package-base"), runnerTemp = path.join(base, "runner-temp");
     fs.mkdirSync(source); fs.mkdirSync(packageBase); fs.mkdirSync(runnerTemp);
     const proof = path.join(source, "native-dpcpp-jit"), receipt = path.join(source, "result.json"),
@@ -2675,8 +2645,7 @@ test.describe("Linux source-JIT prerequisite handoffs", () => {
   });
 
   test("runtime proof dispatch passes the complete container command to its timeout", {skip: process.platform !== "linux"}, t => {
-    const evidence = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-jit-dispatch-"));
-    t.after(() => fs.rmSync(evidence, {recursive: true, force: true}));
+    const evidence = tempDir(t, "mom-native-ci-jit-dispatch-");
     const mock = `timeout() {
       test "$#" -eq 13 && test "$8" = --env &&
       test "$9" = MOM_NATIVE_JIT_RUNTIME_FIXTURE=/proof/native-dpcpp-jit &&
@@ -2697,8 +2666,7 @@ test.describe("Linux source-JIT prerequisite handoffs", () => {
   });
 
   test("runtime proof failure evidence is bundled only when the evidence directory exists", {skip: process.platform !== "linux"}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-jit-evidence-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-jit-evidence-");
     const env = {PATH: process.env["PATH"], RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: "ci-123456-2"},
       bundle = path.join(runnerTemp, "native-linux-jit-runtime-failure-ci-123456-2.tar"),
       run = (/** @type {string} */ command) => spawnSync("bash", [runtimeScript, command], {env, encoding: "utf8", timeout: 10000});
@@ -2715,8 +2683,7 @@ test.describe("Linux source-JIT prerequisite handoffs", () => {
   });
 
   test("Linux descriptor preserves the exact five profiles and current-run source/link closure", {skip: process.platform !== "linux"}, t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-linux-descriptor-paths-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-linux-descriptor-paths-");
     const suffix = "ci-123456-2", tmpRoot = (/** @type {string} */ name) => "/tmp/" + name + "-" + suffix,
       paths = {suffix, runnerTemp: fs.realpathSync(runnerTemp), source: tmpRoot("mom-native-prerequisites"),
         sourceName: "mom-native-prerequisites-" + suffix, sdkRoot: tmpRoot("mom-native-llvm21-sdk"),
@@ -2828,8 +2795,7 @@ test.describe("Linux source-JIT prerequisite handoffs", () => {
     for (const profile of ["", "cpu", "core,oneapi", "../core"]) {
       assert.throws(() => componentProfile({NATIVE_PROFILE: profile}), /exact Linux Core or GPU factory profile/);
     }
-    const runnerTemp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-component-seal-")));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = fs.realpathSync(tempDir(t, "mom-native-ci-component-seal-"));
     const paths = {suffix: "ci-123456-2", runnerTemp}, state = linuxNativeComponentStatePaths(paths, "dpcpp"), base = path.join(runnerTemp, "state"),
       manifest = path.join(base, state.name, "component.json");
     fs.mkdirSync(path.dirname(manifest), {recursive: true});
@@ -3507,8 +3473,7 @@ test.describe("Windows host-SDK source/composition CI", () => {
   });
 
   test("derives fresh same-runner paths and rejects mismatched build context", t => {
-    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-win-host-sdk-"));
-    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const runnerTemp = tempDir(t, "mom-native-ci-win-host-sdk-");
     const suffix = "ci-987654321-2", workRoot = path.join(fs.realpathSync(runnerTemp), "mom-native-windows-host-sdk-" + suffix),
       outputName = "native-windows-host-sdk-" + suffix,
       environment = {RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: "ci-987654321-2", MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2",
@@ -3578,8 +3543,7 @@ test.describe("Windows LLVM descriptor composition", () => {
   });
 
   test("hashes the explicit LLVM tool files and only accepts a declared sibling alias", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-win-llvm-tools-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-win-llvm-tools-");
     const bytes = Buffer.from("pinned LLVM tool\n"), sha256 = createHash("sha256").update(bytes).digest("hex"), tool = path.join(root, "llvm-nm");
     fs.writeFileSync(tool, bytes, {flag: "wx"});
     assert.deepEqual(auditWindowsLlvmToolFile({path: tool, sha256}, "llvmNm"), {path: tool, resolvedPath: tool, bytes: bytes.length, sha256});

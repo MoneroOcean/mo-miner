@@ -4,6 +4,7 @@ const fs = require("node:fs"), os = require("node:os"), path = require("node:pat
 const test = require("node:test"), assert = require("node:assert/strict");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {isolateCoffObjects, rewriteCoffDirectives, coffSectionPayloads} = require("../scripts/native-compiler-isolation");
+const {tempDir} = require("./common/temp-dir");
 
 /** @param {string} file @returns {boolean} */
 function regularFile(file) {return Boolean(file && fs.statSync(file, {throwIfNoEntry: false})?.isFile());}
@@ -35,8 +36,7 @@ function run(command, args, cwd) {
 function fixture(t, directives = false) {
   assert.ok(toolchain);
   const tools = /** @type {NonNullable<typeof toolchain>} */ (toolchain);
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-coff-isolation-"));
-  t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+  const directory = tempDir(t, "mom-coff-isolation-");
   /** @param {number} value @param {string} factory */
   const source = (value, factory) => [
     ...(directives ? ['#pragma comment(linker, "/INCLUDE:sharedHelper")'] : []),

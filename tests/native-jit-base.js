@@ -1,21 +1,15 @@
 "use strict";
 
 const test = require("node:test"), assert = require("node:assert/strict");
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), {createHash} = require("node:crypto");
+const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {pins} = require("../scripts/native-dpcpp-pins");
 const {prepareNativeJitBase, parseCache, parseInstallComponent, baseManifest, verifyBitcode, pinnedBitcodeInput, pinnedCommitDate, sourceTreeFiles,
   jitPlanCompilerTools, buildLlvmTableGen, REQUIRED} = require("../scripts/prepare-native-jit-base");
 const {jitSdkPlan} = require("../scripts/native-jit-sdk");
 const {sdkComponents} = require("../scripts/prepare-native-sdk-sources");
+const {tempDir} = require("./common/temp-dir");
 const INSTALL_PREFIX = String.fromCharCode(36) + "{CMAKE_INSTALL_PREFIX}";
-
-/** @param {import("node:test").TestContext} t */
-function temp(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-jit-base-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  return root;
-}
 
 /** @param {string} file @param {string | Buffer} value */
 function write(file, value) {
@@ -45,7 +39,7 @@ test.describe("Pinned SYCL JIT base producer fixtures", () => {
   });
 
   test("builds llvm-tblgen from the selected CMake tree and records its output hash", t => {
-    const root = temp(t), build = path.join(root, "build"); fs.mkdirSync(build);
+    const root = tempDir(t, "mom-native-jit-base-"), build = path.join(root, "build"); fs.mkdirSync(build);
     const cmake = "/usr/bin/cmake", cwd = path.join(root, "stage"), log = path.join(root, "llvm-tablegen.log");
     fs.mkdirSync(cwd);
     /** @type {{command?: string, args?: string[], options?: Record<string, unknown>} | undefined} */ let invocation;
@@ -62,7 +56,7 @@ test.describe("Pinned SYCL JIT base producer fixtures", () => {
   });
 
   test("does not admit a stale or missing llvm-tblgen after a failed or empty build", t => {
-    const root = temp(t), build = path.join(root, "build"), cwd = path.join(root, "stage");
+    const root = tempDir(t, "mom-native-jit-base-"), build = path.join(root, "build"), cwd = path.join(root, "stage");
     fs.mkdirSync(path.join(build, "bin"), {recursive: true}); fs.mkdirSync(cwd);
     const stale = path.join(build, "bin/llvm-tblgen"); write(stale, "stale tool\n"); fs.chmodSync(stale, 0o755);
     const failing = () => buildLlvmTableGen("/usr/bin/cmake", build, cwd, {PATH: "/usr/bin"}, path.join(root, "failed.log"),
@@ -133,7 +127,7 @@ test.describe("Pinned SYCL JIT base producer fixtures", () => {
   });
 
   test("emits the resource-preparer's exact explicit manifest schema", t => {
-    const root = temp(t), base = path.join(root, "base");
+    const root = tempDir(t, "mom-native-jit-base-"), base = path.join(root, "base");
     write(path.join(base, "include/sycl/a.hpp"), "A\n"); write(path.join(base, "lib/device.bc"), "B\n");
     const manifest = baseManifest(base);
     assert.deepEqual(Object.keys(manifest), ["version", "files"]);
@@ -145,38 +139,38 @@ test.describe("Pinned SYCL JIT base producer fixtures", () => {
   });
 
   test("base manifest rejects case-folded path aliases", {skip: process.platform === "win32"}, t => {
-    const base = path.join(temp(t), "base");
+    const base = path.join(tempDir(t, "mom-native-jit-base-"), "base");
     write(path.join(base, "include/CL/A.h"), "A"); write(path.join(base, "include/CL/a.h"), "a");
     assert.throws(() => baseManifest(base), /duplicate paths/);
   });
 
   test("base manifest rejects symlinks and special files", {skip: process.platform === "win32"}, t => {
-    const root = temp(t), base = path.join(root, "base");
+    const root = tempDir(t, "mom-native-jit-base-"), base = path.join(root, "base");
     write(path.join(root, "external.h"), "outside"); fs.mkdirSync(base);
     fs.symlinkSync(path.join(root, "external.h"), path.join(base, "escape.h"));
     assert.throws(() => baseManifest(base), /link, special file/);
   });
 
   test("base manifest rejects forbidden native payloads", t => {
-    const base = path.join(temp(t), "base"); write(path.join(base, "bin/clang.exe"), "not a resource");
+    const base = path.join(tempDir(t, "mom-native-jit-base-"), "base"); write(path.join(base, "bin/clang.exe"), "not a resource");
     assert.throws(() => baseManifest(base), /forbidden native payload/);
   });
 
   test("base byte limit is checked before hashing oversized inputs", t => {
-    const base = path.join(temp(t), "base"), file = path.join(base, "large.bc");
+    const base = path.join(tempDir(t, "mom-native-jit-base-"), "base"), file = path.join(base, "large.bc");
     write(file, "x"); fs.truncateSync(file, (64 << 20) + 1);
     assert.throws(() => baseManifest(base), /exceeds byte bounds/);
   });
 
   test("pinned required resources are LLVM bitcode with fixed hashes", t => {
-    const root = temp(t), file = path.join(root, "resource.bc"), bytes = Buffer.concat([Buffer.from([0x42, 0x43, 0xc0, 0xde]), Buffer.alloc(12)]);
+    const root = tempDir(t, "mom-native-jit-base-"), file = path.join(root, "resource.bc"), bytes = Buffer.concat([Buffer.from([0x42, 0x43, 0xc0, 0xde]), Buffer.alloc(12)]);
     write(file, bytes); verifyBitcode(file, createHash("sha256").update(bytes).digest("hex"), "fixture");
     assert.equal(REQUIRED.spirv32.virtual, "lib/clang/23/lib/nvptx64-nvidia-cuda/libspirv.l32.signed_char.bc");
     assert.throws(() => verifyBitcode(file, "0".repeat(64), "fixture"), /pinned SHA-256/);
   });
 
   test("admits relocated CUDA bitcode by its canonical in-root path and pinned bytes", t => {
-    const root = temp(t), file = path.join(root, "nvvm/libdevice/libdevice.10.bc"),
+    const root = tempDir(t, "mom-native-jit-base-"), file = path.join(root, "nvvm/libdevice/libdevice.10.bc"),
       bytes = Buffer.concat([Buffer.from([0x42, 0x43, 0xc0, 0xde]), Buffer.alloc(12)]), sha256 = createHash("sha256").update(bytes).digest("hex"),
       required = {source: "nvvm/libdevice/libdevice.10.bc", virtual: "cuda/nvvm/libdevice/libdevice.10.bc", sha256};
     write(file, bytes);
@@ -189,7 +183,7 @@ test.describe("Pinned SYCL JIT base producer fixtures", () => {
   });
 
   test("relocated CUDA bitcode cannot escape its selected root", {skip: process.platform === "win32"}, t => {
-    const parent = temp(t), root = path.join(parent, "cuda"), external = path.join(parent, "outside.bc"), bytes = Buffer.concat([Buffer.from([0x42, 0x43, 0xc0, 0xde]), Buffer.alloc(12)]),
+    const parent = tempDir(t, "mom-native-jit-base-"), root = path.join(parent, "cuda"), external = path.join(parent, "outside.bc"), bytes = Buffer.concat([Buffer.from([0x42, 0x43, 0xc0, 0xde]), Buffer.alloc(12)]),
       sha256 = createHash("sha256").update(bytes).digest("hex"), required = {source: "nvvm/libdevice/libdevice.10.bc",
         virtual: "cuda/nvvm/libdevice/libdevice.10.bc", sha256};
     write(external, bytes); fs.mkdirSync(path.dirname(path.join(root, required.source)), {recursive: true});
@@ -216,14 +210,14 @@ test.describe("Pinned SYCL JIT base producer fixtures", () => {
   });
 
   test("admits the pinned OpenCL source directory only when it is regular", t => {
-    const root = temp(t), headers = path.join(root, "CL"); fs.mkdirSync(headers);
+    const root = tempDir(t, "mom-native-jit-base-"), headers = path.join(root, "CL"); fs.mkdirSync(headers);
     write(path.join(headers, "cl.h"), "#pragma once\n");
     const result = sourceTreeFiles(root, "CL", "OpenCL-Headers");
     assert.equal(result.files.length, 1); assert.equal(result.files[0]?.sha256, fileHash(path.join(headers, "cl.h")));
   });
 
   test("OpenCL source directory symlinks cannot escape the admitted root", {skip: process.platform === "win32"}, t => {
-    const root = temp(t), headers = path.join(root, "CL"); fs.mkdirSync(headers); write(path.join(root, "outside.h"), "outside");
+    const root = tempDir(t, "mom-native-jit-base-"), headers = path.join(root, "CL"); fs.mkdirSync(headers); write(path.join(root, "outside.h"), "outside");
     fs.symlinkSync(path.join(root, "outside.h"), path.join(headers, "cl.h"));
     assert.throws(() => sourceTreeFiles(root, "CL", "OpenCL-Headers"), /link, special file/);
   });

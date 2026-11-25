@@ -1,18 +1,18 @@
 "use strict";
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {spawnSync} = require("node:child_process");
 const {comgrSdkPlan, comgrDeviceInputs, comgrDependencies, buildComgrSdk} = require("../scripts/build-native-comgr-sdk");
 const {fileHash, sourceInputs} = require("../scripts/build-source-inputs");
 const {comgrSdkInputs, verifyComgrSdkSelection, revision, recipeFiles} = require("../scripts/native-comgr-inputs");
 const {rocmInputs, staticSyclInputs} = require("../scripts/native-sycl-inputs");
 const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
+const {tempDir} = require("./common/temp-dir");
 const sysroot = linuxSysrootRecord({receiptSha256: linuxSysrootReceiptSha256});
 
 /** Exact tiny SDK registry, not enumeration of a real compiler installation.
  * @param {import('node:test').TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-comgr-sdk-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-comgr-sdk-");
   const config = path.join(root, "lib/cmake/AMDDeviceLibs/AMDDeviceLibsConfig.cmake"), data = path.join(root, "amdgcn/bitcode");
   fs.mkdirSync(path.dirname(config), {recursive: true}); fs.mkdirSync(data, {recursive: true});
   const names = ["ocml", "ockl", "opencl", "hip", "asanrtl"];

@@ -5,6 +5,7 @@ const sysroot = require("../scripts/native-linux-sysroot");
 const {sysrootArchiveCatalog, libdrmArchiveCatalog} = require("../scripts/fetch-native-sdk-sources");
 const {libdrmPin} = require("../scripts/build-native-libdrm");
 const {nativeSdkEnvironment} = require("../scripts/build-environment");
+const {tempDir} = require("./common/temp-dir");
 
 // A real prepared sysroot is opt-in: point MOM_TEST_SYSROOT_PACKAGES at a verified `fetch-native-sdk-sources.js sysroot` output.
 const packages = process.env["MOM_TEST_SYSROOT_PACKAGES"];
@@ -13,8 +14,7 @@ const packages = process.env["MOM_TEST_SYSROOT_PACKAGES"];
  * The host C compiler is enough: the probe only exercises CMake's search policy.
  * @param {import("node:test").TestContext} t @param {{root: string, toolchain: string}} prepared */
 function assertToolchainSearch(t, prepared) {
-  const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mom-sysroot-cmake-")));
-  t.after(() => fs.rmSync(work, {recursive: true, force: true}));
+  const work = fs.realpathSync(tempDir(t, "mom-sysroot-cmake-"));
   const sdk = path.join(path.dirname(path.dirname(prepared.root)), "fixture-sdk");
   fs.mkdirSync(path.join(sdk, "lib"), {recursive: true}); fs.writeFileSync(path.join(sdk, "lib/libfixture.a"), "!<arch>\n");
   fs.writeFileSync(path.join(work, "CMakeLists.txt"), ["cmake_minimum_required(VERSION 3.20)", "project(probe C)",
@@ -100,8 +100,7 @@ test.describe("glibc 2.31 Linux sysroot", () => {
   });
 
   test("the tree digest covers paths, contents and link targets and rejects absolute links", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-sysroot-digest-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-sysroot-digest-");
     fs.mkdirSync(path.join(root, "usr/lib"), {recursive: true});
     fs.writeFileSync(path.join(root, "usr/lib/libc.so"), "GROUP ( /lib/libc.so.6 )\n");
     fs.symlinkSync("../../lib/libc.so.6", path.join(root, "usr/lib/libc.so.6"));

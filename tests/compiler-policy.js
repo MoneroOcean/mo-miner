@@ -27,6 +27,7 @@ const {
 } = require("./common/miner-command");
 
 const {readSyclSource, extractCppBlock} = require("./common/cpp-source");
+const {tempDir} = require("./common/temp-dir");
 
 // Fixtures that compile production MOM_* on/off switches include the real parser.
 /** @param {string} fixture */
@@ -2385,8 +2386,7 @@ int main() {
     }, async (t) => {
       const shared = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
       const xelis = fs.readFileSync(path.join(__dirname, "../sycl/xelishashv3/device.inc"), "utf8");
-      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-wide-multiply-"));
-      t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+      const directory = tempDir(t, "mom-wide-multiply-");
       fs.writeFileSync(path.join(directory, "wide-multiply.inc"),
         extractCppBlock(shared, "inline uint64_t mom_mul_wide_u32(") +
         extractCppBlock(shared, "inline uint64_t mom_mul_hi_u64(") +
@@ -2415,8 +2415,7 @@ int main() {
       skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
     }, (t) => {
       const layout = fs.readFileSync(path.join(__dirname, "../sycl/beamhash3/layout.inc"), "utf8");
-      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-beam-compact-portable-"));
-      t.after(() => fs.rmSync(fixture, {recursive: true, force: true}));
+      const fixture = tempDir(t, "mom-beam-compact-portable-");
       fs.writeFileSync(path.join(fixture, "beam_compact_enabled.inc"),
         extractCppBlock(layout, "inline bool beam_compact_enabled("));
       writeEnvFlagParser(fixture);
@@ -2425,7 +2424,7 @@ int main() {
         const executable = path.join(fixture, portable ? "portable" : "native");
         const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
           ...(portable ? ["-DMOM_SYCL_PORTABLE_OPENCL"] : []), "-I", fixture,
-          path.join(__dirname, "native/beam-compact-portable.cpp"), "-o", executable], {encoding: "utf8"});
+          path.join(__dirname, "native/beamhash3-compact-portable.cpp"), "-o", executable], {encoding: "utf8"});
         assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
         const result = spawnSync(executable, [], {encoding: "utf8"});
         assert.equal(result.status, 0, result.error?.message || result.stderr);
@@ -5621,8 +5620,7 @@ int main(int argc, char** argv) {
   test.describe("Intel discrete and integrated compiler policy", {concurrency: false}, () => {
     /** @param {import("node:test").TestContext} t */
     function portableFixture(t) {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-igpu-policy-"));
-      t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+      const root = tempDir(t, "mom-igpu-policy-");
       fs.mkdirSync(path.join(root, "dpcpp-opencl"));
       fs.writeFileSync(path.join(root, "dpcpp-opencl", "mom.node"), "test");
       return {MOM_GPU_BACKEND: "intel_igpu", MOM_NATIVE_DIR: root};

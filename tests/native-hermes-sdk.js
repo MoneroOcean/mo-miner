@@ -1,15 +1,16 @@
 "use strict";
-const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {hermesPins, hermesRecipeFiles, hermesSdkPlan, hermesSourceFiles, validateHermesResumeCache, copyHermesSourceChanges,
   hermesResumeBaseline, buildNativeHermes} = require("../scripts/build-native-hermes");
 const {nativeSdkEnvironment} = require("../scripts/build-environment");
 const {fileHash, sourceInputs} = require("../scripts/build-source-inputs");
 const {spawnSync} = require("node:child_process");
+const {tempDir} = require("./common/temp-dir");
 const tools = {git: "/tools/git", cmake: "/tools/cmake", cc: "/tools/cc", cxx: "/tools/cxx", ninja: "/tools/ninja"};
 const sdkPlan = (jobs = 2, platform = /** @type {NodeJS.Platform} */ ("linux")) => hermesSdkPlan("/source/hermes", "/sdk/new-hermes", tools, jobs, platform);
 /** @returns {any} */
 function resumeFixture(/** @type {import("node:test").TestContext} */ t, target = process.platform) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hermes-resume-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-hermes-resume-");
   const output = path.join(root, "sdk"), source = path.join(output, "source"), build = path.join(output, "build");
   for (const directory of [source, path.join(source, ".git/objects/info"), build, path.join(output, "logs")]) {fs.mkdirSync(directory, {recursive: true});}
   fs.mkdirSync(path.join(source, "lib/VM"), {recursive: true});
@@ -71,8 +72,7 @@ test.describe("Original Static Hermes SDK source production", () => {
     const marker = "diff --git a/lib/VM/CMakeLists.txt b/lib/VM/CMakeLists.txt", start = patch.indexOf(marker);
     assert.ok(start >= 0, "The Windows source patch must own the DateUtil policy");
     const policy = patch.slice(start).split("\n").filter(line => /^\+(?!\+)/.test(line)).map(line => line.slice(1)).join("\n");
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hermes-date-policy-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-hermes-date-policy-");
     fs.writeFileSync(path.join(root, "CMakeLists.txt"), `cmake_minimum_required(VERSION 3.20)
 project(HermesHostPolicy NONE)
 set(WIN32 \${MOM_TEST_WINDOWS})
@@ -130,7 +130,7 @@ endif()
     }, /unknown files/);
   });
   test("resume source update changes only DateUtil and preserves other source timestamps", /** @param {import("node:test").TestContext} t */ t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hermes-resume-source-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-hermes-resume-source-");
     const destination = path.join(root, "cache-source"), candidate = path.join(root, "candidate-source"), names = "lib/VM/CMakeLists.txt\0lib/VM/Math.cpp\0";
     for (const source of [destination, candidate]) {fs.mkdirSync(path.join(source, "lib/VM"), {recursive: true});}
     fs.writeFileSync(path.join(destination, "lib/VM/CMakeLists.txt"), "old DateUtil policy\n");
@@ -153,7 +153,7 @@ endif()
     fs.writeFileSync(path.join(f.output, "before.json"), JSON.stringify(f.before)); fs.writeFileSync(path.join(f.output, "result.json"), JSON.stringify(f.result));
     assert.throws(() => admit(f), /recipe baseline is not recognized/);
 
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hermes-linux-resume-source-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-hermes-linux-resume-source-");
     const destination = path.join(root, "cached"), candidate = path.join(root, "candidate"), names = "lib/VM/Math.cpp\0";
     for (const source of [destination, candidate]) {fs.mkdirSync(path.join(source, "lib/VM"), {recursive: true}); fs.writeFileSync(path.join(source, "lib/VM/Math.cpp"), "same source\n");}
     const previous = hermesSourceFiles(destination, names), unchanged = hermesSourceFiles(candidate, names);
@@ -204,12 +204,12 @@ endif()
     for (const names of ["", "../bad\0", "/bad\0", "a\\bad\0", "a\0a\0"]) {assert.throws(() => hermesSourceFiles("/missing", names), /source inventory/);}
   });
   test("tracked-source edits change the actual byte inventory", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hermes-sdk-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-hermes-sdk-");
     fs.writeFileSync(path.join(root, "source.cpp"), "old"); const before = hermesSourceFiles(root, "source.cpp\0");
     fs.writeFileSync(path.join(root, "source.cpp"), "new"); assert.notDeepEqual(hermesSourceFiles(root, "source.cpp\0"), before);
   });
   test("SDK source symlinks cannot read unrelated files", {skip: process.platform === "win32"}, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hermes-sdk-link-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-hermes-sdk-link-");
     fs.symlinkSync("/etc/passwd", path.join(root, "source.cpp")); assert.throws(() => hermesSourceFiles(root, "source.cpp\0"), /regular files/);
   });
 });

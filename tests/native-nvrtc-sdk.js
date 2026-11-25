@@ -1,12 +1,14 @@
 "use strict";
 
 const {test, describe} = require("node:test"), assert = require("node:assert/strict");
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), {spawnSync} = require("node:child_process");
+const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {Readable} = require("node:stream"), {createHash} = require("node:crypto");
 const {fetchNvrtcArchives, nvrtcArchiveCatalog} = require("../scripts/fetch-native-sdk-sources");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {prepareNvrtcSdk, admitNvrtcSdk, nvrtcSdkInputs, nvrtcSdkRecipe, memberPlan, streamMember} = require("../scripts/prepare-native-nvrtc-sdk");
 const {oracleEnvironment} = require("../scripts/probe-static-nvrtc");
+const {tempDir} = require("./common/temp-dir");
+const {storedZip} = require("./common/zip-fixture");
 
 /** @typedef {"linux" | "windows"} Platform */
 /** @typedef {"nvrtc" | "nvptxcompiler"} ArchiveName */
@@ -16,56 +18,8 @@ const {oracleEnvironment} = require("../scripts/probe-static-nvrtc");
 /** @typedef {Array<[string, Uint8Array]>} ZipEntries */
 /** @typedef {(url: string, options: {redirect: "manual", signal: AbortSignal}) => Promise<Pick<Response, "status" | "url" | "body"> & {headers: Pick<Headers, "get">}>} TestArchiveFetch */
 
-/** @param {string} directory */
-function makeWritable(directory) {
-  if (!fs.existsSync(directory)) {return;}
-  const stat = fs.lstatSync(directory);
-  if (stat.isSymbolicLink()) {return;}
-  if (stat.isDirectory()) {
-    fs.chmodSync(directory, 0o700);
-    for (const name of fs.readdirSync(directory)) {makeWritable(path.join(directory, name));}
-  } else if (stat.isFile()) {fs.chmodSync(directory, 0o600);}
-}
-
-/** @param {import("node:test").TestContext} t */
-function rootFixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nvrtc-sdk-"));
-  t.after(() => {makeWritable(root); fs.rmSync(root, {recursive: true, force: true});});
-  return root;
-}
-
 /** @param {Buffer} data */
 function sha256(data) {return createHash("sha256").update(data).digest("hex");}
-
-/** @param {Uint8Array} data */
-function crc32(data) {
-  let crc = 0xffffffff;
-  for (const byte of data) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit++) {crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);}
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-/** Build a tiny stored ZIP with ordinary Unix file modes, including optional malformed paths. */
-/** @param {ZipEntries} entries */
-function zipBytes(entries) {
-  const local = [], central = []; let offset = 0;
-  for (const [name, value] of entries) {
-    const nameBytes = Buffer.from(name), data = Buffer.from(value), crc = crc32(data), header = Buffer.alloc(30);
-    header.writeUInt32LE(0x04034b50, 0); header.writeUInt16LE(20, 4); header.writeUInt32LE(crc, 14);
-    header.writeUInt32LE(data.length, 18); header.writeUInt32LE(data.length, 22); header.writeUInt16LE(nameBytes.length, 26);
-    local.push(header, nameBytes, data);
-    const row = Buffer.alloc(46); row.writeUInt32LE(0x02014b50, 0); row.writeUInt16LE(0x0314, 4); row.writeUInt16LE(20, 6);
-    row.writeUInt32LE(crc, 16); row.writeUInt32LE(data.length, 20); row.writeUInt32LE(data.length, 24);
-    row.writeUInt16LE(nameBytes.length, 28); row.writeUInt32LE((0o100644 << 16) >>> 0, 38); row.writeUInt32LE(offset, 42);
-    central.push(row, nameBytes); offset += header.length + nameBytes.length + data.length;
-  }
-  const centralBytes = Buffer.concat(central), end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10);
-  end.writeUInt32LE(centralBytes.length, 12); end.writeUInt32LE(offset, 16);
-  return Buffer.concat([...local, centralBytes, end]);
-}
 
 /** @param {Platform} platform @param {string} fileName */
 function archiveRoot(platform, fileName) {return fileName.slice(0, -(platform === "linux" ? ".tar.xz" : ".zip").length);}
@@ -104,7 +58,7 @@ function buildArchives(root, platform, options = {}, cohort = platform) {
         entries.push([row.source.member, Buffer.from("fixture " + row.source.member + "\n")]);
       }
       if (options.malformedPath && name === "nvrtc") {entries.push([rootName + "/../escape", Buffer.from("not extracted")]);}
-      data[name] = zipBytes(entries);
+      data[name] = storedZip(entries);
     }
   }
   assert.ok(Object.values(data).every(bytes => bytes.length < (1 << 20)), "synthetic archives stay below 1 MiB");
@@ -114,7 +68,7 @@ function buildArchives(root, platform, options = {}, cohort = platform) {
 /** @param {import("node:test").TestContext} t @param {Platform} platform @param {FixtureOptions} [options] @param {"linux" | "windows" | "linux-12.6"} [cohort]
  * @returns {Promise<{root: string, source: string, output: string, hashes: ArchiveHashes, archives: TestArchives}>} */
 async function assembledFixture(t, platform, options = {}, cohort = platform) {
-  const root = rootFixture(t), archives = buildArchives(root, platform, options, cohort), source = path.join(root, "verified-originals"), output = path.join(root, "assembled-sdk"),
+  const root = tempDir(t, "mom-nvrtc-sdk-"), archives = buildArchives(root, platform, options, cohort), source = path.join(root, "verified-originals"), output = path.join(root, "assembled-sdk"),
     hashes = Object.fromEntries(Object.entries(archives).map(([name, bytes]) => [name, {sha256: sha256(bytes)}]));
   const fetch = /** @type {TestArchiveFetch} */ (async (url, _options) => {
     const name = url.includes("/cuda_nvrtc/") ? "nvrtc" : "nvptxcompiler", body = archives[name];
@@ -144,7 +98,7 @@ describe("offline NVRTC SDK assembly and admission", {skip: process.platform !==
   });
 
   test("a byte-limit failure waits for a TERM-ignoring extractor to be killed", async t => {
-    const root = rootFixture(t), pidFile = path.join(root, "child.pid"), destination = path.join(root, "partial.bin");
+    const root = tempDir(t, "mom-nvrtc-sdk-"), pidFile = path.join(root, "child.pid"), destination = path.join(root, "partial.bin");
     const child = `require("node:fs").writeFileSync(${JSON.stringify(pidFile)},String(process.pid));` +
       "process.on('SIGTERM',()=>{});process.stdout.write('too many bytes');setInterval(()=>{},1000);";
     const started = Date.now();

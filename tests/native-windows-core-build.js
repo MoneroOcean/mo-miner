@@ -3,17 +3,16 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {validateWindowsCoreDescriptor, intelCoreCompilerVersion, validatePortableEnvironment, sanitizeBuildEnvironment, windowsCorePlan, runTool, parseDumpbinSymbols, parseDumpbinArchive, inspectCoreProject, stageSourceTree, cleanupCoreSourceJunctions, buildNativeWindowsCore} = require("../scripts/build-native-windows-core");
+const {tempDir} = require("./common/temp-dir");
 
 const root = path.resolve(__dirname, "..");
 
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-core-build-"));
-  t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+  const directory = tempDir(t, "mom-windows-core-build-");
   const nodeGyp = path.join(directory, "node-gyp.js"), msbuild = path.join(directory, "MSBuild.exe"), python = path.join(directory, "python.exe");
   const msvcDirectory = path.join(directory, "MSVC", "14.44.35207", "bin", "HostX64", "x64"), dumpbin = path.join(msvcDirectory, "dumpbin.exe");
   fs.mkdirSync(msvcDirectory, {recursive: true});

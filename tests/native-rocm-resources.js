@@ -1,7 +1,8 @@
 "use strict";
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {validateConfig, hiprtcHeaders, resourcePlan, buildResources} = require("../scripts/build-native-rocm-resources");
+const {tempDir} = require("./common/temp-dir");
 const config = (target = "win32") => ({version: 1, target, source: "/source", clr: "/clr", llvm: "/llvm", cmake: "/cmake", hipHeaders: "/headers"});
 const list = (rows = Array.from({length: 16}, (_, i) => "${HIP_COMMON_INCLUDE_DIR}/hip/file" + i + ".h")) => "set(HIPRTC_HEADERS\n" + rows.join("\n") + "\n)\n"; // eslint-disable-line no-template-curly-in-string -- Literal pinned CMake syntax.
 
@@ -64,7 +65,7 @@ test.describe("Native HIPRTC actual cross-preprocessor ABI regression", () => {
   const clang = "/usr/lib/llvm-21/bin/clang";
   for (const target of ["linux", "win32"]) {
     test(target + " HIPRTC preprocessing keeps supplied headers without an installed HIP runtime", {skip: process.platform !== "linux" || !fs.existsSync(clang)}, t => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hiprtc-no-runtime-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+      const root = tempDir(t, "mom-hiprtc-no-runtime-");
       const headers = path.join(root, "headers"), supplied = path.join(headers, "hip", "supplied.h");
       fs.mkdirSync(path.dirname(supplied), {recursive: true});
       const targetGuard = target === "win32" ? "#if !defined(_WIN32)\n#error expected the Windows target ABI\n#endif\n" :
@@ -91,7 +92,7 @@ test.describe("Native HIPRTC actual cross-preprocessor ABI regression", () => {
     });
   }
   test("Windows generation passes the real type check while the former Linux-host generation fails", {skip: process.platform !== "linux" || !fs.existsSync(clang)}, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hiprtc-abi-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-hiprtc-abi-");
     fs.writeFileSync(path.join(root, "hipRTC_header.h"), "typedef __SIZE_TYPE__ size_t;\n");
     for (const target of ["linux", "win32"]) {
       const c = {...config(target), llvm: path.dirname(path.dirname(clang)), hipHeaders: root};

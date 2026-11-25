@@ -241,7 +241,6 @@ describe("Shared NVIDIA compiler provisioning", {skip: process.platform !== "lin
       "scripts/build-nvidia-adaptivecpp.dockerfile", "scripts/package-linux-combined.sh"]) {
       assert.match(fs.readFileSync(path.join(__dirname, "..", relative), "utf8"), /install-nvrtc-current\.sh/u);
     }
-    assert.match(fs.readFileSync(path.join(__dirname, "run-hash.js"), "utf8"), /"tests\/nvrtc-installer\.js"/u);
   });
 });
 after(() => {if (work) {fs.rmSync(work, {recursive: true, force: true});}});

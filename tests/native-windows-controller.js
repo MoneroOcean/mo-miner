@@ -16,6 +16,7 @@ const nativeBundle = require("../scripts/native-bundle");
 const hostComponentReader = require("../scripts/native-windows-host-component");
 const {buildFileInputs, fileHash} = require("../scripts/build-source-inputs");
 const {compileNativeObjects} = require("../scripts/native-object-cache");
+const {tempDir} = require("./common/temp-dir");
 
 const repo = path.resolve(__dirname, "..");
 
@@ -76,8 +77,7 @@ function manifestResource(image) {
 
 /** @param {import("node:test").TestContext} t */
 function libraryRootFixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-library-roots-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-win-library-roots-");
   const selected = config(path.join(root, "sdk fixture/with spaces")), roots = selected.windowsSdk.libraryRoots;
   for (const directory of roots) {fs.mkdirSync(directory, {recursive: true});}
   const comsupp = path.join(roots[0] || "", "comsuppw.lib"), uppercase = path.join(roots[1] || "", "extra.LIB"),
@@ -148,8 +148,7 @@ test.describe("Windows COFF reproducibility", () => {
   }, async t => {
     const compiler = process.env["MOM_TEST_WINDOWS_CC"] || "", linker = process.env["MOM_TEST_WINDOWS_LINKER"] || "";
     assert.ok(path.isAbsolute(compiler) && path.isAbsolute(linker), "Select absolute pinned compiler/linker paths");
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom coff repro-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom coff repro-");
     const tools = [compiler, linker].map(file => fileHash(file)), outputs = [];
     const plan = windowsControllerPlan(config(), path.join(root, "plan"), repo),
       compileStamp = plan.compile[0]?.args.filter(arg => arg === "/Brepro") || [],
@@ -369,8 +368,7 @@ console.log("planner import stayed esbuild-free; bundle verification requested e
   });
 
   test("generated C preserves Windows setjmp lowering while C++ flags remain cache-bound", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom win-controller-no-builtin-cache-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom win-controller-no-builtin-cache-");
     const planned = windowsControllerPlan(config(), path.join(root, "planned"), repo);
     const controller = planned.compile[0];
     const processSource = path.join(repo, "runtime/process.cpp");
@@ -441,8 +439,7 @@ fs.writeFileSync(object,JSON.stringify(args));fs.writeFileSync(depfile,object+':
   });
 
   test("simulated compiler commands receive literal argv without a shell", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-controller-command-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-win-controller-command-");
     /** @type {{command: string, args: string[], options: object}[]} */
     const calls = [];
     runTool("/sdk/clang-cl", ["literal;$(false)", "space value", "quote\"value"], root, path.join(root, "tool.log"),
@@ -455,7 +452,7 @@ fs.writeFileSync(object,JSON.stringify(args));fs.writeFileSync(depfile,object+':
   });
 
   test("NMake depfiles retain and hash SDK headers with spaces", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-sdk-deps-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-win-sdk-deps-");
     const output = path.join(root, "out"), header = path.join(root, "sdk header.h"), dep = path.join(root, "fixture.d"), overlay = path.join(root, "overlay.json");
     fs.mkdirSync(output); fs.writeFileSync(header, "header"); fs.writeFileSync(dep, 'fixture.o: "' + header + '"\n'); fs.writeFileSync(overlay, '{"roots":[]}');
     const hashes = dependencyHashes([dep], overlay, output, Date.now() + 1000);
@@ -463,8 +460,7 @@ fs.writeFileSync(object,JSON.stringify(args));fs.writeFileSync(depfile,object+':
   });
 
   test("the production read-only bundle verifier rejects source changes with bounded diagnostics", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-controller-bundle-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-win-controller-bundle-");
     const entry = path.join(root, "entry.js"), bundle = path.join(root, "controller.js");
     fs.writeFileSync(entry, "module.exports = 1;\n");
     esbuild.buildSync(nativeBundle.controllerBundleOptions(entry, bundle));
@@ -476,8 +472,7 @@ fs.writeFileSync(object,JSON.stringify(args));fs.writeFileSync(depfile,object+':
   });
 
   test("the production read-only bundle verifier rejects missing or ambiguous outputs", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-controller-output-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-win-controller-output-");
     const entry = path.join(root, "entry.js"), bundle = path.join(root, "controller.js");
     fs.writeFileSync(entry, "module.exports = 1;\n");
     nativeBundle(root);
@@ -539,7 +534,7 @@ ImageOptionalHeader {
   });
 
   test("a host component receipt replacement during link planning is rejected before admission", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-host-component-freeze-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-win-host-component-freeze-");
     const selected = /** @type {import("../scripts/build-native-windows-controller").WindowsControllerConfig} */ (config(path.join(root, "sdk"))),
       makeFile = (/** @type {string} */ file, data = "!<arch>\n") => {
         fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, data); return file;

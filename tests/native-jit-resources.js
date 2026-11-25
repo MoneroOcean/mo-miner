@@ -1,11 +1,12 @@
 "use strict";
 
 const test = require("node:test"), assert = require("node:assert/strict");
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {prepare, validateProfile, resourceTarget, verifyJitResources, resourceSourceInputs} = require("../scripts/prepare-native-sycl-jit-resources");
 const {jitEmitterPlan, buildJitEmitter, jitSourceInputs} = require("../scripts/native-jit-sdk");
+const {tempDir} = require("./common/temp-dir");
 const producerSource = fs.readFileSync(path.join(__dirname, "../scripts/prepare-native-sycl-jit-resources.js"), "utf8");
 const buildOnlyInput = "tests/native/dpcpp-jit/CMakeLists.txt";
 
@@ -13,12 +14,6 @@ const buildOnlyInput = "tests/native/dpcpp-jit/CMakeLists.txt";
  * noticeRoot?: string, syclInclude?: string, clangBuiltinInclude?: string, baseManifest?: string, headerRoots?: Array<{path: string, virtual: string}>,
  * required?: {spirv32: {virtual: string, sha256: string}, spirv64: {virtual: string, sha256: string}, libdevice: {virtual: string, sha256: string}},
  * notices?: Array<{source: string, virtual: string, sha256: string}>}} TestProfile */
-
-/** @param {import("node:test").TestContext} t */
-function directory(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-sycl-jit-resources-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true})); return root;
-}
 
 /** @param {string} name @returns {string | undefined} */
 function findClang(name = "clang++") {
@@ -51,7 +46,7 @@ function baseEntry(root, source, virtual) {
 function actualProfile(t, target = "x86_64-w64-windows-gnu") {
   const clang = findClang();
   if (!clang) {t.skip("clang++ unavailable for the bounded producer proof"); return /** @type {TestProfile} */ ({});}
-  const root = directory(t), gnuRoot = path.join(root, "gnu-package"), baseRoot = path.join(root, "base-sdk"), noticeRoot = path.join(root, "notices"), build = path.join(root, "build");
+  const root = tempDir(t, "mom-sycl-jit-resources-"), gnuRoot = path.join(root, "gnu-package"), baseRoot = path.join(root, "base-sdk"), noticeRoot = path.join(root, "notices"), build = path.join(root, "build");
   const selected = resourceTarget(target), common = selected.roots.at(-1) + "/common.h";
   for (const directoryName of [...selected.roots, "include/mom-cxx/backward", "usr/share/licenses/mom"]) {
     fs.mkdirSync(path.join(gnuRoot, directoryName), {recursive: true});
@@ -184,7 +179,7 @@ test.describe("Compiler SDK resource admission", {skip: process.platform !== "li
   });
   test("resource symlinks cannot redirect admission outside the artifact", {skip: process.platform === "win32"}, t => {
     const a = artifact(t); if (!a) {return;}
-    const p = path.join(a.root, "overlay", a.manifest.files[0].virtual), outside = path.join(directory(t), "outside");
+    const p = path.join(a.root, "overlay", a.manifest.files[0].virtual), outside = path.join(tempDir(t, "mom-sycl-jit-resources-"), "outside");
     fs.copyFileSync(p, outside); fs.unlinkSync(p); fs.symlinkSync(outside, p);
     assert.throws(() => verifyJitResources(a.root, "x86_64-w64-windows-gnu"), /not regular/);
   });
@@ -221,27 +216,27 @@ test.describe("CPU-only JIT resource bootstrap", {skip: process.platform !== "li
     for (const output of ["/sdk", "/sdk/output", "/", path.resolve(__dirname, "..")]) {assert.throws(() => jitEmitterPlan("/sdk", output), /overlaps/);}
   });
   test("requires explicit build-only admission before reading a missing SDK", t => {
-    const root = directory(t), output = path.join(root, "output");
+    const root = tempDir(t, "mom-sycl-jit-resources-"), output = path.join(root, "output");
     assert.throws(() => buildJitEmitter("/missing-sdk", output, {}), /MOM_AOT_BUILD_ONLY/); assert.ok(!fs.existsSync(output));
   });
   test("target-header input lists cannot add relative, excessive or interpolated paths", {skip: process.platform !== "linux" || process.arch !== "x64"}, t => {
-    const output = path.join(directory(t), "output");
+    const output = path.join(tempDir(t, "mom-sycl-jit-resources-"), "output");
     for (const headers of [null, {}, ["relative"], ["/a;bad"], Array(16385).fill("/header")]) {
       assert.throws(() => buildJitEmitter("/missing-sdk", output, {MOM_AOT_BUILD_ONLY: "1"}, headers), /bounded literal/);
     }
     assert.ok(!fs.existsSync(output));
   });
   test("never overwrites an existing output or its evidence", {skip: process.platform !== "linux" || process.arch !== "x64"}, t => {
-    const root = directory(t), output = path.join(root, "output"); fs.mkdirSync(output); write(path.join(output, "keep"), "evidence");
+    const root = tempDir(t, "mom-sycl-jit-resources-"), output = path.join(root, "output"); fs.mkdirSync(output); write(path.join(output, "keep"), "evidence");
     assert.throws(() => buildJitEmitter("/missing-sdk", output, {MOM_AOT_BUILD_ONLY: "1"}), /existing evidence/);
     assert.equal(fs.readFileSync(path.join(output, "keep"), "utf8"), "evidence");
   });
   test("missing SDK headers fail before creating output", {skip: process.platform !== "linux" || process.arch !== "x64"}, t => {
-    const root = directory(t), sdk = path.join(root, "sdk"), output = path.join(root, "output"); fs.mkdirSync(sdk);
+    const root = tempDir(t, "mom-sycl-jit-resources-"), sdk = path.join(root, "sdk"), output = path.join(root, "output"); fs.mkdirSync(sdk);
     assert.throws(() => buildJitEmitter(sdk, output, {MOM_AOT_BUILD_ONLY: "1"}), /SYCL headers/); assert.ok(!fs.existsSync(output));
   });
   test("symlink aliases cannot hide output inside the selected SDK", {skip: process.platform !== "linux" || process.arch !== "x64"}, t => {
-    const root = directory(t), sdk = path.join(root, "sdk"), alias = path.join(root, "alias"); fs.mkdirSync(sdk); fs.symlinkSync(sdk, alias, "dir");
+    const root = tempDir(t, "mom-sycl-jit-resources-"), sdk = path.join(root, "sdk"), alias = path.join(root, "alias"); fs.mkdirSync(sdk); fs.symlinkSync(sdk, alias, "dir");
     assert.throws(() => buildJitEmitter(sdk, path.join(alias, "output"), {MOM_AOT_BUILD_ONLY: "1"}), /overlaps/);
   });
   test("CLI requires an explicit emitter stage and all arguments", () => {
@@ -252,7 +247,7 @@ test.describe("CPU-only JIT resource bootstrap", {skip: process.platform !== "li
     const sdk = process.env["MOM_TEST_DPCPP_SDK"] || "/opt/dpcpp";
     if (!fs.existsSync(path.join(sdk, "include/sycl/sycl.hpp"))) {t.skip("selected SYCL headers unavailable for the CPU-only emitter build"); return;}
     t.mock.method(console, "log", () => undefined);
-    const root = directory(t), targetHeader = path.join(root, "target-only.h"); write(targetHeader, "#define TARGET_ONLY 1\n");
+    const root = tempDir(t, "mom-sycl-jit-resources-"), targetHeader = path.join(root, "target-only.h"); write(targetHeader, "#define TARGET_ONLY 1\n");
     const r = buildJitEmitter(sdk, path.join(root, "emitter"), {...process.env, MOM_AOT_BUILD_ONLY: "1"}, [targetHeader]);
     assert.equal(r.executed, false); assert.equal(r.publicationQualified, false); assert.equal(r.fixtureSha256, fileHash(r.fixture));
     const outputs = new Set();

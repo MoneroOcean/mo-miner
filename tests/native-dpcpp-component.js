@@ -1,9 +1,10 @@
 "use strict";
-const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {dpcppRuntimeGraph, dpcppComponentInputs, exportDpcppComponent} = require("../scripts/native-dpcpp-component");
 const {fileHash} = require("../scripts/build-source-inputs"), {pins} = require("../scripts/native-dpcpp-pins");
 const {nativeSdkLinkInputs} = require("../scripts/build-native-release");
 const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
+const {tempDir} = require("./common/temp-dir");
 const sysroot = linuxSysrootRecord({receiptSha256: linuxSysrootReceiptSha256});
 const archives = ["libmom-sycl-static.a", "lib/libur_loader.a", "lib/libur_adapter_level_zero.a", "lib/libur_adapter_opencl.a", "lib/libze_loader.a", "deps/libhwloc.a"];
 const objects = ["cuda-adapter.o", "level-zero-v2-adapter.o", "source-jit.o"];
@@ -18,7 +19,7 @@ function graph(jit = "/jit/compiler.o") {
 /** Synthetic bounded ELF/archives exercise admission, not a real SDK qualification.
  * @param {import("node:test").TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-dpcpp-component-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-dpcpp-component-");
   const sdk = path.join(root, "sdk"), build = path.join(sdk, "build"), target = path.join(root, "component"); fs.mkdirSync(build, {recursive: true});
   const elf = Buffer.alloc(24); Buffer.from("7f454c460201", "hex").copy(elf); elf.writeUInt16LE(1, 16); elf.writeUInt16LE(62, 18);
   /** @param {string} name @param {string | Buffer} bytes */

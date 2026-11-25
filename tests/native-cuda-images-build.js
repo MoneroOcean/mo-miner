@@ -1,24 +1,18 @@
 "use strict";
 
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test");
 const assert = require("node:assert/strict");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {cudaHeaderResources} = require("../scripts/native-jit-headers");
 const {buildCudaImages, validateConfig} = require("../scripts/build-native-cuda-images");
 const {cudaImageInputs} = require("../scripts/native-cuda-images");
+const {tempDir} = require("./common/temp-dir");
 
 const repo = path.resolve(__dirname, "..");
 const exportsByProfile = {
   "cn-expand": ["cn_gpu_expand_cuda"], "pearl-rank128": ["pearlhash_cuda_gemm", "pearlhash_cuda_hash"],
   "pearl-rank256": ["pearlhash_cuda_gemm", "pearlhash_cuda_hash"], "pearl-compact": ["compact_gemm", "selector_prepare"],
 };
-
-/** @param {import("node:test").TestContext} t */
-function tempDirectory(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-cuda-image-build-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  return root;
-}
 
 /** @param {string} file @param {string | Buffer} data @param {number} [mode] */
 function write(file, data, mode) {
@@ -145,7 +139,7 @@ const currentCompiler = {major: 13, minor: 3, supportedArchs: [80, 86, 90, 100, 
 
 test.describe("Build-only native CUDA image bundle", () => {
   test("validates trusted explicit recipes before creating output", (t) => {
-    const root = tempDirectory(t), config = {repo, output: path.join(root, "bundle"), compilers: [{
+    const root = tempDir(t, "mom-cuda-image-build-"), config = {repo, output: path.join(root, "bundle"), compilers: [{
       headerPack: path.join(root, "sdk-headers.inc"), worker: {command: path.join(root, "icpx"),
         args: ["-std=c++20", "{source}", "-o", "{output}"], inputs: {[path.join(root, "libnvrtc.so")]: "0".repeat(64)}}}],
     };
@@ -157,7 +151,7 @@ test.describe("Build-only native CUDA image bundle", () => {
   });
 
   test("modern-only query cannot create a release bundle without the 12.6 compatibility baseline", {skip: process.platform === "win32"}, (t) => {
-    const root = tempDirectory(t), onlyModern = recipe(root, currentCompiler);
+    const root = tempDir(t, "mom-cuda-image-build-"), onlyModern = recipe(root, currentCompiler);
     const output = path.join(root, "modern-only-bundle"), config = {repo, output, compilers: [onlyModern.value]};
     assert.throws(() => buildCudaImages(config), /actual NVRTC 12\.6 compute_80/);
     assert.ok(!fs.existsSync(path.join(output, "cuda-images.inc")));
@@ -165,7 +159,7 @@ test.describe("Build-only native CUDA image bundle", () => {
   });
 
   test("query admission accepts only the worker's nested public NVRTC record", {skip: process.platform === "win32"}, (t) => {
-    const root = tempDirectory(t), onlyModern = recipe(root, currentCompiler, {flatQuery: true});
+    const root = tempDir(t, "mom-cuda-image-build-"), onlyModern = recipe(root, currentCompiler, {flatQuery: true});
     const output = path.join(root, "flat-query-bundle"), config = {repo, output, compilers: [onlyModern.value]};
     assert.throws(() => buildCudaImages(config), /valid public compiler query/);
     assert.ok(fs.existsSync(path.join(output, "compiler-00", "query.log")));
@@ -173,7 +167,7 @@ test.describe("Build-only native CUDA image bundle", () => {
   });
 
   test("fake 12.6/13.3 workers query the public API, compile the entire bounded plan, and preserve provenance", {skip: process.platform === "win32"}, (t) => {
-    const root = tempDirectory(t), {config} = buildConfig(root, baselineCompiler, currentCompiler);
+    const root = tempDir(t, "mom-cuda-image-build-"), {config} = buildConfig(root, baselineCompiler, currentCompiler);
     const result = buildCudaImages(config), admitted = cudaImageInputs(result.include, repo);
     const manifest = /** @type {{images: Array<{profile: string, target: string, compiler: {major: number}, ptxVersion: string | null, compatibility: boolean}>,
    * compilers: Array<{inputs: Record<string, string>}>}} */ (/** @type {unknown} */ (admitted.manifest));
@@ -198,7 +192,7 @@ test.describe("Build-only native CUDA image bundle", () => {
   });
 
   test("canonicalizes a compiler alias for both execution and provenance", {skip: process.platform === "win32"}, (t) => {
-    const root = tempDirectory(t), {config} = buildConfig(root, baselineCompiler, currentCompiler);
+    const root = tempDir(t, "mom-cuda-image-build-"), {config} = buildConfig(root, baselineCompiler, currentCompiler);
     const recipe = config.compilers[0];
     assert.ok(recipe);
     const alias = path.join(root, "compiler-alias");
@@ -215,7 +209,7 @@ test.describe("Build-only native CUDA image bundle", () => {
   });
 
   test("ordinary image failures are collected across the plan and preserve worker evidence", {skip: process.platform === "win32"}, (t) => {
-    const root = tempDirectory(t), failing = {...currentCompiler, supportedArchs: [...currentCompiler.supportedArchs]};
+    const root = tempDir(t, "mom-cuda-image-build-"), failing = {...currentCompiler, supportedArchs: [...currentCompiler.supportedArchs]};
     const {config} = buildConfig(root, baselineCompiler, failing, {failTargets: ["sm_86", "compute_100"]});
     assert.throws(() => buildCudaImages(config), /CUDA image compilation failed[\s\S]*sm_86[\s\S]*compute_100/);
     assert.ok(fs.existsSync(path.join(config.output, "failures.json")));
@@ -224,19 +218,19 @@ test.describe("Build-only native CUDA image bundle", () => {
   });
 
   test("input drift and image-size caps fail closed without publishing a bundle", {skip: process.platform === "win32"}, (t) => {
-    const changedRoot = tempDirectory(t), mutation = path.join(changedRoot, "sdk-13.3", "libnvrtc.so");
+    const changedRoot = tempDir(t, "mom-cuda-image-build-"), mutation = path.join(changedRoot, "sdk-13.3", "libnvrtc.so");
     const changedConfig = buildConfig(changedRoot, baselineCompiler, currentCompiler, {mutateTarget: "compute_100", mutateFile: mutation}).config;
     assert.throws(() => buildCudaImages(changedConfig), /changed during CUDA image production/);
     assert.ok(!fs.existsSync(path.join(changedConfig.output, "cuda-images.inc")));
 
-    const cappedRoot = tempDirectory(t), {config} = buildConfig(cappedRoot, baselineCompiler, currentCompiler, {oversizeTarget: "sm_80"});
+    const cappedRoot = tempDir(t, "mom-cuda-image-build-"), {config} = buildConfig(cappedRoot, baselineCompiler, currentCompiler, {oversizeTarget: "sm_80"});
     assert.throws(() => buildCudaImages(config), /64 MiB image data bound/);
     assert.equal(fs.statSync(path.join(config.output, "compiler-00", "images", "0000.cubin")).size, 67108865);
     assert.ok(!fs.existsSync(path.join(config.output, "cuda-images.inc")));
   });
 
   test("unresolved worker timeout stops later launches but leaves command and log evidence", {skip: process.platform === "win32"}, (t) => {
-    const root = tempDirectory(t), {config} = buildConfig(root, baselineCompiler, currentCompiler, {hangQuery: true});
+    const root = tempDir(t, "mom-cuda-image-build-"), {config} = buildConfig(root, baselineCompiler, currentCompiler, {hangQuery: true});
     const bounded = {...config, timeoutMs: 1000};
     assert.throws(() => buildCudaImages(bounded), /Unresolved CUDA worker lifecycle/);
     assert.ok(fs.existsSync(path.join(config.output, "compiler-00", "query.command.json")));

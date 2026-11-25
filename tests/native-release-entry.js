@@ -1,15 +1,16 @@
 "use strict";
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {spawnSync} = require("node:child_process");
 const {buildNativeArtifact, nativeReleaseArguments} = require("../scripts/build-release"), {fileHash} = require("../scripts/build-source-inputs");
 const {assembleNativeNotices} = require("../scripts/prepare-native-notices");
 const linux = require("../scripts/build-native-release"), windows = require("../scripts/build-native-windows-controller"), packer = require("../scripts/pack-native-executable");
+const {tempDir} = require("./common/temp-dir");
 
 /** Stub only existing compiler/packer boundaries; the public orchestration is real.
  * No compiler, VM, GPU, network connection or resulting miner is executed.
  * @param {import("node:test").TestContext} t @param {boolean} [win] */
 function fixture(t, win = false) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-entry-$-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-native-entry-$-");
   const config = path.join(root, "sdk.json"), output = path.join(root, "output"), tool = path.join(root, "packer");
   fs.writeFileSync(config, JSON.stringify(win ? {version: 1, windowsSdk: {}, application: {}} : {version: 1})); fs.writeFileSync(tool, "pinned fixture");
   const packing = {upx: tool, upxSha256: fileHash(tool)}, state = {fail: false, changed: false, probe: false, executed: false, badOutput: false,
@@ -63,7 +64,7 @@ test.describe("Native release entrypoint SDK admission", () => {
   test("control characters in output paths are refused", t => {const f = fixture(t); assert.throws(() => buildNativeArtifact(f.config, f.output + "\n"), /absolute/); assert.equal(f.calls.length, 0);});
   test("an existing destination is never overwritten", t => {const f = fixture(t); fs.mkdirSync(f.output); assert.throws(f.run, /new output/); assert.equal(f.calls.length, 0);});
   test("a symlinked missing output ancestor cannot redirect into maintained sources", {skip: process.platform !== "linux" || process.arch !== "x64"}, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-output-alias-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-output-alias-");
     const source = fs.realpathSync(path.join(__dirname, "..", "runtime")), alias = path.join(root, "source-alias"),
       relative = path.join("native-output-" + path.basename(root), "deep", "candidate"), output = path.join(alias, relative);
     fs.symlinkSync(source, alias, "dir");

@@ -6,6 +6,8 @@ const {fileHash} = require("../scripts/build-source-inputs");
 const {packageNativeRelease} = require("../scripts/package-native-release");
 const {hashTests} = require("./vectors");
 const {spawnSync} = require("node:child_process");
+const {tempDir} = require("./common/temp-dir");
+const {setStableMtime, transientRewriteRestore} = require("./common/file-times");
 
 const noticeName = "THIRD-PARTY-NOTICES.txt", executableName = "mom";
 const hostPlatform = process.platform === "win32" ? "win32" : "linux";
@@ -15,8 +17,7 @@ const successfulCpuSummary = `ℹ tests ${cpuVectorCount}\nℹ suites 1\nℹ pas
 /** Structural candidate/archive fixture; all process execution is stubbed.
  * @param {import('node:test').TestContext} t */
 function fixture(t, platform = hostPlatform) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-archive-contract-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-native-archive-contract-");
   const windows = platform === "win32", archiveExecutableName = windows ? "mom.exe" : executableName;
   const executable = path.join(root, archiveExecutableName), notice = path.join(root, noticeName), config = path.join(root, "config.json"),
     producerFile = path.join(root, "result.json"), entrypoint = path.join(root, "entrypoint.json"), tool = path.join(root, "cmake"),
@@ -103,22 +104,6 @@ function fixture(t, platform = hostPlatform) {
     }));
   return {root, executable, notice, config, producerFile, entrypoint, tool, archive, archiveExecutableName, packageFile, candidate, candidateNotices,
     packageReceipt, writePackage, state, calls, spawn};
-}
-
-const stableFileTime = new Date(1600000000000);
-/** @param {string} file */
-function setStableMtime(file) {fs.utimesSync(file, stableFileTime, stableFileTime);}
-/** @param {string} file @returns {{mtimeNs: bigint, ctimeNs: bigint}} */
-function transientRewriteRestore(file) {
-  const original = fs.readFileSync(file), before = fs.statSync(file, {bigint: true}), changed = Buffer.from(original);
-  changed[0] = (changed[0] || 0) ^ 0xff;
-  fs.writeFileSync(file, changed);
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
-  fs.writeFileSync(file, original); fs.utimesSync(file, stableFileTime, stableFileTime);
-  const after = fs.statSync(file, {bigint: true});
-  assert.equal(after.mtimeNs, before.mtimeNs, "restore the original mtime");
-  assert.notEqual(after.ctimeNs, before.ctimeNs, "the write must still advance ctime");
-  return {mtimeNs: after.mtimeNs, ctimeNs: after.ctimeNs};
 }
 
 test.describe("Flat native archive qualification", () => {

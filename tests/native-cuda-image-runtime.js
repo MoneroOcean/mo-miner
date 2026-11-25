@@ -1,15 +1,15 @@
 "use strict";
 
 const test = require("node:test"), assert = require("node:assert/strict");
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {extractCppBlock} = require("./common/cpp-source");
+const {tempDir} = require("./common/temp-dir");
 const root = path.resolve(__dirname, "..");
 
 test.describe("Native CUDA image runtime", {concurrency: false}, () => {
   test("native CUDA image selector and module-load retry policy run in a CPU harness", (t) => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mom-cuda-image-runtime-"));
-    t.after(() => fs.rmSync(scratch, {recursive: true, force: true}));
+    const scratch = tempDir(t, "mom-cuda-image-runtime-");
     fs.writeFileSync(path.join(scratch, "cuda.h"), String.raw`
 #pragma once
 typedef int CUresult;

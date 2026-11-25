@@ -1,5 +1,5 @@
 "use strict";
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {jitSdkConfig, jitDependencyFiles, jitConfiguredTools, jitConfiguredCompilerFiles, jitConfiguredCompilers, jitCompilerIdentities,
   jitSupportLibraries, buildJitSdk} = require("../scripts/build-native-jit-sdk");
@@ -8,11 +8,12 @@ const {compilerArchives} = require("../scripts/native-compiler-isolation");
 const {fileHash, buildFileInputs} = require("../scripts/build-source-inputs");
 const {windowsIntelRuleOverride, windowsJitToolchainPlan, prepareWindowsJitToolchain} = require("../scripts/prepare-native-jit-toolchain");
 const {sdkComponents} = require("../scripts/prepare-native-sdk-sources");
+const {tempDir} = require("./common/temp-dir");
 
 function config() {return {version: 1, target: "linux", sources: "/sources.json", sdk: "/sdk", resources: "/resources", tools: {cmake: "/cmake", ninja: "/ninja"}, jobs: 2};}
 /** @param {import('node:test').TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-jit-sdk-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-jit-sdk-");
   const file = path.join(root, "deps.log");
   return {root, file, write: (/** @type {string} */ text) => fs.writeFileSync(file, text)};
 }

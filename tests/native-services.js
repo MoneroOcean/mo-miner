@@ -8,9 +8,10 @@ const nativeFs = require("../runtime/fs");
 const crypto = require("../runtime/crypto");
 const zlib = require("../runtime/zlib");
 const nativeProcess = require("../runtime/process");
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {extractCppBlock} = require("./common/cpp-source");
+const {tempDir} = require("./common/temp-dir");
 
 test.describe("Native service compilation portability", {skip: process.platform !== "linux"}, () => {
   test("production gzip bounds compile with Windows min/max macros", (t) => {
@@ -18,8 +19,7 @@ test.describe("Native service compilation portability", {skip: process.platform 
     const expressions = [...source.matchAll(/if \((bytes\.size|capacity) > ([^\n]+)\) \{throw JSError\(rt, "Gzip (?:input|output) is too large"\);\}/g)]
       .map(match => match[2]);
     assert.equal(expressions.length, 2);
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-service-windows-macros-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-service-windows-macros-");
     const file = path.join(directory, "bounds.cpp"), object = path.join(directory, "bounds.o");
     fs.writeFileSync(file, "#include <limits>\nusing uInt=unsigned;\n#define max(a,b) not_a_function\n" +
       expressions.map((expression, index) => `static_assert(${expression} == ~uInt(0), "bound ${index}");`).join("\n"));
@@ -28,8 +28,7 @@ test.describe("Native service compilation portability", {skip: process.platform 
   });
 
   test("production IP helper matches Node literal controls through libuv", (t) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-service-ip-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-service-ip-");
     const source = fs.readFileSync(path.join(__dirname, "../runtime/services.cpp"), "utf8");
     const tls = fs.readFileSync(path.join(__dirname, "../runtime/tls.cpp"), "utf8");
     const cases = new Map([

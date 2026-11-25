@@ -5,6 +5,7 @@ const test = require("node:test"), assert = require("node:assert/strict"), fs = 
 const local = require("../scripts/build-local-native-windows-support"), io = require("../scripts/build-native-io"),
   openssl = require("../scripts/build-native-openssl"), hermes = require("../scripts/build-native-hermes"),
   {fileHash} = require("../scripts/build-source-inputs");
+const {tempDir} = require("./common/temp-dir");
 
 /** @param {string} file @param {string} [text] */
 function write(file, text = "fixture\n") {
@@ -221,8 +222,7 @@ test.describe("local native Windows support", () => {
   });
 
   test("retires stale support outputs and Core runs without following links out of the cache", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-win-support-retire-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-win-support-retire-");
     const outside = write(path.join(root, "outside", "keep.txt")),
       ioParent = path.join(root, "io"), coreParent = path.join(root, "core");
     const current = write(path.join(ioParent, "a".repeat(64), "receipt.json")),

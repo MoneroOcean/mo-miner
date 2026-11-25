@@ -39,6 +39,8 @@ test.describe("Development test runner routing", () => {
         if (name === "./miner-execution") {return () => ({});}
         if (name === "../../compiler-policy") {return policy;}
         if (name === "../../scripts/windows-command") {return require("../scripts/windows-command");}
+        if (name === "../../helper/hash") {return require("../helper/hash");}
+        if (name === "../../helper/validate") {return require("../helper/validate");}
         return require(name);
       },
     });

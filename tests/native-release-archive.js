@@ -1,17 +1,18 @@
 "use strict";
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), assert = require("node:assert/strict"), test = require("node:test");
+const fs = require("node:fs"), path = require("node:path"), assert = require("node:assert/strict"), test = require("node:test");
 const {packageNativeRelease} = require("../scripts/package-native-release"), {fileHash} = require("../scripts/build-source-inputs");
 const {auditNativeRelease} = require("../scripts/check-native-release");
 const {createHash} = require("node:crypto");
 const {setTimeout: delay} = require("node:timers/promises");
 const {assembleNativeNotices} = require("../scripts/prepare-native-notices");
+const {tempDir} = require("./common/temp-dir");
 const noticeName = "THIRD-PARTY-NOTICES.txt";
 const skipLinuxCandidateArchives = process.platform !== "linux" && "Linux candidate archives require ELF and POSIX executable metadata";
 
 /** Exercise the actual archive orchestrator; only CMake is stubbed, never execute the image.
  * @param {import('node:test').TestContext} t @param {boolean} [windows] */
 function fixture(t, windows = process.platform === "win32") {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-archive-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-native-archive-");
   const name = windows ? "mom.exe" : "mom", binary = path.join(root, name), notice = path.join(root, noticeName), tool = path.join(root, "cmake"), entry = path.join(root, "entrypoint.json"),
     archive = path.join(root, `mom-v0.9.4-${windows ? "win.zip" : "lin.tgz"}`);
   fs.writeFileSync(binary, windows ? Buffer.from("4d5a000066697874757265", "hex") : Buffer.from("7f454c4666697874757265", "hex"), {mode: 0o755});

@@ -1,8 +1,9 @@
 "use strict";
 
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), os = require("node:os");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {isolateLevelZeroAdapter} = require("../scripts/native-level-zero-adapter");
+const {tempDir} = require("./common/temp-dir");
 const repo = path.resolve(__dirname, ".."), read = (/** @type {string} */ name) => fs.readFileSync(path.join(repo, name), "utf8");
 
 test.describe("Native Level Zero V2 original-code isolation", {skip: process.platform !== "linux"}, () => {
@@ -44,8 +45,7 @@ test.describe("Native Level Zero V2 original-code isolation", {skip: process.pla
     assert.match(proof, /v2\.Adapter\.pfnGet\(0, nullptr, &count\) != UR_RESULT_ERROR_UNSUPPORTED_VERSION \|\| count/);
   });
   test("real bridge isolation preserves opaque calls without colliding with V1 names", (t) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-l0-v2-bridge-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-l0-v2-bridge-");
     const headers = path.join(root, "headers"); fs.mkdirSync(path.join(headers, "unified-runtime"), {recursive: true});
     fs.writeFileSync(path.join(headers, "unified-runtime/ur_api.h"), "#pragma once\nenum ur_result_t {UR_RESULT_SUCCESS,UR_RESULT_ERROR_INVALID_NULL_POINTER};\n");
     fs.writeFileSync(path.join(headers, "unified-runtime/ur_ddi.h"), "#pragma once\nstruct ur_dditable_t {int(*call)(int);};\n");

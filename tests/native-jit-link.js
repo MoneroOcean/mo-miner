@@ -5,6 +5,7 @@ const fs = require("node:fs"), os = require("node:os"), path = require("node:pat
 const {spawnSync} = require("node:child_process");
 const {lldInputs} = require("../scripts/native-jit-link");
 const {rocmInputs} = require("../scripts/native-sycl-inputs");
+const {tempDir} = require("./common/temp-dir");
 
 test.describe("Native AMD linker target registration", {skip: process.platform === "win32"}, () => {
   // Compile the actual patched function in both modes; fake registrations never load a driver.
@@ -17,8 +18,7 @@ test.describe("Native AMD linker target registration", {skip: process.platform =
     for (const calls of [1, 2, 3, 4]) {
       test(`${specialized ? "native AMD" : "unchanged general"} mode registers only its own targets on ${calls} calls`, (t) => {
         assert.ok(functionText, "Missing patched original initializer");
-        const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-lld-targets-"));
-        t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+        const directory = tempDir(t, "mom-lld-targets-");
         // Do not even declare other-target initializers in native mode: an accidental reference
         // would retain those backends in the real link and must fail this fixture's compilation.
         const names = specialized ? amd : all;
@@ -41,8 +41,7 @@ test.describe("Native AMD linker target registration", {skip: process.platform =
 test.describe("Native in-process ELF linker SDK admission", () => {
   /** @param {import('node:test').TestContext} t */
   function sdk(t) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-lld-inputs-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-lld-inputs-");
     for (const name of ["include/lld/Common", "lib/cmake/lld"]) {fs.mkdirSync(path.join(root, name), {recursive: true});}
     fs.writeFileSync(path.join(root, "include/lld/Common/Driver.h"), "fixture\n");
     fs.writeFileSync(path.join(root, "lib/cmake/lld/LLDConfigVersion.cmake"), 'set(PACKAGE_VERSION "21.1.8")\n');
@@ -108,8 +107,7 @@ test.describe("Windows Intel direct-LLD delay-load adaptation", () => {
     const delayload = "$<$<NOT:$<LINK_LANGUAGE:Swift>>:delayimp " + wrapped + "-delayload:shell32.dll " +
       wrapped + "-delayload:ole32.dll " + wrapped + "-delayload:kernel32.dll>";
     const unrelated = "-Qoption,link,-INCLUDE:malloc";
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-intel-lld-adapter-"));
-    t.after(() => fs.rmSync(fixture, {recursive: true, force: true}));
+    const fixture = tempDir(t, "mom-intel-lld-adapter-");
     fs.writeFileSync(path.join(fixture, "CMakeLists.txt"), `cmake_minimum_required(VERSION 3.20)
 project(MomIntelLldAdapter NONE)
 add_library(LLVMSupport INTERFACE)
@@ -238,8 +236,7 @@ test.describe("Native application-library load boundary", {skip: process.platfor
 
 test.describe("Windows OpenCL loader portable-CPU opt-in (mock Win32 loader)", {skip: process.platform === "win32"}, () => {
   test("only the standalone Intel CPU ICD install path is added by the exact opt-in", (t) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-opencl-policy-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-windows-opencl-policy-");
     const windowsHeader = path.join(directory, "windows.h"), source = path.join(directory, "policy.cpp"), executable = path.join(directory, "policy");
     fs.writeFileSync(windowsHeader, `#pragma once
 typedef unsigned int DWORD;
@@ -320,8 +317,7 @@ test.describe("Native static ROCm SDK admission", () => {
   const names = ["amdhip64", "hiprtc", "amd_comgr", "hsakmt-staticdrm", "elf", "drm_amdgpu", "drm", "numa"];
   /** @param {import('node:test').TestContext} t */
   function sdk(t) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-rocm-inputs-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-rocm-inputs-");
     for (const name of ["include/hip", "lib/cmake/hsa-runtime64"]) {fs.mkdirSync(path.join(root, name), {recursive: true});}
     for (const name of ["hip_runtime_api.h", "hiprtc.h"]) {fs.writeFileSync(path.join(root, "include/hip", name), "fixture\n");}
     for (const name of [...names, "hsa-runtime64"]) {fs.writeFileSync(path.join(root, "lib", `lib${name}.a`), "!<arch>\n");}
@@ -441,8 +437,7 @@ test.describe("Native process-wide compiler gate", {skip: process.platform === "
 
 test.describe("Native ROCm self-symbol preservation", {skip: process.platform !== "linux"}, () => {
   test("one narrow self export survives GC without admitting an application shared library", (t) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-drm-self-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-drm-self-");
     const link = "-Wl,--export-dynamic-symbol=amdgpu_device_get_fd";
     for (const exported of [false, true]) {
       const executable = path.join(directory, exported ? "after" : "before");

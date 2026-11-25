@@ -5,13 +5,13 @@ const {spawnSync} = require("node:child_process");
 const {adaptiveCppCompileCommands, nativeIncludeRoots, gpuProfile, writeAdaptiveCppUmbrella} = require("../scripts/native-gpu-build");
 const {dpcppCompileCommands, oneapiCompilerInputs, buildInputs} = require("../scripts/build-native-gpu");
 const {windowsGpuCompileCommands, windowsGpuHostFlags, windowsGpuDeviceFlags, windowsGpuSourceFlags, validateWindowsGpuConfig} = require("../scripts/build-native-windows-gpu");
+const {tempDir} = require("./common/temp-dir");
 
 const repo = path.resolve(__dirname, "..");
 
 test.describe("Native GPU compile planning", () => {
   test("AdaptiveCpp umbrella retains relative SDK includes after cache relocation", {skip: process.platform !== "linux"}, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-acpp-umbrella-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "native-acpp-umbrella-");
     const sdk = path.join(root, "sdk with spaces"), include = path.join(sdk, "include"), output = path.join(root, "generated"), legacy = path.join(root, "copied");
     for (const dir of [path.join(include, "SYCL"), path.join(include, "hipSYCL/sycl"), output, path.join(legacy, "sycl")]) {
       fs.mkdirSync(dir, {recursive: true});
@@ -188,8 +188,7 @@ test.describe("Native GPU compile planning", () => {
   });
 
   test("include-root membership retains bounded repository root and excludes output/source subtrees", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-gpu-includes-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "native-gpu-includes-");
     const checkout = path.join(root, "checkout"), localRepo = path.join(checkout, "repo");
     const output = path.join(root, "candidate"), sdk = path.join(root, "sdk"), external = path.join(root, "external"), implicit = path.join(root, "cuda");
     const quote = path.join(external, "quote"), after = path.join(sdk, "after");

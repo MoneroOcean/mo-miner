@@ -1,11 +1,12 @@
 "use strict";
 
 const test = require("node:test"), assert = require("node:assert/strict");
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process"), {createHash} = require("node:crypto");
 const {compilerArchives} = require("../scripts/native-compiler-isolation");
 const {jitSdkPlan} = require("../scripts/native-jit-sdk");
 const {sdkComponents} = require("../scripts/prepare-native-sdk-sources");
+const {tempDir} = require("./common/temp-dir");
 
 const root = path.join(__dirname, "..");
 const cmake = fs.readFileSync(path.join(root, "tests/native/dpcpp-jit/CMakeLists.txt"), "utf8");
@@ -139,8 +140,7 @@ test.describe("Windows original compiler target archive discovery", () => {
  * @returns {{generated: string, build: string}}
  */
 function configureFixture(context, windows, compilerId = "Clang", pchFixture = false) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-jit-cmake-"));
-  context.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+  const directory = tempDir(context, "mom-windows-jit-cmake-");
   const source = path.join(directory, "CMakeLists.txt"), build = path.join(directory, "build");
   const cmakeDollar = String.fromCharCode(36);
   const cmakeBinaryDir = `${cmakeDollar}{CMAKE_BINARY_DIR}`, cmakeRepo = `${cmakeDollar}{MOM_SOURCE_REPO}`;
@@ -256,8 +256,7 @@ test.describe("Static source-JIT optional compiler tools", () => {
   /** Real CMake target validation, without compiling LLVM, a module, or a mining kernel.
    * @param {import('node:test').TestContext} t @param {string} body */
   function configure(t, body) {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-jit-tools-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-jit-tools-");
     fs.writeFileSync(path.join(directory, "empty.cpp"), "int mom_jit_fixture;\n");
     fs.writeFileSync(path.join(directory, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.20)\nproject(jit_tools CXX)\n" + body);
     return spawnSync("cmake", ["-S", directory, "-B", path.join(directory, "build"), "-G", "Ninja"], {encoding: "utf8", timeout: 30000});
@@ -293,8 +292,7 @@ test.describe("Static source-JIT optional compiler tools", () => {
 test.describe("Static source-JIT immutable resource selection", () => {
   for (const native of [true, false]) {
     test(native ? "static mode neither installs SDKs nor merges stale generated headers" : "shared mode preserves its original SDK install dependencies and outputs", t => {
-      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-jit-overlay-cmake-"));
-      t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+      const directory = tempDir(t, "mom-jit-overlay-cmake-");
       const start = cmakeAddedLines.findIndex(line => /^set\(SYCL_JIT_RESOURCE_BYPRODUCTS /.test(line));
       const end = cmakeAddedLines.indexOf("endif()", start); assert.ok(start >= 0 && end > start);
       const body = cmakeAddedLines.slice(start, end + 1).join("\n"), source = path.join(directory, "CMakeLists.txt");
@@ -317,8 +315,7 @@ test.describe("Static source-JIT immutable resource selection", () => {
     const lookup = spawnSync(process.platform === "win32" ? "where.exe" : "which", ["clang-cl"], {encoding: "utf8", timeout: 5000});
     const clang = process.env["MOM_TEST_LLVM_BIN"] ? path.join(process.env["MOM_TEST_LLVM_BIN"], "clang-cl" + (process.platform === "win32" ? ".exe" : "")) : lookup.stdout?.trim().split(/\r?\n/)[0];
     if (!clang || !fs.statSync(clang, {throwIfNoEntry: false})?.isFile()) {t.skip("headerless clang-cl unavailable"); return;}
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-jit-hermetic-includes-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-jit-hermetic-includes-");
     fs.writeFileSync(path.join(directory, "owned.h"), "#define MOM_OWNED_HEADER 17\n");
     const source = path.join(directory, "probe.cpp"), output = path.join(directory, "probe.obj");
     fs.writeFileSync(source, "#include <owned.h>\nint value = MOM_OWNED_HEADER;\n");
@@ -518,8 +515,7 @@ test.describe("Windows pinned static source-JIT build contract", () => {
     const probe = spawnSync("cmake", ["--version"], {encoding: "utf8", timeout: 5000});
     if (probe.status !== 0 || probe.error) {t.skip("cmake unavailable"); return;}
     assert.ok(resourceClangSelection, "The patch must contain the host compiler selection fragment");
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-jit-resource-profile-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-windows-jit-resource-profile-");
     const script = path.join(directory, "profile.cmake"), result = path.join(directory, "selected.txt");
     /** @param {string} value */
     const normalize = value => value.replace(/\\/g, "/");

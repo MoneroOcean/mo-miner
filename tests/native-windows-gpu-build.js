@@ -14,6 +14,7 @@ const {
   windowsGpuSourceFlags, windowsGpuCompileCommands, windowsHostSections,
   buildNativeWindowsGpu, windowsGpuBuildEnvironment,
 } = require("../scripts/build-native-windows-gpu");
+const {tempDir} = require("./common/temp-dir");
 
 const repo = path.resolve(__dirname, "..");
 const compilerExecutableSuffix = process.platform === "win32" ? ".exe" : "";
@@ -84,8 +85,7 @@ function intelFixture(t) {
   const helperNames = ["clang", "clang-offload-bundler", "sycl-post-link", "llvm-spirv", "clang-offload-wrapper",
     "clang-linker-wrapper", "llvm-link", "llvm-foreach", "llc"];
   const helpers = Object.fromEntries(helperNames.map(name => [name, executable(path.join(helperDirectory, name + extension))]));
-  const inspectorDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-oneapi-inspectors-"));
-  t.after(() => fs.rmSync(inspectorDirectory, {recursive: true, force: true}));
+  const inspectorDirectory = tempDir(t, "mom-oneapi-inspectors-");
   const inspectors = Object.fromEntries([["llvmNm", "llvm-nm"], ["llvmReadobj", "llvm-readobj"], ["llvmObjcopy", "llvm-objcopy"]]
     .map(([key, name]) => [key, executable(path.join(inspectorDirectory, name + extension))]));
   const icpxConfig = path.join(bin, "icpx.cfg"), icxConfig = path.join(bin, "icx.cfg");
@@ -603,8 +603,7 @@ test.describe("Windows native GPU offload-container admission", () => {
 
 test.describe("Windows native GPU build boundary", () => {
   test("admits CUDA assembly and image tools before compilation or output creation", {skip: !["linux", "win32"].includes(process.platform)}, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-gpu-assembler-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-windows-gpu-assembler-");
     const config = descriptor("dpcpp"), bin = path.join(root, "bin"), suffix = process.platform === "win32" ? ".exe" : "";
     fs.mkdirSync(bin);
     for (const key of Object.keys(config.tools)) {Object.assign(config.tools, {[key]: path.join(bin, key + suffix)});}
@@ -641,8 +640,7 @@ test.describe("Windows native GPU build boundary", () => {
   });
 
   test("rejects a non-build-only invocation before touching descriptor, output, or tools", {skip: !["linux", "win32"].includes(process.platform)}, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-gpu-admission-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-windows-gpu-admission-");
     const config = path.join(root, "missing-sdk.json"), output = path.join(root, "new-output");
     assert.throws(() => buildNativeWindowsGpu(config, output, {MOM_AOT_BUILD_ONLY: "0"}), /requires MOM_AOT_BUILD_ONLY/);
     assert.equal(fs.existsSync(output), false);

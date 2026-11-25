@@ -7,6 +7,7 @@ const {revision, hostSources, recipeFiles, windowsComgrSdkPlan, verifyWindowsDev
   auditComgrArchiveMembers, nativeRuntimeInputs, cleanEnvironment, canonicalNativeClang} = require("../scripts/build-native-windows-comgr-sdk");
 const {fileHash, buildFileInputs, sourceInputs} = require("../scripts/build-source-inputs");
 const {verifyWindowsLlvmAdmission} = require("../scripts/build-native-windows-llvm-sdk");
+const {tempDir} = require("./common/temp-dir");
 
 const repo = path.resolve(__dirname, "..");
 
@@ -16,8 +17,7 @@ function cmakeVar(name) {return ["$", "{", name, "}"].join("");}
 /** Small explicit inputs; no toolchain, VM, network or GPU is invoked. */
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-comgr-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-windows-comgr-");
   const include = path.join(root, "sdk]==]bracket", "include"), library = path.join(root, "windows sdk", "lib"),
     resource = path.join(root, "Intel 2026.2", "clang-resource", "include");
   fs.mkdirSync(include, {recursive: true}); fs.mkdirSync(library, {recursive: true}); fs.mkdirSync(resource, {recursive: true});
@@ -49,8 +49,7 @@ function writeJson(file, value) {fs.writeFileSync(file, JSON.stringify(value) + 
 
 /** @param {import("node:test").TestContext} t */
 function deviceReceiptFixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-comgr-device-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-windows-comgr-device-");
   const sourceRoot = path.join(root, "source"), sourceFile = path.join(sourceRoot, "device", "source.cl"), hiprtcSource = path.join(sourceRoot, "hiprtc", "source.cpp"),
     install = path.join(root, "install"), bitcode = path.join(install, "amdgcn", "bitcode"), cmake = path.join(install, "lib", "cmake", "AMDDeviceLibs");
   fs.mkdirSync(path.dirname(sourceFile), {recursive: true}); fs.mkdirSync(path.dirname(hiprtcSource), {recursive: true});
@@ -77,8 +76,7 @@ function deviceReceiptFixture(t) {
 
 /** @param {import("node:test").TestContext} t */
 function pchPatchFixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-comgr-pch-patch-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-comgr-pch-patch-");
   const source = path.join(root, "source"), cmakeDir = path.join(source, "amd/comgr/cmake"), pchRule = path.join(cmakeDir, "opencl_pch.cmake"),
     patchFile = path.join(root, "cross-tools-pch.patch"), project = path.join(root, "project"),
     targetClang = path.join(root, "Windows LLVM 21/bin/clang.exe"), nativeClang = path.join(root, "native LLVM 21/bin/clang"),
@@ -372,8 +370,7 @@ test.describe("Original Windows COMGR static SDK producer", {skip: process.platf
   });
 
   test("admits only the canonical native clang executable or its exact clang-21 package alias", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-clang-alias-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-clang-alias-");
     /** @param {string} name */
     const nativeRoot = (/** @type {string} */ name) => path.join(root, name),
       prepare = (/** @type {string} */ name, /** @type {string|null} */ aliasTarget,
@@ -424,8 +421,7 @@ test.describe("Original Windows COMGR static SDK producer", {skip: process.platf
   });
 
   test("binds the static Intel 2026.2 CMake compiler identities", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-comgr-compiler-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-windows-comgr-compiler-");
     const build = path.join(root, "build"), files = path.join(build, "CMakeFiles", "3.31.8"); fs.mkdirSync(files, {recursive: true});
     for (const language of ["C", "CXX"]) {
       fs.writeFileSync(path.join(files, "CMake" + language + "Compiler.cmake"),
@@ -437,8 +433,7 @@ test.describe("Original Windows COMGR static SDK producer", {skip: process.platf
   });
 
   test("requires the native bc2h C TU and object to be Intel Linux outputs", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-bc2h-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-bc2h-");
     const build = path.join(root, "build"), files = path.join(build, "CMakeFiles", "3.31.8"), compiler = path.join(root, "intel", "bin", "icx");
     fs.mkdirSync(files, {recursive: true});
     fs.writeFileSync(path.join(files, "CMakeCCompiler.cmake"), `set(CMAKE_C_COMPILER_ID "IntelLLVM")\nset(CMAKE_C_COMPILER_VERSION "2026.2.0")\nset(CMAKE_C_COMPILER "${compiler}")\n`);
@@ -476,8 +471,7 @@ test.describe("Original Windows COMGR static SDK producer", {skip: process.platf
   });
 
   test("audits exactly 18 original /MT /EHsc /GR Intel COFF host TUs", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-comgr-compile-audit-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-comgr-compile-audit-");
     const source = path.join(root, "source"), build = path.join(root, "build"), objectRoot = path.join(build, "CMakeFiles/amd_comgr.dir"),
       compiler = path.join(root, "Intel 2026.2", "bin", "icx-cl"), commands = path.join(build, "compile_commands.json");
     fs.mkdirSync(path.join(source, "src/time-stat"), {recursive: true}); fs.mkdirSync(objectRoot, {recursive: true});
@@ -525,8 +519,7 @@ test.describe("Original Windows COMGR static SDK producer", {skip: process.platf
   });
 
   test("discovers the original amd_comgr CMake target without copying it to a prefix", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-comgr-file-api-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-comgr-file-api-");
     const source = path.join(root, "source"), build = path.join(root, "build"), reply = path.join(build, ".cmake/api/v1/reply");
     fs.mkdirSync(source); fs.mkdirSync(reply, {recursive: true});
     writeJson(path.join(reply, "index-test.json"), {reply: {"codemodel-v2": {jsonFile: "codemodel.json"}}});

@@ -1,11 +1,12 @@
 "use strict";
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {spawnSync} = require("node:child_process");
 const {auditWindowsLinkMap} = require("../scripts/native-windows-application"), {fileHash} = require("../scripts/build-source-inputs");
+const {tempDir} = require("./common/temp-dir");
 const forbidden = /intrinsics[-_]shim|environ[-_]shim|(?:^|[^A-Za-z0-9])(?:_mm_|p__environ)/i;
 /** @param {import("node:test").TestContext} t @param {string | Buffer} data */
 function fixture(t, data) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-map-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-windows-map-");
   const file = path.join(root, "link.map"); fs.writeFileSync(file, data); return file;
 }
 

@@ -5,6 +5,7 @@ const fs = require("node:fs"), os = require("node:os"), path = require("node:pat
 const {dependencyPins, checkNativeNoticeReview} = require("../scripts/check-native-notices");
 const {nativePathSource} = require("../scripts/native-bundle");
 const {execFileSync} = require("node:child_process");
+const {tempDir} = require("./common/temp-dir");
 
 function trackedLicenseSections() {
   const notice = fs.readFileSync(path.join(__dirname, "..", "THIRD-PARTY-NOTICES.txt"), "utf8");
@@ -43,8 +44,7 @@ function save(f) {fs.writeFileSync(f.manifestPath, JSON.stringify(f.manifest));}
 
 test.describe("native notice review", () => {
   test("Git preserves pinned notice and license bytes across clean checkouts", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-notice-checkout-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-notice-checkout-");
     const repo = path.join(__dirname, ".."), files = ["THIRD-PARTY-NOTICES.txt",
       "runtime/license-evidence/sdk_license.rtf", "runtime/license-evidence/sdk_third_party_notices.rtf"];
     const git = (/** @type {string[]} */ args) => execFileSync("git", ["-c", "core.autocrlf=true", ...args], {cwd: root, stdio: "pipe", maxBuffer: 4 << 20});

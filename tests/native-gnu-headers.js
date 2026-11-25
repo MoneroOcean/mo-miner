@@ -3,12 +3,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {createHash} = require("node:crypto");
 const {prepareLinuxGnuHeaders, verifyLinuxGnuHeaders, prepareWindowsGnuHeaders, verifyWindowsGnuHeaders, prepareGnuHeaders, virtualHeader,
   buildGnuHeaderHandoff} = require("../scripts/prepare-native-gnu-headers");
+const {tempDir} = require("./common/temp-dir");
 
 const packageNames = ["libstdc++-13-dev", "libc6-dev", "linux-libc-dev"];
 const windowsPackageNames = ["mingw-w64-common", "mingw-w64-x86-64-dev", "g++-mingw-w64-x86-64-posix"];
@@ -16,8 +16,7 @@ const windowsPackageNames = ["mingw-w64-common", "mingw-w64-x86-64-dev", "g++-mi
 
 /** @param {import("node:test").TestContext} context */
 function fixture(context) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-gnu-headers-"));
-  context.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(context, "mom-gnu-headers-");
   const include = path.join(root, "include");
   fs.mkdirSync(include);
   const records = /** @type {FixturePackage[]} */ (packageNames.map(name =>
@@ -28,8 +27,7 @@ function fixture(context) {
 
 /** @param {import("node:test").TestContext} context */
 function windowsFixture(context) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-gnu-win-headers-"));
-  context.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(context, "mom-gnu-win-headers-");
   const sysroot = path.join(root, "sysroot");
   fs.mkdirSync(sysroot);
   const records = /** @type {FixturePackage[]} */ ([

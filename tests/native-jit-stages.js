@@ -4,6 +4,7 @@ const {jitBuildStages, jitBuildStage, jitBuildOutputs, jitBuildHandoff} = requir
 const {buildJitSdk} = require("../scripts/build-native-jit-sdk");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {jitSdkPlan} = require("../scripts/native-jit-sdk"), {sdkComponents} = require("../scripts/prepare-native-sdk-sources");
+const {tempDir} = require("./common/temp-dir");
 const roots = Object.fromEntries(Object.keys(sdkComponents("compiler")).map(name => [name, "/source/" + name]));
 const plan = () => jitSdkPlan("linux", roots, "/sdk", "/resources", "/output", {cmake: "/tools/cmake", ninja: "/tools/ninja"}, 2);
 
@@ -104,8 +105,7 @@ test.describe("Original compiler phase receipt admission", () => {
 test.describe("Compiler same-workflow output handoffs", () => {
   /** @param {import('node:test').TestContext} t */
   function fixture(t) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-jit-stages-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-jit-stages-");
     const file = path.join(root, "object.o"); fs.writeFileSync(file, "original"); return {root, file};
   }
   test("binds generated objects to their bytes, not timestamps", t => {

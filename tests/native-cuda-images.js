@@ -1,11 +1,12 @@
 "use strict";
 
 const test = require("node:test"), assert = require("node:assert/strict");
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {cudaHeaderResources} = require("../scripts/native-jit-headers");
 const {planCudaImages, generateCudaImageBundle, cudaImageInputs, cudaImageCompileCommand} = require("../scripts/native-cuda-images");
+const {tempDir} = require("./common/temp-dir");
 
 const repo = path.resolve(__dirname, "..");
 /** @typedef {{major: number, minor: number, supportedArchs: number[], inputs?: Record<string, string>}} CompilerFixture */
@@ -18,13 +19,6 @@ const exportsByProfile = {
   "cn-expand": ["cn_gpu_expand_cuda"], "pearl-rank128": ["pearlhash_cuda_gemm", "pearlhash_cuda_hash"],
   "pearl-rank256": ["pearlhash_cuda_gemm", "pearlhash_cuda_hash"], "pearl-compact": ["compact_gemm", "selector_prepare"],
 };
-
-/** @param {import("node:test").TestContext} t */
-function directory(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-cuda-images-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  return root;
-}
 
 /** @param {string} file @param {string | Buffer} data */
 function write(file, data) {fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, data, {flag: "wx"});}
@@ -166,7 +160,7 @@ test.describe("Fixed-source CUDA image planner", () => {
     assert.ok(!plan.some((job) => job.target === "sm_122" || job.target === "compute_122"));
     assert.equal(plan.find((job) => job.profile === "pearl-compact")?.target, "sm_120a");
 
-    const root = directory(t), headers = headerPack(root), compiled = compilerQueries(root, headers);
+    const root = tempDir(t, "mom-cuda-images-"), headers = headerPack(root), compiled = compilerQueries(root, headers);
     const modernOnly = compiled.filter((query) => query.major === 13);
     const modernBundle = artifactsFor(planCudaImages(modernOnly), headers.roots);
     assert.throws(() => generateCudaImageBundle({repo, compilers: modernOnly, artifacts: modernBundle,
@@ -185,7 +179,7 @@ test.describe("Fixed-source CUDA image planner", () => {
 
 test.describe("Generated CUDA image registry and admission", () => {
   test("verifies true PTX/ELF exports, compiler provenance, source binding, and resource roles", (t) => {
-    const root = directory(t), headers = headerPack(root), compilers = compilerQueries(root, headers);
+    const root = tempDir(t, "mom-cuda-images-"), headers = headerPack(root), compilers = compilerQueries(root, headers);
     const plan = planCudaImages(compilers), artifacts = artifactsFor(plan, headers.roots);
     const result = generateCudaImageBundle({repo, compilers, artifacts, headerPacks: {"12.6": headers.file, "13.3": headers.file}});
     assert.match(result.source, /static std::string_view embedded_resource/);
@@ -218,7 +212,7 @@ test.describe("Generated CUDA image registry and admission", () => {
   test("CUDA string resources round-trip every byte and embedded/trailing NUL through C++", {
     skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
   }, (t) => {
-    const root = directory(t), headers = headerPack(root), compilers = compilerQueries(root, headers);
+    const root = tempDir(t, "mom-cuda-images-"), headers = headerPack(root), compilers = compilerQueries(root, headers);
     const plan = planCudaImages(compilers), artifacts = artifactsFor(plan, headers.roots);
     const payload = Buffer.from([...Array.from({length: 256}, (_, byte) => byte), 0x41, 0, 0x42, 0]);
     const artifact = artifacts.find(({job}) => job.profile === "cn-expand" && job.target === "sm_80" && job.format === "cubin");
@@ -262,7 +256,7 @@ test.describe("Generated CUDA image registry and admission", () => {
   });
 
   test("rejects option drift, incomplete outputs, missing packs, and changed compiler inputs", (t) => {
-    const root = directory(t), headers = headerPack(root), compilers = compilerQueries(root, headers);
+    const root = tempDir(t, "mom-cuda-images-"), headers = headerPack(root), compilers = compilerQueries(root, headers);
     const plan = planCudaImages(compilers), inputs = {repo, compilers, headerPacks: {"12.6": headers.file, "13.3": headers.file}};
     const artifacts = artifactsFor(plan, headers.roots);
     const first = artifacts[0];
@@ -281,7 +275,7 @@ test.describe("Generated CUDA image registry and admission", () => {
   });
 
   test("rejects PTX with a false target and non-CUDA ELF CUBINs", (t) => {
-    const root = directory(t), headers = headerPack(root), compilers = compilerQueries(root, headers);
+    const root = tempDir(t, "mom-cuda-images-"), headers = headerPack(root), compilers = compilerQueries(root, headers);
     const plan = planCudaImages(compilers), input = {repo, compilers, headerPacks: {"12.6": headers.file, "13.3": headers.file}};
     const badPtx = artifactsFor(plan, headers.roots), ptxArtifact = badPtx.find((artifact) => artifact.job.format === "ptx");
     assert.ok(ptxArtifact);
@@ -304,7 +298,7 @@ test.describe("Generated CUDA image registry and admission", () => {
   });
 
   test("CUBIN NOBITS storage needs no file bytes, while file-backed sections stay bounded", (t) => {
-    const root = directory(t), headers = headerPack(root), compilers = compilerQueries(root, headers);
+    const root = tempDir(t, "mom-cuda-images-"), headers = headerPack(root), compilers = compilerQueries(root, headers);
     const input = {repo, compilers, headerPacks: {"12.6": headers.file, "13.3": headers.file}};
     const artifacts = artifactsFor(planCudaImages(compilers), headers.roots);
     const image = artifacts.find(({job}) => job.format === "cubin");
@@ -318,7 +312,7 @@ test.describe("Generated CUDA image registry and admission", () => {
   });
 
   test("admits a sidecar cross-host without opening producer compiler or SDK paths", (t) => {
-    const root = directory(t), headers = headerPack(root), compilers = compilerQueries(root, headers);
+    const root = tempDir(t, "mom-cuda-images-"), headers = headerPack(root), compilers = compilerQueries(root, headers);
     const bundle = generateCudaImageBundle({repo, compilers, artifacts: artifactsFor(planCudaImages(compilers), headers.roots),
       headerPacks: {"12.6": headers.file, "13.3": headers.file}});
     const inc = path.join(root, "cuda-images.inc");
@@ -335,7 +329,7 @@ test.describe("Generated CUDA image registry and admission", () => {
   });
 
   test("consumer admission preserves every exact image, PTX target, and compatibility role", (t) => {
-    const root = directory(t), headers = headerPack(root), compilers = compilerQueries(root, headers);
+    const root = tempDir(t, "mom-cuda-images-"), headers = headerPack(root), compilers = compilerQueries(root, headers);
     const bundle = generateCudaImageBundle({repo, compilers, artifacts: artifactsFor(planCudaImages(compilers), headers.roots),
       headerPacks: {"12.6": headers.file, "13.3": headers.file}});
     for (const target of ["compute_100", "sm_80"]) {
@@ -358,7 +352,7 @@ test.describe("Generated CUDA image registry and admission", () => {
   });
 
   test("refuses malformed sidecars, stale maintained sources, and symlinked outputs", (t) => {
-    const root = directory(t), inc = path.join(root, "cuda-images.inc");
+    const root = tempDir(t, "mom-cuda-images-"), inc = path.join(root, "cuda-images.inc");
     write(inc, "generated\n"); write(inc + ".json", JSON.stringify({format: "wrong"}));
     assert.throws(() => cudaImageInputs(inc), /Incomplete or changed/);
     const link = path.join(root, "link.inc"); fs.symlinkSync(inc, link);

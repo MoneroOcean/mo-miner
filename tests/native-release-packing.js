@@ -1,13 +1,14 @@
 "use strict";
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {packNativeRelease} = require("../scripts/pack-native-executable"), {fileHash} = require("../scripts/build-source-inputs");
 const {sealNativePePages} = require("../scripts/native-pe-pages"), {nativePeFixture} = require("./common/native-pe-fixture");
+const {tempDir} = require("./common/temp-dir");
 
 /** Synthetic command-boundary fixture only; no compiler, packer or miner is executed.
  * @param {import("node:test").TestContext} t @param {boolean} [windows] */
 function fixture(t, windows = false) {
   t.mock.method(console, "log", () => undefined);
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pack fixture-$-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-pack fixture-$-");
   const source = path.join(root, windows ? "raw.exe" : "raw"), upx = path.join(root, "packer"), output = path.join(root, "output");
   fs.writeFileSync(source, windows ? nativePeFixture().bytes : Buffer.concat([Buffer.from("7f454c46", "hex"), Buffer.alloc(4092, 42)]));
   if (windows) {

@@ -5,6 +5,7 @@ const {randomUUID, createHash} = require("node:crypto");
 const {buildNativeArtifact} = require("../scripts/build-release");
 const {packageNativeRelease} = require("../scripts/package-native-release");
 const {fileHash, readBuildJson} = require("../scripts/build-source-inputs");
+const {tempDir} = require("./common/temp-dir");
 const repo = path.resolve(__dirname, "..");
 const enabled = process.env["MOM_TEST_NATIVE_REPRO"] === "1";
 const keys = /** @type {[string, string, string, string, string]} */ (["MOM_TEST_NATIVE_REPRO_CONFIG", "MOM_TEST_NATIVE_REPRO_UPX", "MOM_TEST_NATIVE_REPRO_UPX_SHA256",
@@ -290,8 +291,7 @@ test.describe("Native build reproducibility opt-in admission", () => {
   const reviewedBuildNode = require("../runtime/native-notice-review.json").dependencies.buildNode.version;
   const skip = process.platform !== "linux" || process.version !== reviewedBuildNode;
   test("late notice body and review manifest hashes are checked against maintained review", {skip}, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-repro-notice-review-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "native-repro-notice-review-");
     const env = validReviewedLateNoticeEnvironment(), late = settingsFromEnvironment(env)?.lateNotice; assert.ok(late);
     const pins = pinLateNoticeInputs(late);
     assert.equal(pins.notices.sha256, late.noticesSha256);

@@ -1,11 +1,12 @@
 "use strict";
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path"),
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"),
   vm = require("node:vm");
 const {pins, archiveNames, hsakmtInstallArchiveName, xxdPin, validateConfig, rocmHostPlan, hostEnvironment, withPrivateBuildDirectories,
   parsePackageOrigin, compileDepfiles, readCompileDatabase, useStableHipPchStdin, patchExportedHipPchScript,
   useExplicitRocrDeviceLibPath, patchExportedRocrDeviceLibPath, buildRocmHostRuntime} =
   require("../scripts/build-native-rocm-host-runtime");
 const {prepareRocmHostAdmission} = require("../scripts/native-ci-linux-rocm");
+const {tempDir} = require("./common/temp-dir");
 
 const host = {cc: "/intel/2026.2/bin/icx", cxx: "/intel/2026.2/bin/icpx"};
 const config = () => ({version: 1,
@@ -90,8 +91,7 @@ test.describe("Native original ROCm host-runtime recipe",
       assert.throws(() => rocmHostPlan(config(), "/output", 2, {llvm, comgrPackage}), /device-library roots/);
     });
     test("preflight compiler temporary directories exist before the first probe", t => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-rocm-host-tmp-"));
-      t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+      const root = tempDir(t, "mom-rocm-host-tmp-");
       const temporary = {home: path.join(root, "home"), tmp: path.join(root, "tmp")};
       fs.mkdirSync(temporary.home); fs.mkdirSync(temporary.tmp);
       const output = path.join(root, "output"), p = rocmHostPlan(config(), output, 2, sdkRoots);
@@ -103,8 +103,7 @@ test.describe("Native original ROCm host-runtime recipe",
       assert.equal(fs.existsSync(output), false);
     });
     test("private preflight directories are removed when an input probe fails", t => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-rocm-host-preflight-"));
-      t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+      const root = tempDir(t, "mom-rocm-host-preflight-");
       const before = fs.readdirSync(root);
       assert.throws(() => withPrivateBuildDirectories(root, temporary => {
         assert.ok(fs.statSync(temporary.home).isDirectory());
@@ -155,16 +154,14 @@ test.describe("Native original ROCm host-runtime recipe",
       assert.throws(() => useStableHipPchStdin(source.replace("pch_wave32", "pch_wave31")), /unexpected preprocessor commands/);
     });
     test("HIP PCH source patch rejects unrecognized exported source without modifying it", t => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-rocm-host-pch-patch-"));
-      t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+      const root = tempDir(t, "mom-rocm-host-pch-patch-");
       const script = path.join(root, "hipamd/src/hip_embed_pch.sh");
       fs.mkdirSync(path.dirname(script), {recursive: true}); fs.writeFileSync(script, "unrecognized upstream source\n");
       assert.throws(() => patchExportedHipPchScript(root), /Pinned exported HIP PCH helper changed/);
       assert.equal(fs.readFileSync(script, "utf8"), "unrecognized upstream source\n");
     });
     test("ROCr image-kernel source patch rejects unrecognized exported CMake without modifying it", t => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-rocm-host-rocr-patch-"));
-      t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+      const root = tempDir(t, "mom-rocm-host-rocr-patch-");
       const cmake = path.join(root, "runtime/hsa-runtime/image/blit_src/CMakeLists.txt");
       fs.mkdirSync(path.dirname(cmake), {recursive: true}); fs.writeFileSync(cmake, "unrecognized upstream source\n");
       assert.throws(() => patchExportedRocrDeviceLibPath(root), /Pinned exported ROCr image-kernel CMake source changed/);
@@ -286,7 +283,7 @@ test.describe("Native ROCm CMake dependency guards",
       assert.throws(() => compileDepfiles("/build", rows.slice(1)), /compile database/);
     });
     test("compile database requires every row to use the selected Intel pair", t => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-rocm-host-db-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+      const root = tempDir(t, "mom-rocm-host-db-");
       const rows = Array.from({length: 8}, (_, i) => ({directory: root, output: `CMakeFiles/runtime/${i}.o`, command: `"${host.cxx}" -c source${i}.cpp`}));
       const file = path.join(root, "compile_commands.json"); fs.writeFileSync(file, JSON.stringify(rows));
       assert.equal(readCompileDatabase(file, root, host).depfiles.length, 8);
@@ -302,7 +299,7 @@ test.describe("Native ROCm CMake dependency guards",
       assert.throws(() => buildRocmHostRuntime(config(), "/missing/output", {}), /BUILD_ONLY/);
     });
     test("an existing output is refused without changing its prior evidence", t => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-rocm-host-existing-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+      const root = tempDir(t, "mom-rocm-host-existing-");
       const output = path.join(root, "existing-output"), evidence = path.join(output, "result.json");
       fs.mkdirSync(output); fs.writeFileSync(evidence, "prior receipt\n");
       assert.throws(() => buildRocmHostRuntime(config(), output, {MOM_AOT_BUILD_ONLY: "1"}), /never overwritten/);
@@ -310,7 +307,7 @@ test.describe("Native ROCm CMake dependency guards",
       assert.deepEqual(fs.readdirSync(root), ["existing-output"]);
     });
     test("a protected output overlap is refused without creating scratch in that tree", t => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-rocm-host-overlap-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+      const root = tempDir(t, "mom-rocm-host-overlap-");
       const protectedRoot = path.join(root, "source"); fs.mkdirSync(protectedRoot);
       const c = config(); c.sources.clr = protectedRoot;
       const output = path.join(protectedRoot, "new-output");
@@ -319,7 +316,7 @@ test.describe("Native ROCm CMake dependency guards",
       assert.equal(fs.existsSync(output), false);
     });
     test("a source-root symlink is rejected before output creation", {skip: process.platform !== "linux"}, t => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-rocm-host-paths-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+      const root = tempDir(t, "mom-rocm-host-paths-");
       fs.mkdirSync(path.join(root, "real")); fs.symlinkSync(path.join(root, "real"), path.join(root, "source-link"));
       const c = config(); c.sources.clr = path.join(root, "source-link");
       const output = path.join(root, "new-output");

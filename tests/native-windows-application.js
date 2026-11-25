@@ -1,5 +1,5 @@
 "use strict";
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {nativeSourceInputs, fileHash} = require("../scripts/build-source-inputs");
 const {nativeApplicationGpu} = require("../scripts/build-native-application");
 const {validateWindowsApplication, windowsApplicationInputs, verifyWindowsApplicationFiles, windowsResponseFile} = require("../scripts/native-windows-application");
@@ -7,6 +7,7 @@ const nativeCudaImages = require("../scripts/native-cuda-images");
 const hostComponentReader = require("../scripts/native-windows-host-component");
 const nvrtcProducer = require("../scripts/prepare-native-nvrtc-sdk");
 const {coffObject: object, fixture: componentFixture, vendorNvrtcFixture} = require("./common/native-windows-component");
+const {tempDir} = require("./common/temp-dir");
 const repo = path.resolve(__dirname, ".."), states = {cpu: {}, gpu: {}};
 const factories = nativeApplicationGpu(fs.readFileSync(path.join(repo, "runtime/gpu-dispatch.cpp"), "utf8"), {defaultCompiler: "oneapi", flags: [], links: []}).factories;
 
@@ -14,7 +15,7 @@ const factories = nativeApplicationGpu(fs.readFileSync(path.join(repo, "runtime/
 function json(file, value) {fs.writeFileSync(file, JSON.stringify(value));}
 /** @param {import("node:test").TestContext} t @param {{embeddedCudaImages?: boolean}} [options] */
 function fixture(t, options = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-application-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-windows-application-");
   /** @param {string} name @param {string | Buffer} [data] */
   const file = (name, data = "!<arch>\n") => {const selected = path.join(root, name); fs.writeFileSync(selected, data); return selected;};
   const core = file("cpu-core.lib");

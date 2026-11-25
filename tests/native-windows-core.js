@@ -1,9 +1,10 @@
 "use strict";
 
 const test = require("node:test"), assert = require("node:assert/strict");
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {windowsCoreIncludeMembership} = require("../scripts/build-native-windows-core");
+const {tempDir} = require("./common/temp-dir");
 
 const root = path.resolve(__dirname, "..");
 const binding = fs.readFileSync(path.join(root, "binding.gyp"), "utf8");
@@ -69,8 +70,7 @@ function generate(context, nativeCore, osName = "win") {
     context.skip("Python GYP is unavailable for the disposable graph generation");
     return undefined;
   }
-  const output = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-windows-core-gyp-"));
-  context.after(() => fs.rmSync(output, {recursive: true, force: true}));
+  const output = tempDir(context, "mom-native-windows-core-gyp-");
   const packageRoot = gypRoot(gyp);
   const args = [gyp, path.join(root, "binding.gyp"), "-f", "make", "--generator-output", output,
     "-Goutput_dir=.", `-DOS=${osName}`, "-Dtarget_arch=x64", `-Dmom_native_core=${nativeCore}`, "-Dmom_native_uv_include=/sdk/libuv/include", "-Dlibrary=shared_library",
@@ -93,8 +93,7 @@ function generateFakeMsvsProject(context, nodeDefaults = false, intel = false) {
     context.skip("Python GYP is unavailable for configure-only MSVS project generation");
     return undefined;
   }
-  const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-windows-core-msvs-"));
-  context.after(() => fs.rmSync(sourceDirectory, {recursive: true, force: true}));
+  const sourceDirectory = tempDir(context, "mom-native-windows-core-msvs-");
   fs.writeFileSync(path.join(sourceDirectory, "binding.gyp"), binding);
   const output = path.join(sourceDirectory, "generated");
   const fakeVsPath = path.join(sourceDirectory, "fake-vs-descriptor");
@@ -171,8 +170,7 @@ function nativeTarget() {
 
 test.describe("Windows opt-in native Core GYP graph", () => {
   test("tracks include-tree file contents as well as membership", (t) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-windows-core-includes-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-windows-core-includes-");
     const header = path.join(root, "sdk.h"); fs.writeFileSync(header, "alpha");
     const first = windowsCoreIncludeMembership([root]), same = windowsCoreIncludeMembership([root]);
     assert.equal(first.complete, true);

@@ -1,15 +1,16 @@
 "use strict";
-const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {ioPins, nativeIoPlan, validateIoArchive, buildNativeIo, nativeIoInputs} = require("../scripts/build-native-io");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {spawnSync} = require("node:child_process");
 const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
+const {tempDir} = require("./common/temp-dir");
 const sysroot = linuxSysrootRecord({receiptSha256: linuxSysrootReceiptSha256});
 const tools = {cmake: "/tools/cmake", cc: "/tools/cc", ninja: "/tools/ninja"};
 /** Synthetic static archives exercise SDK admission, never compilers or mining.
  * @param {import("node:test").TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-io-sdk-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-native-io-sdk-");
   const artifacts = /** @type {Record<string, string>} */ ({});
   for (const [name, data] of Object.entries({"lib/libuv.a": "!<arch>\n", "lib/libz.a": "!<arch>\n", "include/uv.h": "uv", "include/zlib.h": "zlib", "include/zconf.h": "zconf"})) {
     const file = path.join(root, name); fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, data); artifacts[name] = fileHash(file);

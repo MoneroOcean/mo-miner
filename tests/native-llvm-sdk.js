@@ -1,16 +1,16 @@
 "use strict";
 
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {archiveSha256, toolsComponents, metadataInstallTargets, installTargets, linuxLlvmSdkPlan, verifySourceVersion, llvmSourceSnapshot,
   verifyArchiveCatalog, llvmStaticTargets, linuxDistributionSelection, verifyDistributionGraph, cmakeCache,
   auditLinuxLlvmPrefix, phaseBuildArgs, findClangLinkCommand, verifyAmdgpulibCallsCompileFlag} = require("../scripts/build-native-llvm-sdk");
 const {sourceDirectories, archiveName, llvmAmdgpulibCallsCompileOptionsShim, verifyCmakeVersion} = require("../scripts/native-llvm-sdk");
+const {tempDir} = require("./common/temp-dir");
 
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-linux-llvm21-sdk-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-linux-llvm21-sdk-");
   const source = path.join(root, "source"), build = path.join(root, "build"), output = path.join(root, "output with spaces"),
     archive = path.join(root, archiveName), tools = {cmake: "/tools/cmake", ninja: "/tools/ninja", cc: "/intel/icx", cxx: "/intel/icpx"};
   for (const name of sourceDirectories) {fs.mkdirSync(path.join(source, name), {recursive: true});}

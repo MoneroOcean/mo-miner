@@ -46,7 +46,7 @@ const logicSuite = [
   "tests/local-windows-hermes-source.js", "tests/local-native-windows-sdk.js",
   "tests/local-native-windows-support-bridge.js",
   "tests/local-native-windows-command.js",
-  "tests/native-windows-gpu-handoff.js",
+  "tests/native-windows-gpu-handoff.js", "tests/native-windows-cudart.js",
   "tests/nvidia-compatibility.js", "tests/intel-device-selection.js", "tests/c29-seed-unroll.js", "tests/gpu-test-matrix-order.js", "tests/integrated-gpu-modes.js",
   "tests/nvrtc-installer.js",
   "tests/pearlhash-f16-lowering.js",

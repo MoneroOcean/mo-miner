@@ -4,12 +4,8 @@ const test = require("node:test"), assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const {gzipSync} = require("node:zlib"), {spawnSync} = require("node:child_process");
 const {validName, packHeaders, collectHeaders, headerResources, cudaHeaderResources, cudaHeaderInputs} = require("../scripts/native-jit-headers");
+const {tempDir} = require("./common/temp-dir");
 const entry = (/** @type {string} */ name, data = "text") => ({name, data: Buffer.from(data)});
-/** @param {import('node:test').TestContext} t */
-function directory(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-jit-headers-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true})); return root;
-}
 
 test.describe("Native JIT header generation", () => {
   test("canonical payloads sort includes without changing bytes", () => {
@@ -41,26 +37,26 @@ test.describe("Native JIT header generation", () => {
     assert.throws(() => packHeaders([{name: "a", data: /** @type {Buffer} */ (/** @type {unknown} */ ({length: 1}))}]), /buffers/);
   });
   test("only explicit include roots are collected", (t) => {
-    const root = directory(t); fs.mkdirSync(path.join(root, "include"));
+    const root = tempDir(t, "mom-jit-headers-"); fs.mkdirSync(path.join(root, "include"));
     fs.writeFileSync(path.join(root, "outside"), "not packed"); fs.writeFileSync(path.join(root, "include/a"), "packed");
     assert.deepEqual(collectHeaders([path.join(root, "include")]), [entry("a", "packed")]);
   });
   test("identical overlapping includes deduplicate, conflicting ones fail", (t) => {
-    const root = directory(t), a = path.join(root, "a"), b = path.join(root, "b"); fs.mkdirSync(a); fs.mkdirSync(b);
+    const root = tempDir(t, "mom-jit-headers-"), a = path.join(root, "a"), b = path.join(root, "b"); fs.mkdirSync(a); fs.mkdirSync(b);
     fs.writeFileSync(path.join(a, "file"), "same"); fs.writeFileSync(path.join(b, "file"), "same");
     assert.equal(collectHeaders([a, b]).length, 1); fs.writeFileSync(path.join(b, "file"), "different");
     assert.throws(() => collectHeaders([a, b]), /Conflicting/);
   });
   test("nested links cannot escape a root", {skip: process.platform === "win32"}, (t) => {
-    const root = directory(t), include = path.join(root, "include"); fs.mkdirSync(include);
+    const root = tempDir(t, "mom-jit-headers-"), include = path.join(root, "include"); fs.mkdirSync(include);
     fs.writeFileSync(path.join(root, "outside"), "secret"); fs.symlinkSync("../outside", path.join(include, "link"));
     assert.throws(() => collectHeaders([include]), /escapes/);
   });
   test("directory link cycles are rejected", {skip: process.platform === "win32"}, (t) => {
-    const root = directory(t); fs.symlinkSync(".", path.join(root, "cycle")); assert.throws(() => collectHeaders([root]), /cycles/);
+    const root = tempDir(t, "mom-jit-headers-"); fs.symlinkSync(".", path.join(root, "cycle")); assert.throws(() => collectHeaders([root]), /cycles/);
   });
   test("invalid inputs cannot overwrite a generated header", (t) => {
-    const root = directory(t), output = path.join(root, "headers.inc"); fs.writeFileSync(output, "preserve");
+    const root = tempDir(t, "mom-jit-headers-"), output = path.join(root, "headers.inc"); fs.writeFileSync(output, "preserve");
     const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/native-jit-headers.js"), output, path.join(root, "absent")], {encoding: "utf8"});
     assert.equal(result.status, 1); assert.equal(fs.readFileSync(output, "utf8"), "preserve");
   });
@@ -70,7 +66,7 @@ test.describe("Native CUDA SDK header generation", () => {
   /** Tiny SDK fixtures exercise the real CLI without a compiler, GPU, VM or network.
    * @param {import('node:test').TestContext} t @param {boolean} [nested] */
   function sdk(t, nested = false) {
-    const root = directory(t), include = path.join(root, "CUDA include"), cutlass = path.join(root, "CUTLASS include"), output = path.join(root, "headers.inc");
+    const root = tempDir(t, "mom-jit-headers-"), include = path.join(root, "CUDA include"), cutlass = path.join(root, "CUTLASS include"), output = path.join(root, "headers.inc");
     const write = (/** @type {string} */ name, /** @type {string} */ data) => {const file = path.join(root, name); fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, data); return file;};
     write("CUDA include/cuda_runtime.h", "runtime"); write("CUTLASS include/cute/tensor.hpp", "tensor");
     write(`CUDA include/${nested ? "cccl/" : ""}cuda/std/cstdint`, "stdint");
@@ -124,7 +120,7 @@ test.describe("Native CUDA SDK header generation", () => {
 test.describe("Native CUDA prebuilt SDK admission", () => {
   /** @param {import('node:test').TestContext} t */
   function pack(t) {
-    const root = directory(t), include = path.join(root, "include"), file = path.join(root, "headers.inc"), metadata = file + ".json";
+    const root = tempDir(t, "mom-jit-headers-"), include = path.join(root, "include"), file = path.join(root, "headers.inc"), metadata = file + ".json";
     for (const name of ["cuda_runtime.h", "cute/tensor.hpp", "cuda/std/cstdint"]) {
       const target = path.join(include, name); fs.mkdirSync(path.dirname(target), {recursive: true}); fs.writeFileSync(target, name);
     }
@@ -281,7 +277,7 @@ test.describe("Pearl mixed-backend proof geometry", {skip: process.platform !== 
     ["-DMOM_SYCL_HAS_HIP", "-DMOM_SYCL_ADAPTIVECPP_CUDA"]];
   for (const flags of profiles) {
     test(`${flags.join(" ") || "portable"}: dispatch keeps each proof geometry`, (t) => {
-      const root = directory(t);
+      const root = tempDir(t, "mom-jit-headers-");
       const source = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/sycl-search.inc"), "utf8");
       const signature = source.match(/template <int ER, int EC,[\s\S]*?(?=\/\/ Submit the selected portable\/native SYCL tile)/)?.[0];
       const start = source.indexOf("static void search(sycl::queue&"), end = source.indexOf("\n#endif // !MOM_PEARLHASH_ESIMD_TU", start);

@@ -1,14 +1,15 @@
 "use strict";
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {windowsGpuHandoffInputs} = require("../scripts/native-windows-gpu-handoff");
+const {tempDir} = require("./common/temp-dir");
 
 /** @param {string} file @param {unknown} value */
 function json(file, value) {fs.writeFileSync(file, JSON.stringify(value) + "\n");}
 
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-gpu-handoff-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-windows-gpu-handoff-");
   const output = path.join(root, "output"), isolated = path.join(output, "isolated");
   fs.mkdirSync(isolated, {recursive: true});
   const profile = "dpcpp", configFile = path.join(root, "config.json"),

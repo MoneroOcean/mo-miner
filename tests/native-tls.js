@@ -4,15 +4,15 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const nodeTls = require("node:tls");
 const {TLSSocket, connect} = require("../runtime/tls");
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {extractCppBlock} = require("./common/cpp-source");
+const {tempDir} = require("./common/temp-dir");
 const compiler = process.env["CXX"] || "c++";
 
 test.describe("Native certificate verification diagnostics", {skip: process.platform !== "linux"}, () => {
   test("production error mapping retains certificate failures and rejects unknown errors generically", (t) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-tls-errors-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-tls-errors-");
     const source = fs.readFileSync(path.join(__dirname, "../runtime/tls.cpp"), "utf8");
     const names = ["INVALID_PURPOSE", "INVALID_CA", "CERT_REVOKED", "CERT_REJECTED", "CERT_UNTRUSTED",
       "CERT_SIGNATURE_FAILURE", "UNABLE_TO_GET_ISSUER_CERT", "PATH_LENGTH_EXCEEDED", "CERT_CHAIN_TOO_LONG",
@@ -34,8 +34,7 @@ test.describe("Native certificate verification diagnostics", {skip: process.plat
   });
 
   test("scoped IPv6 strips the zone only for IP SAN verification", (t) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-tls-scoped-ip-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-tls-scoped-ip-");
     const source = fs.readFileSync(path.join(__dirname, "../runtime/tls.cpp"), "utf8");
     assert.match(source, /const auto ip = verificationIp\(hostname\);/);
     const loopbackCertificate = /** @type {import("node:tls").PeerCertificate} */ (/** @type {unknown} */ ({
@@ -87,8 +86,7 @@ test.describe("Native certificate verification diagnostics", {skip: process.plat
   });
 
   test("peer certificate fingerprint is Node-compatible uppercase SHA-256", (t) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-tls-fingerprint-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-tls-fingerprint-");
     const source = fs.readFileSync(path.join(__dirname, "../runtime/tls.cpp"), "utf8"),
       certificateFile = path.join(__dirname, "fixtures/tls-localhost-cert.pem"),
       expected = new (require("node:crypto").X509Certificate)(fs.readFileSync(certificateFile)).fingerprint256;

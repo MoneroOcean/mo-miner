@@ -12,11 +12,11 @@ const {
   windowsCoreTrackerEnvironment, verifyWindowsCoreTrackerInputs,
 } = require("../scripts/build-native-windows-core");
 const {fileHash} = require("../scripts/build-source-inputs");
+const {tempDir} = require("./common/temp-dir");
 
 test.describe("Windows Core stable MSBuild work graph cache", () => {
   test("uses one guarded cache root and refuses a concurrent owner", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-core-cache-root-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-win-core-cache-root-");
     const cache = windowsCoreCacheRoot(root);
     assert.equal(cache, windowsCoreCacheRoot(root));
     const release = acquireWindowsCoreCacheLock(cache);
@@ -26,8 +26,7 @@ test.describe("Windows Core stable MSBuild work graph cache", () => {
   });
 
   test("rejects symlinked cache roots and include trees", {skip: process.platform === "win32"}, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-core-cache-link-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-win-core-cache-link-");
     const outside = path.join(root, "outside"), redirected = path.join(root, "redirected");
     fs.mkdirSync(outside); fs.symlinkSync(outside, path.join(root, "build"), "dir");
     assert.throws(() => windowsCoreCacheRoot(root), /symlink|redirected/);
@@ -37,8 +36,7 @@ test.describe("Windows Core stable MSBuild work graph cache", () => {
   });
 
   test("hashes selected MSVC, INCLUDE, and Windows SDK headers and fails closed on missing SDK identity", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-core-includes-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-win-core-includes-");
     const msvcInclude = path.join(root, "msvc", "include"), libuvInclude = path.join(root, "libuv", "include");
     const sdk = path.join(root, "windows-sdk"), version = "10.0.1.0";
     for (const leaf of ["ucrt", "shared", "um", "winrt", "cppwinrt"]) {
@@ -205,8 +203,7 @@ test.describe("Windows Core stable MSBuild work graph cache", () => {
   });
 
   test("Rebuild cleanup removes only validated Release outputs and preserves the rest of the graph", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-core-release-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-win-core-release-");
     const build = path.join(root, "source", "build"), release = path.join(build, "Release"), project = path.join(build, "mom_native_core.vcxproj");
     fs.mkdirSync(path.join(release, "obj"), {recursive: true}); fs.mkdirSync(path.join(build, "Debug"), {recursive: true});
     fs.writeFileSync(path.join(release, "obj", "orphan.obj"), "orphan");
@@ -220,8 +217,7 @@ test.describe("Windows Core stable MSBuild work graph cache", () => {
   });
 
   test("Rebuild cleanup refuses escaping links", {skip: process.platform === "win32"}, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-core-release-link-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-win-core-release-link-");
     const build = path.join(root, "source", "build"), release = path.join(build, "Release");
     fs.mkdirSync(release, {recursive: true});
     const outside = path.join(root, "outside"); fs.mkdirSync(outside);

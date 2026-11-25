@@ -7,9 +7,10 @@ const {staticSyclSdkPlan, sdkStage, buildStaticSyclSdk, admitCudaLibraries, cmak
   sdkHostEnvironment, verifyCompilerEnvironment, staticSyclValidationEnvironment, hostCompilerEvidence} = require("../scripts/build-native-sycl-sdk");
 const {cudaBuildHeaders} = require("../scripts/native-gpu-build");
 const {fileHash} = require("../scripts/build-source-inputs");
+const {tempDir} = require("./common/temp-dir");
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-sycl-sdk-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-sycl-sdk-");
   fs.mkdirSync(path.join(root, "lib64"));
   const libraries = ["cudart_static", "culibos"].map(name => {const file = path.join(root, "lib64/lib" + name + ".a"); fs.writeFileSync(file, "!<arch>\n"); return file;});
   const cache = libraries.map((file, i) => `CUDA_${["cudart_static", "culibos"][i]}_LIBRARY:FILEPATH=${file}`).join("\n");
@@ -56,14 +57,14 @@ test.describe("AdaptiveCpp HCF object reproducibility", () => {
     assert.throws(() => parseHcfObject(Buffer.concat([hcfBytes(), unrelated])));
   });
   test("the object inspector returns multiple top-level records and an empty list without markers", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hcf-multi-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-hcf-multi-");
     const multi = path.join(root, "multi.o"), plain = path.join(root, "plain.o");
     fs.writeFileSync(multi, Buffer.concat([hcfBytes("123"), hcfBytes("456")])); fs.writeFileSync(plain, Buffer.from("ordinary COFF/ELF object"));
     assert.deepEqual(inspectHcfObjects(multi).map(record => record.id), ["123", "456"]);
     assert.deepEqual(inspectHcfObjects(plain), []);
   });
   test("the object inspector ignores embedded payload markers but rejects malformed top-level markers", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hcf-marker-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-hcf-marker-");
     const nested = path.join(root, "nested.o"), malformed = path.join(root, "malformed.o");
     const payload = Buffer.concat([Buffer.from([0x42, 0x43, 0xc0, 0xde]), Buffer.from("__acpp_hcf_binary_appendix")]);
     fs.writeFileSync(nested, hcfBytes("123", payload)); fs.writeFileSync(malformed, Buffer.concat([hcfBytes("123"), Buffer.from("__acpp_hcf_binary_appendix")]));
@@ -71,7 +72,7 @@ test.describe("AdaptiveCpp HCF object reproducibility", () => {
     assert.throws(() => inspectHcfObjects(malformed), /no object ID/);
   });
   test("the selected object union must be nonempty and have unique IDs even for equal payloads", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hcf-union-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-hcf-union-");
     const first = path.join(root, "first.o"), duplicate = path.join(root, "duplicate.o"), empty = path.join(root, "empty.o");
     fs.writeFileSync(first, hcfBytes("123")); fs.copyFileSync(first, duplicate); fs.writeFileSync(empty, Buffer.from("no records"));
     assert.equal(assertUniqueHcfIds([first, empty]).length, 1);
@@ -80,7 +81,7 @@ test.describe("AdaptiveCpp HCF object reproducibility", () => {
     assert.throws(() => assertUniqueHcfIds([]), /empty HCF object file list/);
   });
   test("per-object HCF record count is bounded", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hcf-count-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-hcf-count-");
     const file = path.join(root, "too-many.o");
     fs.writeFileSync(file, Buffer.concat(Array.from({length: 4097}, (_, index) => hcfBytes(String(index + 1)))));
     assert.throws(() => inspectHcfObjects(file), /Excessive HCF record count/);
@@ -367,8 +368,7 @@ test.describe("Static SYCL SDK literal recipe and bounded lifecycle", {skip: pro
     const cmake = "/usr/bin/cmake", available = spawnSync(cmake, ["--version"], {encoding: "utf8", timeout: 10000, maxBuffer: 32768});
     if (available.error && "code" in available.error && available.error.code === "ENOENT") {t.skip("CMake is not installed"); return;}
     assert.equal(available.status, 0, available.stderr);
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-omp-ipo-policy-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-omp-ipo-policy-");
     for (const [name, staticRuntime, windows, compiler, expected] of [
       ["intel-linux-static", "ON", "OFF", "IntelLLVM", "-ipo;-fno-lto"],
       ["intel-windows-static", "ON", "ON", "IntelLLVM", "-ipo"],
@@ -431,7 +431,7 @@ test.describe("Static SYCL SDK literal recipe and bounded lifecycle", {skip: pro
     assert.throws(() => staticSyclSdkPlan("/src", "/llvm", "/cuda", path.resolve(__dirname, "../outside"), 2), /must not enter or enclose/);
   });
   test("Autoconf compiler names resolve exact tools through PATH, including paths with spaces", {skip: process.platform === "win32"}, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-autotools-compilers-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-autotools-compilers-");
     const ccDir = path.join(root, "Intel SDK with spaces"), cxxDir = path.join(root, "Intel's SDK with spaces");
     fs.mkdirSync(ccDir); fs.mkdirSync(cxxDir);
     const compilers = {cc: path.join(ccDir, "mom-test-cc"), cxx: path.join(cxxDir, "mom-test-cxx")};

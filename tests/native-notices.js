@@ -1,15 +1,15 @@
 "use strict";
 
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict"),
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict"),
   {spawnSync} = require("node:child_process");
 const {createHash} = require("node:crypto");
 const {assembleNativeNotices, projectNativeArchiveNotices, readNativeNoticeReceipt} = require("../scripts/prepare-native-notices");
 const {fileHash, readBuildJson} = require("../scripts/build-source-inputs");
+const {tempDir} = require("./common/temp-dir");
 
 /** @param {import('node:test').TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-notices-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-native-notices-");
   const openmpBody = Buffer.from("The LLVM Project license header.\n\nOpenMP Runtime Team\nCopyright (c) 1997-2019 Intel Corporation\n\nSoftware Grant License Agreement (\"Agreement\")\nFull preserved text.\n", "utf8");
   const acppBody = Buffer.from("\nCopyright The AdaptiveCpp Contributors\nAll rights reserved.\n", "utf8");
   const openmp = path.join(root, "openmp-license.txt"), acpp = path.join(root, "acpp-license.txt");

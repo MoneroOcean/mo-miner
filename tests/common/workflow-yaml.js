@@ -158,4 +158,4 @@ function parseWorkflowYaml(source) {
   return root;
 }
 
-module.exports = {parseWorkflowYaml, stripComment};
+module.exports = {parseWorkflowYaml};

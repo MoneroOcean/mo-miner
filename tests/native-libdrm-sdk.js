@@ -1,17 +1,17 @@
 "use strict";
 
-const assert = require("node:assert/strict"), test = require("node:test"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const assert = require("node:assert/strict"), test = require("node:test"), fs = require("node:fs"), path = require("node:path");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {libdrmPin, libdrmSdkPlan, nativeLibdrmInputs, buildNativeLibdrm} = require("../scripts/build-native-libdrm");
 const {linuxSysrootRecord, linuxSysrootReceiptSha256, linuxSysrootRelease} = require("../scripts/native-linux-sysroot");
+const {tempDir} = require("./common/temp-dir");
 
 const tools = {cc: "/intel/bin/icx", meson: "/usr/bin/meson", ninja: "/usr/bin/ninja", tar: "/usr/bin/tar"};
 
 /** A complete installed SDK fixture with a receipt bound to the current sysroot.
  * @param {import("node:test").TestContext} t */
 function sdkFixture(t) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mom-libdrm-sdk-")));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = fs.realpathSync(tempDir(t, "mom-libdrm-sdk-"));
   /** @type {Record<string, string>} */ const files = {};
   for (const [name, data] of Object.entries({"lib/libdrm.a": "!<arch>\n", "lib/libdrm_amdgpu.a": "!<arch>\n",
     "lib/pkgconfig/libdrm.pc": "Name: libdrm\n", "lib/pkgconfig/libdrm_amdgpu.pc": "Name: libdrm_amdgpu\n",

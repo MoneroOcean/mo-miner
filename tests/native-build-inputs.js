@@ -1,11 +1,12 @@
 "use strict";
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path");
 const {createHash} = require("node:crypto"), {spawnSync} = require("node:child_process");
 const {buildPathsOverlap, fileHash, walk, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildJson, readBuildText,
   hasExactBuildFields, requireBuildFields, hasBuildDirectoryEntries, canonicalBuildFile, readCanonicalBuildJson, verifyStableBuildJson,
   buildDependencies, buildFileInputs, completeBuildInputs} = require("../scripts/build-source-inputs");
 const {admitCpuCache} = require("../scripts/build-native-core");
 const {nativeApplicationInputs, nativeApplicationBuildInputs, nativeApplicationCudaImages, verifyCudaImageReceiptInputs} = require("../scripts/build-native-application");
+const {tempDir} = require("./common/temp-dir");
 const repo = path.resolve(__dirname, ".."), digest = (/** @type {string | Buffer} */ value) => createHash("sha256").update(value).digest("hex");
 const graphNames = [...new Set([sourceInputs(repo), nativeSourceInputs(repo, "cpu"), nativeSourceInputs(repo, "gpu"), nativeApplicationBuildInputs(repo)]
   .flatMap(state => Object.keys(state.graph)))];
@@ -13,8 +14,7 @@ const graphNames = [...new Set([sourceInputs(repo), nativeSourceInputs(repo, "cp
 /** Miniature source/cache trees, not compiler execution or edits to the real repository.
  * @param {import("node:test").TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-inputs-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-native-inputs-");
   /** @param {string} name @param {string | Buffer} value */
   const put = (name, value) => {
     const file = path.join(root, name); fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, value); return file;

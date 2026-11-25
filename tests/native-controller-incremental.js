@@ -3,15 +3,14 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const {compileNativeObjects} = require("../scripts/native-object-cache");
 const {linuxCompileEnvironment} = require("../scripts/build-native-application");
+const {tempDir} = require("./common/temp-dir");
 
 test.describe("Native controller object reuse", () => {
   test("fresh application manifests do not invalidate Linux object hits across fresh outputs", t => {
-    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-controller-cache-env-"));
-    t.after(() => fs.rmSync(repo, {recursive: true, force: true}));
+    const repo = tempDir(t, "mom-native-controller-cache-env-");
     const names = ["MOM_AOT_GPU_INPUTS", "MOM_AOT_CPU_CORE", "MOM_AOT_IO_SDK", "MOM_AOT_NVML_HEADER", "MOM_AOT_OPENSSL_ROOT", "MOM_AOT_BUILD_ONLY"];
     const previous = new Map(names.map(name => [name, process.env[name]]));
     t.after(() => {for (const name of names) {const value = previous.get(name); if (value === undefined) {delete process.env[name];} else {process.env[name] = value;}}});

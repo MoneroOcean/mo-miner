@@ -1,9 +1,10 @@
 "use strict";
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path");
 const {nativePePages, sealNativePePages} = require("../scripts/native-pe-pages");
 const {verifyNativePeMap} = require("../scripts/native-pe-audit");
 
 const {nativePeFixture: fixture} = require("./common/native-pe-fixture");
+const {tempDir} = require("./common/temp-dir");
 
 test.describe("Native Windows exact page-map admission", () => {
   test("admits original disjoint RX, RW and RO sections without reading payloads", () => {
@@ -68,7 +69,7 @@ test.describe("Native Windows exact page-map admission", () => {
 test.describe("Native Windows page-map sealing", () => {
   /** @param {import("node:test").TestContext} t */
   function temporary(t) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pe-pages-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-pe-pages-");
     const file = path.join(root, "mom.exe"), data = fixture().bytes; fs.writeFileSync(file, data); return {root, file, data};
   }
   test("only the fixed map page changes; code, imports and other data are byte-identical", t => {

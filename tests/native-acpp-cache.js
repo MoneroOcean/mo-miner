@@ -1,11 +1,11 @@
 "use strict";
 
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {describe, test} = require("node:test");
 const assert = require("node:assert/strict");
+const {tempDir} = require("./common/temp-dir");
 
 const repo = path.resolve(__dirname, "..");
 const patchFile = path.join(repo, "runtime/adaptivecpp-static.patch");
@@ -143,8 +143,7 @@ int main(int argc, char **argv) {
 }
 `;
 
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-acpp-cache-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-acpp-cache-");
     const source = path.join(root, "cache-write.cpp"), executable = path.join(root, "cache-write");
     fs.writeFileSync(source, harness, {flag: "wx"});
     const built = spawnSync(command, ["-std=c++17", "-O0", "-g0", source, "-o", executable],

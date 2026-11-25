@@ -1,6 +1,7 @@
 "use strict";
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {nativePeFixture} = require("./common/native-pe-fixture"), {auditNativePePayload} = require("../scripts/native-pe-audit");
+const {tempDir} = require("./common/temp-dir");
 
 /** Small synthetic loader tables and payloads, not a compiled/mining execution claim. */
 function image() {
@@ -25,7 +26,7 @@ function image() {
 }
 /** @param {import("node:test").TestContext} t */
 function pair(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pe-audit-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-pe-audit-");
   const source = path.join(root, "raw.exe"), restored = path.join(root, "restored.exe"), f = image();
   fs.writeFileSync(source, f.bytes); fs.writeFileSync(restored, f.bytes);
   return {...f, source, restored, check: () => auditNativePePayload(source, restored), change: (/** @type {(data: Buffer) => void} */ fn) => {

@@ -4,6 +4,7 @@ const fs = require("node:fs"), os = require("node:os"), path = require("node:pat
 const {coffExternalFallbacks} = require("../scripts/native-compiler-isolation");
 const {adapterDefinitions, windowsDriverRequirements, windowsRuntimeLinks, adapterSdkInputs, prepareWindowsAdapters} = require("../scripts/prepare-native-windows-adapters");
 const {windowsDriverBindings, windowsTypedDriverAliases} = require("../scripts/native-windows-driver");
+const {tempDir} = require("./common/temp-dir");
 
 test.describe("Windows original adapter namespace boundary", () => {
   test("CRT aliases retain their external override and weak fallback definitions", () => {
@@ -93,7 +94,7 @@ test.describe("Windows original adapter namespace boundary", () => {
   });
   for (const [mode, name] of [[0, "available driver"], [1, "absent drivers"], [2, "missing optional exports"]]) {
     test(`real Windows CUDA/NVML template: ${name}, typed ABI and cached lookup`, {skip: process.platform !== "linux"}, t => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-cuda-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+      const root = tempDir(t, "mom-windows-cuda-");
       const executable = path.join(root, "probe"), repo = path.resolve(__dirname, "..");
       const built = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-D_WIN32", "-I", path.join(__dirname, "logic/cuda-driver"), "-I", repo,
         path.join(__dirname, "logic/windows-cuda-driver.cpp"), "-o", executable], {encoding: "utf8", timeout: 30000});

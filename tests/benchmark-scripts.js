@@ -15,24 +15,19 @@ const {windowsCmdArgs} = require("../scripts/windows-command");
 
 test.describe("Correctness test dispatcher", {concurrency: false}, () => {
   const source = fs.readFileSync(path.join(__dirname, "run-hash.js"), "utf8");
-  const logicFiles = [
-    // Native source-level suites belong to logic; only the real N-API addon is hardware-bound.
-    // The Windows cudart producer is an opt-in component suite, not part of canonical logic.
-    // Check the directory independently so adding a source suite cannot silently omit it.
-    ...fs.readdirSync(__dirname).filter(name => /^(?:native-|local-(?:native-|windows-|wsl-)).*\.js$/.test(name) &&
-      !["native-addon.js", "native-deploy.js", "native-windows-cudart.js"].includes(name)).map(name => "tests/" + name),
-    "tests/logic.js", "tests/compiler-policy.js", "tests/portable-dag-modes.js",
-    "tests/nvidia-compatibility.js", "tests/intel-device-selection.js", "tests/c29-seed-unroll.js",
-    "tests/gpu-test-matrix-order.js", "tests/integrated-gpu-modes.js",
-    "tests/nvrtc-installer.js",
-    "tests/pearlhash-f16-lowering.js", "tests/readme-performance.js", "tests/sorted-key-literals.js",
-    "tests/benchmark-scripts.js", "tests/windows-command.js", "tests/pool-transport.js",
-    "tests/helper-workers.js", "tests/release-archive.js", "tests/build-release.js", "tests/build-environment.js",
-    "tests/bounded-native-ci.js", "tests/workflows.js",
-    "tests/incremental-linux-build.js", "tests/windows-incremental-build.js",
-    "tests/windows-incremental-orchestration.js",
-    "tests/windows-worker-discovery.js", "tests/dev.js", "tests/native-deploy.js",
-  ];
+  // Every top-level test file is canonical logic coverage unless listed here, so adding a source
+  // suite to the directory cannot silently omit it from the dispatcher.
+  const outsideLogic = new Set([
+    // Runners, shared vectors, and the IPC suite that tests/logic.js requires itself.
+    "run-hash.js", "run-perf.js", "perf.js", "vectors.js", "ipc-followon.js",
+    // Hardware-bound suites: CPU/GPU vectors, the real N-API addon and the host CPU references.
+    "all.js", "cpu.js", "gpu.js", "discrete-gpu.js", "integrated-gpu.js", "multi-gpu.js", "fishhash-batch.js",
+    "portable-gpu-cpu.js", "native-addon.js", "host.js", "hoohash-host.js", "pearlhash-claim.js",
+    // Windows PowerShell checks that the source-gates workflow runs directly.
+    "windows-script-safety.js",
+  ]);
+  const logicFiles = fs.readdirSync(__dirname).filter(name => name.endsWith(".js") && !outsideLogic.has(name))
+    .map(name => "tests/" + name);
 
   /** @param {string | undefined} suite
    * @param {{sourceCheckout?: boolean, platform?: string, env?: NodeJS.ProcessEnv}} [options] */
@@ -1920,10 +1915,6 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       assert.match(releaseLinux, /MOM_REQUIRE_INTEGRATED_GPU_TESTS=1/);
       assert.match(releaseLinux, /gpu-integrated suite requires an Intel integrated GPU/);
       assert.match(releaseLinux, /Intel\.\*\\\[integrated\\\]/);
-      const runHash = read("tests", "run-hash.js");
-      assert.match(runHash, /"gpu-integrated": \["tests\/integrated-gpu\.js"\]/);
-      assert.match(runHash,
-        /MOM_GPU_TEST_VENDORS: portableOpencl \? undefined : configuredVendors/);
 
       const deploy = read("scripts", "test-deploy.sh");
       assert.match(deploy, /GPU_GROUP=discrete/);

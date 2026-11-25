@@ -1,5 +1,5 @@
 "use strict";
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path");
 const {windowsSourceJitInputs, windowsStaticSdkPlan, buildWindowsStaticSdk} = require("../scripts/build-native-windows-sdk");
 const {sdkComponents, verifyPreparedSdkSources} = require("../scripts/prepare-native-sdk-sources");
 const components = sdkComponents("windows");
@@ -7,6 +7,7 @@ const {windowsToolEnvironment} = require("../scripts/build-native-windows-contro
 const {dpcppEntries} = require("../scripts/native-compiler-isolation"), {fileHash} = require("../scripts/build-source-inputs");
 const {spawnSync} = require("node:child_process");
 const {windowsIntelRuleOverride} = require("../scripts/prepare-native-jit-toolchain");
+const {tempDir} = require("./common/temp-dir");
 
 function fixture() {
   const root = "/sdk fixture/space", file = (/** @type {string} */ name) => path.join(root, name);
@@ -51,7 +52,7 @@ test.describe("Native Windows static SDK build recipe", {skip: process.platform 
   test("shared rules activate only for a real Intel compiler identity", t => {
     const probe = spawnSync("cmake", ["--version"], {encoding: "utf8"});
     if (probe.status !== 0) {return t.skip("CMake unavailable for compiler-free rules fixture");}
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-rules-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-windows-rules-");
     const rules = path.join(root, "rules.cmake"), script = path.join(root, "test.cmake");
     fs.writeFileSync(rules, windowsIntelRuleOverride("/machine:x64", ["/sdk/libcmt.lib"]));
     // Only exercise the conditional rule text; this is not a compiler-ID or SDK ABI probe.
@@ -103,7 +104,7 @@ test.describe("Native Windows static SDK build recipe", {skip: process.platform 
     assert.throws(() => buildWindowsStaticSdk("/missing", "/missing", "/missing", "/missing", "/missing", {}), /MOM_AOT_BUILD_ONLY/);
   });
   test("an incomplete receipt cannot select an empty source-verification recipe", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-sdk-receipt-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-sdk-receipt-");
     const file = path.join(root, "sources.json"), prepared = Object.fromEntries(Object.keys(components).map(name => [name, {}]));
     for (const value of [{}, {version: 1, status: "FAIL", prepared, compiled: false}, {version: 1, status: "PASS", prepared, compiled: false, recipe: {files: {}, graph: {}}}]) {
       fs.writeFileSync(file, JSON.stringify(value)); assert.throws(() => verifyPreparedSdkSources(file, "windows"), /source cohort|source inputs are stale/);
@@ -114,7 +115,7 @@ test.describe("Native Windows static SDK build recipe", {skip: process.platform 
 /** Shape-only archived build receipt. No original compiler or Windows execution claim.
  * @param {import('node:test').TestContext} t */
 function jitFixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-static-jit-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-windows-static-jit-");
   const repo = path.resolve(__dirname, ".."), file = path.join(root, "result.json"), map = path.join(root, "map.txt"); fs.writeFileSync(map, "map");
   const sourceHashes = Object.fromEntries(["scripts/native-coff-archive.js", "scripts/native-compiler-isolation.js", "scripts/build-source-inputs.js"].map(name => {
     const selected = path.join(repo, name); return [selected, fileHash(selected)];
@@ -186,7 +187,7 @@ test.describe("Windows original static source-JIT admission", {skip: process.pla
     const f = jitFixture(t); fs.appendFileSync(f.receipt.map, "changed"); assert.throws(() => windowsSourceJitInputs(f.file), /input changed/);
   });
   test("the Windows OpenCL binding is staged before the compiler sees its source path", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-opencl-binding-stage-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-opencl-binding-stage-");
     const sourceRoot = path.join(root, "source"), source = path.join(sourceRoot, "tests/reference/native-opencl-binding.cpp");
     const headers = path.join(root, "headers"), build = path.join(root, "build"), input = "int answer() { return 42; }\n";
     fs.mkdirSync(path.dirname(source), {recursive: true}); fs.mkdirSync(headers); fs.writeFileSync(source, input);

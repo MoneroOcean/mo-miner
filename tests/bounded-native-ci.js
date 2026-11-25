@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path"), {describe, test} = require("node:test");
 const {spawnSync} = require("node:child_process");
 const {parseMemAvailableBytes, verifyNativeCiHostHeadroom, verifyNativeCiMemoryEnvelope} = require("../scripts/native-ci-memory-envelope");
+const {tempDir} = require("./common/temp-dir");
 const repo = path.resolve(__dirname, "..");
 
 /** @param {import('node:test').TestContext} t */
@@ -49,8 +50,7 @@ describe("Native CI memory containment", () => {
   test("restores multiline environment and literal argv only in the non-root child", {
     skip: process.platform !== "linux" || process.getuid?.() === 0,
   }, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-ci-env-pipe-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-ci-env-pipe-");
     // This fixture bypasses only the kernel check to isolate shell transport. The verifier's
     // real cgroup admission is covered above and by the separately recorded live-scope smoke.
     const verifier = path.join(root, "verifier-node");
@@ -69,8 +69,7 @@ describe("Native CI memory containment", () => {
   test("producer PATH and Node preloads cannot replace the verifier", {
     skip: process.platform !== "linux" || process.getuid?.() === 0,
   }, t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-ci-verifier-env-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-ci-verifier-env-");
     const verifier = path.join(root, "verifier-node");
     // Isolate verifier dispatch/environment; actual kernel admission is tested separately.
     fs.writeFileSync(verifier, "#!/bin/sh\n[ -z \"$NODE_OPTIONS$NODE_PATH\" ] || exit 23\nprintf 'verified\\n'\n", {mode: 0o700, flag: "wx"});

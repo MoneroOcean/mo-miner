@@ -1,21 +1,16 @@
 "use strict";
 
 const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {archiveName, archiveSha256, toolNames, openmpBuildRecipe, openmpSdkPlan, validateOpenmpArchiveListing, sourceInventory, verifyCMakeCache,
   validateTools, regularInput, verifyOpenmpArchiveInput, verifyStaticOutput, verifyOpenmpDynamicDependencies, assertOpenmpReceiptShape,
   openmpSdkEnvironment, toolRecord, buildNativeOpenmpSdk, verifyOpenmpSourceInventory, verifyOpenmpNoticeInput, nativeOpenmpInputs} = require("../scripts/build-native-openmp-sdk");
+const {tempDir} = require("./common/temp-dir");
 
+// Fixtures are synthetic: no compiler, tar, readelf or OpenMP code is ever run.
 const tools = {cc: "/opt/intel/oneapi/compiler/2026.2/bin/icx", cmake: "/usr/bin/cmake",
   cxx: "/opt/intel/oneapi/compiler/2026.2/bin/icpx", ninja: "/usr/bin/ninja", readelf: "/usr/bin/readelf", tar: "/usr/bin/tar"};
-
-/** Tests use only synthetic files and never launch compilers, tar, readelf, or OpenMP code. @param {import("node:test").TestContext} t */
-function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-openmp-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  return root;
-}
 
 function listingFixture() {
   const prefix = "llvm-project-21.1.8.src";
@@ -132,7 +127,7 @@ test.describe("Pinned static LLVM OpenMP source SDK", {skip: process.platform !=
   });
 
   test("source inventory binds contents, membership and safe symlink text", {skip: process.platform === "win32"}, t => {
-    const root = fixture(t), source = sourceFixture(root), before = sourceInventory(source);
+    const root = tempDir(t, "mom-native-openmp-"), source = sourceFixture(root), before = sourceInventory(source);
     assert.equal(before.count, 4);
     assert.equal(before.entries, 7);
     assert.equal(before.bytes, Buffer.byteLength("cmake fixture\n") + Buffer.byteLength("openmp fixture\n") +
@@ -155,7 +150,7 @@ test.describe("Pinned static LLVM OpenMP source SDK", {skip: process.platform !=
   });
 
   test("receipt admission exposes only the exact regular OpenMP license hashed by the source inventory", t => {
-    const root = fixture(t), source = sourceFixture(root), before = sourceInventory(source), expected = {
+    const root = tempDir(t, "mom-native-openmp-"), source = sourceFixture(root), before = sourceInventory(source), expected = {
       path: "source", files: before.count, entries: before.entries, bytes: before.bytes, sha256: before.sha256};
     assert.deepEqual(before.license, {path: "source/openmp/LICENSE.TXT", sha256: fileHash(path.join(source, "openmp/LICENSE.TXT")),
       bytes: Buffer.byteLength("LLVM OpenMP license fixture\n")});
@@ -166,24 +161,24 @@ test.describe("Pinned static LLVM OpenMP source SDK", {skip: process.platform !=
     assert.throws(() => verifyOpenmpSourceInventory(source, expected), /membership or bytes changed/);
     assert.throws(() => verifyOpenmpNoticeInput(root, before.license), /source license changed/);
 
-    const missingRoot = fixture(t), missingSource = sourceFixture(missingRoot); fs.unlinkSync(path.join(missingSource, "openmp/LICENSE.TXT"));
+    const missingRoot = tempDir(t, "mom-native-openmp-"), missingSource = sourceFixture(missingRoot); fs.unlinkSync(path.join(missingSource, "openmp/LICENSE.TXT"));
     assert.throws(() => sourceInventory(missingSource), /missing its top-level license/);
     assert.throws(() => verifyOpenmpNoticeInput(missingRoot, before.license), /canonical regular file/);
     if (process.platform !== "win32") {
-      const linkedRoot = fixture(t), linkedSource = sourceFixture(linkedRoot), license = path.join(linkedSource, "openmp/LICENSE.TXT");
+      const linkedRoot = tempDir(t, "mom-native-openmp-"), linkedSource = sourceFixture(linkedRoot), license = path.join(linkedSource, "openmp/LICENSE.TXT");
       fs.unlinkSync(license); fs.symlinkSync("CMakeLists.txt", license);
       assert.throws(() => sourceInventory(linkedSource), /license must be a regular canonical file/);
       assert.throws(() => verifyOpenmpNoticeInput(linkedRoot, before.license), /canonical regular file/);
     }
 
-    const excessiveRoot = fixture(t), excessiveSource = sourceFixture(excessiveRoot);
+    const excessiveRoot = tempDir(t, "mom-native-openmp-"), excessiveSource = sourceFixture(excessiveRoot);
     fs.truncateSync(path.join(excessiveSource, "openmp/LICENSE.TXT"), (8 << 20) + 1);
     assert.throws(() => sourceInventory(excessiveSource), /license must be bounded/);
     assert.throws(() => verifyOpenmpNoticeInput(excessiveRoot, before.license), /source license changed/);
   });
 
   test("CMake cache admission rejects shared, offload, tests, and compiler/configuration drift", t => {
-    const root = fixture(t), plan = openmpSdkPlan("/input/" + archiveName, path.join(root, "sdk"), tools, 2, "linux"),
+    const root = tempDir(t, "mom-native-openmp-"), plan = openmpSdkPlan("/input/" + archiveName, path.join(root, "sdk"), tools, 2, "linux"),
       cache = path.join(root, "CMakeCache.txt");
     fs.writeFileSync(cache, Object.entries(plan.cache).map(([name, value]) => name + ":STRING=" + value).join("\n") + "\n");
     assert.deepEqual(verifyCMakeCache(cache, plan.cache), plan.cache);
@@ -209,7 +204,7 @@ test.describe("Pinned static LLVM OpenMP source SDK", {skip: process.platform !=
   });
 
   test("producer metadata requires canonical regular files, not symlink aliases", t => {
-    const root = fixture(t), file = path.join(root, "metadata.json"), directory = path.join(root, "metadata-directory");
+    const root = tempDir(t, "mom-native-openmp-"), file = path.join(root, "metadata.json"), directory = path.join(root, "metadata-directory");
     fs.writeFileSync(file, "{}\n"); assert.equal(regularInput(file, "fixture metadata").size, 3);
     fs.mkdirSync(directory); assert.throws(() => regularInput(directory, "fixture metadata"), /canonical regular file/);
     if (process.platform !== "win32") {
@@ -222,7 +217,7 @@ test.describe("Pinned static LLVM OpenMP source SDK", {skip: process.platform !=
   });
 
   test("rejects changed or misnamed archive inputs before trusting a fetch receipt", t => {
-    const root = fixture(t), wrongPath = path.join(root, "wrong.tar.xz"), source = path.join(root, "source");
+    const root = tempDir(t, "mom-native-openmp-"), wrongPath = path.join(root, "wrong.tar.xz"), source = path.join(root, "source");
     fs.mkdirSync(source); fs.writeFileSync(wrongPath, "not LLVM");
     assert.throws(() => verifyOpenmpArchiveInput(wrongPath), /exact pinned/);
     const archive = path.join(source, archiveName); fs.writeFileSync(archive, "not LLVM");
@@ -232,7 +227,7 @@ test.describe("Pinned static LLVM OpenMP source SDK", {skip: process.platform !=
   });
 
   test("admits only bounded regular static archives and rejects compiler runtime dependencies", t => {
-    const root = fixture(t), archive = path.join(root, "libomp.a");
+    const root = tempDir(t, "mom-native-openmp-"), archive = path.join(root, "libomp.a");
     fs.writeFileSync(archive, "!<arch>\nfixture");
     assert.equal(verifyStaticOutput(archive, "fixture").sha256, fileHash(archive));
     fs.writeFileSync(archive, "not an archive");
@@ -260,7 +255,7 @@ test.describe("Pinned static LLVM OpenMP source SDK", {skip: process.platform !=
       {...good, smoke: {run: {status: 1, signal: null}}},
       {...good, extra: "unexpected"},
     ]) {assert.throws(() => assertOpenmpReceiptShape(altered), /Invalid or stale/);}
-    const root = fixture(t), output = path.join(root, "new-sdk"), configFile = path.join(root, "tools.json");
+    const root = tempDir(t, "mom-native-openmp-"), output = path.join(root, "new-sdk"), configFile = path.join(root, "tools.json");
     fs.writeFileSync(configFile, "{}\n");
     const config = {version: 1, jobs: 2, tools};
     assert.throws(() => buildNativeOpenmpSdk("/missing/" + archiveName, output, config, {}, configFile, fileHash(configFile)), /Linux x64 and MOM_AOT_BUILD_ONLY/);

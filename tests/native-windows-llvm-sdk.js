@@ -1,6 +1,6 @@
 "use strict";
 
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path");
 const {createHash} = require("node:crypto");
 const {spawnSync} = require("node:child_process");
 const {validateWindowsLlvmSdkConfig} = require("../scripts/build-native-windows-controller");
@@ -10,11 +10,11 @@ const {archiveSha256, buildPhases, windowsLlvmSdkPlan, llvmSourceSnapshot, verif
   buildWindowsLlvmSdk, auditWindowsLlvmAdmission} = require("../scripts/build-native-windows-llvm-sdk");
 const {fileHash, buildFileInputs} = require("../scripts/build-source-inputs");
 const {jitBuildOutputs} = require("../scripts/native-jit-stages");
+const {tempDir} = require("./common/temp-dir");
 
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-llvm21-sdk-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-windows-llvm21-sdk-");
   const weirdInclude = path.join(root, "sdk]==]bracket", "include");
   const overlay = path.join(root, "windows sdk overlay.json"), header = path.join(weirdInclude, "windows.h");
   const descriptor = {version: 1,

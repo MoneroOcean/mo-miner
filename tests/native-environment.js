@@ -3,11 +3,11 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const environment = require("../runtime/environment");
 const {extractCppBlock} = require("./common/cpp-source");
+const {tempDir} = require("./common/temp-dir");
 
 test.describe("Native process environment", {concurrency: false}, () => {
   /** @type {Record<string, unknown>} */
@@ -104,8 +104,7 @@ test.describe("Native process environment", {concurrency: false}, () => {
     // Windows itself is covered by the direct-executable parity run, not a MinGW prerequisite.
     skip: process.platform === "win32",
   }, (t) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-environment-enumeration-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-environment-enumeration-");
     const runtime = fs.readFileSync(path.join(__dirname, "../runtime/event-loop.cpp"), "utf8");
     const fixture = fs.readFileSync(path.join(__dirname, "native/environment-enumeration.cpp"), "utf8");
     const declaration = '  binding(*owner, "__momEnvKeys", 0, [](SHConsoleContext &owner, const Value *) -> Value {';
@@ -126,8 +125,7 @@ test.describe("Native process environment", {concurrency: false}, () => {
   test("native environment updates synchronize Windows CRT selection without changing libuv semantics", {
     timeout: 30000, skip: process.platform === "win32",
   }, (t) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-environment-update-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-environment-update-");
     fs.writeFileSync(path.join(root, "uv.h"), "#pragma once\n#define UV_EINVAL (-22)\n#define UV_EIO (-5)\n");
     for (const windows of [false, true]) {
       const executable = path.join(root, windows ? "windows" : "portable");

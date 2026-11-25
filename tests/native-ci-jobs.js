@@ -3,18 +3,17 @@
 // Behaviour of the CI job helpers: job preparation (native-job.yml) and chained-phase relays.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const {describe, test} = require("node:test");
 const job = require("../scripts/ci/job");
 const chain = require("../scripts/ci/chain");
 const {cacheKey} = require("../scripts/ci/cache");
 const {reuseCachedLinuxLlvm} = require("../scripts/native-ci-linux-llvm");
+const {tempDir} = require("./common/temp-dir");
 
 /** @param {import("node:test").TestContext} t */
 function workspace(t) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mom-ci-jobs-")));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = fs.realpathSync(tempDir(t, "mom-ci-jobs-"));
   const files = {GITHUB_ENV: path.join(root, "env"), GITHUB_OUTPUT: path.join(root, "output")};
   for (const file of Object.values(files)) {fs.writeFileSync(file, "");}
   return {root, files, environment: {MOM_NATIVE_CI_SUFFIX: "ci-123-2", RUNNER_TEMP: root, ...files}};

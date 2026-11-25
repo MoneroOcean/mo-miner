@@ -1,6 +1,6 @@
 "use strict";
 
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), childProcess = require("node:child_process");
+const fs = require("node:fs"), path = require("node:path"), childProcess = require("node:child_process");
 const {test, describe} = require("node:test"), assert = require("node:assert/strict");
 const {createHash} = require("node:crypto");
 const sourceIO = require("../scripts/build-source-inputs"), llvmTools = require("../scripts/native-linux-llvm-tools");
@@ -9,24 +9,14 @@ const ci = require("../scripts/native-ci-linux-sources");
 const localSdk = require("../scripts/build-local-native-sdk"), localRocm = require("../scripts/build-local-native-rocm-sdk");
 const {windowsAmdhipCatalog, prepareWindowsAmdhip, admitWindowsAmdhip, windowsAmdhipInputs, amdhipRecipe,
   deriveDefinition, verifyLinuxToolHandoff, prepareLocalAmdhipWindows} = require("../scripts/prepare-native-amdhip-windows");
+const {tempDir} = require("./common/temp-dir");
 
 /** @param {Buffer|string} value */
 function sha256(value) {return createHash("sha256").update(value).digest("hex");}
 /** @param {string} file @param {Buffer|string} value */
 function writePrivate(file, value) {fs.writeFileSync(file, value, {flag: "wx", mode: 0o600});}
-/** @param {string} root */
-function makeWritable(root) {
-  if (!fs.existsSync(root)) {return;}
-  const stat = fs.lstatSync(root);
-  if (stat.isSymbolicLink()) {return;}
-  if (stat.isDirectory()) {fs.chmodSync(root, 0o700); for (const name of fs.readdirSync(root)) {makeWritable(path.join(root, name));}} else if (stat.isFile()) {fs.chmodSync(root, 0o600);}
-}
 /** @param {import("node:test").TestContext} t */
-function fixtureRoot(t) {
-  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "mom-win-amdhip-"));
-  t.after(() => {makeWritable(root); fs.rmSync(root, {recursive: true, force: true});});
-  return root;
-}
+function fixtureRoot(t) {return fs.realpathSync(tempDir(t, "mom-win-amdhip-"));}
 /** @param {string} root @param {Buffer} library @param {Buffer} license */
 function receiptFixture(root, library, license) {
   const c = windowsAmdhipCatalog(), recipe = amdhipRecipe(), output = path.join(root, "input"),

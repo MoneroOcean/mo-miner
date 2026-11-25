@@ -2,15 +2,15 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {nativeDependencies, auditNativeGlibc, auditNativeVersionNeeds, auditNativeTrace, auditNativeHeaders, auditNativeSymbols, auditNativeSymbolFile, isStaticArchive} = require("../scripts/native-audit");
 const {linuxGlibcBaseline} = require("../scripts/native-linux-sysroot");
+const {tempDir} = require("./common/temp-dir");
 
 /** @param {import('node:test').TestContext} t */
 function auditFixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-audit-"));
-  t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+  const directory = tempDir(t, "mom-native-audit-");
   return path.join(directory, "evidence");
 }
 

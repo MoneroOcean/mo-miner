@@ -4,6 +4,7 @@ const test = require("node:test"), assert = require("node:assert/strict"), fs = 
   path = require("node:path"), vm = require("node:vm"), {createHash} = require("node:crypto");
 const {buildPhases} = require("../scripts/build-native-windows-llvm-sdk"),
   {windowsLlvmCiJobPlan, windowsLlvmCiJobPreflight, windowsLlvmDescriptorProducerPins, windowsLlvmOutputValid, hostSdkDeadline} = require("../scripts/run-native-windows-llvm-ci");
+const {tempDir} = require("./common/temp-dir");
 
 let fixtureSequence = 0;
 
@@ -431,8 +432,7 @@ test.describe("Windows LLVM descriptor producer output pins", {skip: process.pla
 
 test("workflow outputs admit the CI state directory for the plain run-independent suffix", {skip: process.platform !== "linux"}, t => {
   // CI sets MOM_NATIVE_CI_SUFFIX=ci; a digits-only directory pattern rejected every configure output.
-  const runnerTemp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-llvm-output-")));
-  t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+  const runnerTemp = fs.realpathSync(tempDir(t, "mom-win-llvm-output-"));
   const {windowsNativeLlvmCiStatePaths} = require("../scripts/native-ci-windows-llvm");
   const state = windowsNativeLlvmCiStatePaths({RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: "ci", MOM_AOT_BUILD_ONLY: "1",
     MOM_BUILD_JOBS: "4", MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH: "1900000000", GITHUB_JOB: "windows_llvm",

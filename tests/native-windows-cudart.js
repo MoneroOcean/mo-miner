@@ -1,58 +1,17 @@
 "use strict";
 
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const fs = require("node:fs"), path = require("node:path");
 const {test, describe} = require("node:test"), assert = require("node:assert/strict");
 const {createHash} = require("node:crypto");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {windowsCudartCatalog, stagePinnedZipMembers, prepareWindowsCudart, admitWindowsCudart, cudartRecipe, trustedUnzipSnapshot} = require("../scripts/prepare-native-cudart-windows");
+const {tempDir} = require("./common/temp-dir");
+const {storedZip} = require("./common/zip-fixture");
 
-/** @typedef {{name:string,data:Buffer}} ZipEntry */
 /** @typedef {{member:string,output:string,bytes:number,sha256:string}} CudartMember */
 
-/** @param {Uint8Array} value */
-function crc32(value) {
-  let crc = 0xffffffff;
-  for (const byte of value) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit++) {crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);}
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-/** Build a tiny stored ZIP for fixed-member staging tests. @param {ZipEntry[]} entries */
-function zipBytes(entries) {
-  const local = [], central = []; let offset = 0;
-  for (const entry of entries) {
-    const name = Buffer.from(entry.name), data = entry.data, crc = crc32(data), header = Buffer.alloc(30), row = Buffer.alloc(46);
-    header.writeUInt32LE(0x04034b50, 0); header.writeUInt16LE(20, 4); header.writeUInt32LE(crc, 14);
-    header.writeUInt32LE(data.length, 18); header.writeUInt32LE(data.length, 22); header.writeUInt16LE(name.length, 26); local.push(header, name, data);
-    row.writeUInt32LE(0x02014b50, 0); row.writeUInt16LE(0x0314, 4); row.writeUInt16LE(20, 6); row.writeUInt32LE(crc, 16);
-    row.writeUInt32LE(data.length, 20); row.writeUInt32LE(data.length, 24); row.writeUInt16LE(name.length, 28);
-    row.writeUInt32LE((0o100644 << 16) >>> 0, 38); row.writeUInt32LE(offset, 42); central.push(row, name);
-    offset += header.length + name.length + data.length;
-  }
-  const directory = Buffer.concat(central), end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10);
-  end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(offset, 16);
-  return Buffer.concat([...local, directory, end]);
-}
-
-/** @param {string} directory */
-function makeWritable(directory) {
-  const stat = fs.lstatSync(directory);
-  if (stat.isSymbolicLink()) {return;}
-  if (stat.isDirectory()) {
-    fs.chmodSync(directory, 0o700);
-    for (const name of fs.readdirSync(directory)) {makeWritable(path.join(directory, name));}
-  } else if (stat.isFile()) {fs.chmodSync(directory, 0o600);}
-}
-
 /** @param {import("node:test").TestContext} t */
-function fixtureRoot(t) {
-  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "mom-win-cudart-"));
-  t.after(() => {makeWritable(root); fs.rmSync(root, {recursive: true, force: true});});
-  return root;
-}
+function fixtureRoot(t) {return fs.realpathSync(tempDir(t, "mom-win-cudart-"));}
 
 /** @param {Buffer} bytes */
 function sha256(bytes) {return createHash("sha256").update(bytes).digest("hex");}
@@ -78,7 +37,7 @@ describe("Pinned Windows CUDA Runtime inputs", {skip: process.platform !== "linu
         {member: catalog.cudartStatic.member, output: catalog.cudartStatic.output, bytes: library.length, sha256: sha256(library)},
         {member: catalog.license.member, output: catalog.license.output, bytes: license.length, sha256: sha256(license)},
       ]), archive = path.join(root, "fixture.zip");
-    fs.writeFileSync(archive, zipBytes([{name: rows[0].member, data: library}, {name: "../../escape", data: Buffer.from("ignored")}, {name: rows[1].member, data: license}]));
+    fs.writeFileSync(archive, storedZip([[rows[0].member, library], ["../../escape", "ignored"], [rows[1].member, license]]));
     const staged = stagePinnedZipMembers(findUnzip(), archive, rows), libraryStage = staged[rows[0].output], licenseStage = staged[rows[1].output];
     assert.deepEqual(Object.keys(staged).sort(), rows.map(row => row.output).sort());
     assert.ok(libraryStage && licenseStage);
@@ -93,9 +52,9 @@ describe("Pinned Windows CUDA Runtime inputs", {skip: process.platform !== "linu
       rows = /** @type {[CudartMember,CudartMember]} */ ([
         {member: catalog.cudartStatic.member, output: catalog.cudartStatic.output, bytes: library.length, sha256: sha256(library)},
         {member: catalog.license.member, output: catalog.license.output, bytes: license.length, sha256: sha256(license)},
-      ]), writeZip = (/** @type {string} */ name, /** @type {ZipEntry[]} */ entries) => {
-        const archive = path.join(root, name); fs.writeFileSync(archive, zipBytes(entries)); return archive;
-      }, libraryRow = {name: rows[0].member, data: library}, licenseRow = {name: rows[1].member, data: license};
+      ]), writeZip = (/** @type {string} */ name, /** @type {Array<[string, Buffer]>} */ entries) => {
+        const archive = path.join(root, name); fs.writeFileSync(archive, storedZip(entries)); return archive;
+      }, libraryRow = /** @type {[string, Buffer]} */ ([rows[0].member, library]), licenseRow = /** @type {[string, Buffer]} */ ([rows[1].member, license]);
     assert.throws(() => stagePinnedZipMembers(findUnzip(), writeZip("missing.zip", [libraryRow]), rows), /missing or duplicated/);
     assert.throws(() => stagePinnedZipMembers(findUnzip(), writeZip("duplicate.zip", [libraryRow, libraryRow, licenseRow]), rows), /missing or duplicated/);
     const complete = writeZip("wrong-bytes.zip", [libraryRow, licenseRow]);

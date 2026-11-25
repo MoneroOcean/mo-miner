@@ -8,6 +8,7 @@ const {nativeCgroupParent, nativeContainerLaunch, nativeDeviceArgs, nativePearlF
 const {EventEmitter} = require("node:events");
 const {spawnSync} = require("node:child_process"), path = require("node:path");
 const net = require("node:net"), tls = require("node:tls");
+const {tempDir} = require("./common/temp-dir");
 /** @typedef {{once: (event: string, listener: (...args: unknown[]) => void) => unknown}} TerminationKiller */
 /** @typedef {EventEmitter & TerminationKiller} TestKiller */
 /** @typedef {(command: string, args: string[], options: {stdio: "ignore", windowsHide: true, timeout: number}) => TerminationKiller} TerminationSpawn */
@@ -200,9 +201,8 @@ test.describe("Native mining parity share verifier", {concurrency: false}, () =>
     assert.deepEqual(launch.commandArgs.slice(3), straceArgs);
   });
   test("generated cgroup guard reads its limits with shell builtins when PATH is unavailable", {skip: process.platform !== "linux"}, (t) => {
-    const fs = require("node:fs"), os = require("node:os");
-    const cgroup = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-cgroup-guard-"));
-    t.after(() => fs.rmSync(cgroup, {recursive: true, force: true}));
+    const fs = require("node:fs");
+    const cgroup = tempDir(t, "mom-native-cgroup-guard-");
     fs.writeFileSync(path.join(cgroup, "memory.max"), "4294967296\n");
     fs.writeFileSync(path.join(cgroup, "memory.swap.max"), "0\n");
     const launch = nativeContainerLaunch("mom094native.slice", []);

@@ -5,6 +5,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const compilerPolicy = require("../../compiler-policy");
 const {windowsCmdArgs} = require("../../scripts/windows-command");
+const {formatHashrate} = require("../../helper/hash");
+const {isObject} = require("../../helper/validate");
 
 /** @typedef {{cwd?: string, env?: TestEnvironment | undefined, timeoutMs?: number | undefined}} RunOptions */
 /** @typedef {{code: number | null, signal: NodeJS.Signals | null, error: Error | null, stdout: string, stderr: string}} RunResult */
@@ -79,33 +81,15 @@ function createAlgoParamsReportCache(probe) {
   };
 }
 
-const hashrateUnits = [
-  {value: 1000000000000000, suffix: "PH/s"},   // pearlhash reports GEMM throughput in TH/s+
-  {value: 1000000000000, suffix: "TH/s"},
-  {value: 1000000000, suffix: "GH/s"},
-  {value: 1000000, suffix: "MH/s"},
-  {value: 1000, suffix: "KH/s"},
-];
-const hashrateUnitMultipliers = Object.fromEntries([
-  ...hashrateUnits.map((unit) => [unit.suffix, unit.value]),
-  ["H/s", 1],
-]);
+// Units printed by helper/hash.js formatHashrate; parsing them back is the test-side oracle.
+/** @type {Record<string, number>} */
+const hashrateUnitMultipliers = {"PH/s": 1e15, "TH/s": 1e12, "GH/s": 1e9, "MH/s": 1e6, "KH/s": 1e3, "H/s": 1};
 
 /** @param {Runner} runner */
 function quoteCommand(runner) {
   return [runner.command, ...runner.args]
     .map((arg) => (/^[A-Za-z0-9_./:=+-]+$/.test(arg) ? arg : JSON.stringify(arg)))
     .join(" ");
-}
-
-/** @param {string | number} hashrate */
-function formatHashrate(hashrate) {
-  const rate = Number.parseFloat(String(hashrate));
-  if (!Number.isFinite(rate)) {return String(hashrate);}
-  for (const unit of hashrateUnits) {
-    if (Math.abs(rate) >= unit.value) {return `${(rate / unit.value).toFixed(2)} ${unit.suffix}`;}
-  }
-  return `${rate.toFixed(2)} H/s`;
 }
 
 /** @param {string} value @param {string} unit */
@@ -454,15 +438,10 @@ function runNode(args, options = {}) {
   });
 }
 
-/** @param {unknown} value @returns {value is Record<string, unknown>} */
-function isRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** @param {string} json @returns {Record<string, string>} */
 function parseAlgoParams(json) {
   const value = JSON.parse(json);
-  if (!isRecord(value)) {throw new Error("MOM_ALGORITHMS was not an object");}
+  if (!isObject(value)) {throw new Error("MOM_ALGORITHMS was not an object");}
   /** @type {Record<string, string>} */
   const params = {};
   for (const [key, entry] of Object.entries(value)) {

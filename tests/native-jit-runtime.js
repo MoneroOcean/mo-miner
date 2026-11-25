@@ -40,6 +40,7 @@ test.describe("Static SYCL runtime source-JIT bridge", {skip: !bridge && "Set MO
       assert.ok(fs.lstatSync(bridge).isFile(), "The runtime fixture must be a regular executable, not a symlink");
       // The fixture's expectation and upstream compiler target are separate controls. Setting
       // only MOM_DPCPP_JIT_TARGET does not actually select that PTX architecture.
+      // CI mounts only this file into the contained runtime proof, so no shared test helper is used.
       const cache = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-bridge-")); t.after(() => fs.rmSync(cache, {recursive: true, force: true}));
       const env = fixtureEnvironment({MOM_DPCPP_JIT_TARGET: target, SYCL_JIT_AMDGCN_PTX_TARGET_CPU: target, SYCL_CACHE_PERSISTENT: "1", SYCL_CACHE_DIR: cache,
         SYCL_JIT_AMDGCN_PTX_TARGET_FEATURES: target === "sm_120" ? "+sm_120,+ptx87" : "+sm_61,+ptx63"});

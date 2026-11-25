@@ -8,6 +8,7 @@ const path = require("node:path");
 const esbuild = require("esbuild");
 const nativeAliases = require("../scripts/native-bundle");
 const shim = require("../runtime/path-internals");
+const {tempDir} = require("./common/temp-dir");
 
 test.describe("Native path source compatibility", () => {
   const output = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-path-"));
@@ -74,7 +75,7 @@ test.describe("Native path source compatibility", () => {
     assert.equal(shim.primordials.StringPrototypeSlice("abcd", 1, 3), "bc");
   });
   test("Node 24's reviewed lazy-glob import binds without adding filesystem glob behavior", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-path24-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-path24-");
     const internals = /** @type {{binding: (name: string) => object}} */ (/** @type {unknown} */ (process)), original = internals.binding;
     const source = "const {getLazy}=require('internal/util'); const glob=getLazy(()=>require('internal/fs/glob').matchGlobPattern); module.exports={matchesGlob:(s,p)=>glob()(s,p)};";
     t.mock.method(internals, "binding", (/** @type {string} */ name) => name === "natives" ? {path: source} : original(name));
@@ -84,7 +85,7 @@ test.describe("Native path source compatibility", () => {
     assert.throws(() => require(bundled).matchesGlob("a", "*"), /not implemented/);
   });
   test("reviewed lazy aliases do not permit arbitrary Node internals", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-path-unreviewed-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-path-unreviewed-");
     const internals = /** @type {{binding: (name: string) => object}} */ (/** @type {unknown} */ (process)), original = internals.binding;
     t.mock.method(internals, "binding", (/** @type {string} */ name) => name === "natives" ? {path: "require('internal/fs/unreviewed')"} : original(name));
     assert.throws(() => nativeAliases(root), /unreviewed internal dependency/); assert.deepEqual(fs.readdirSync(root), []);

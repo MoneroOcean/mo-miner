@@ -10,10 +10,11 @@ const {buildEngineeringArchive: buildRelease, buildNativeArtifact, engineeringAr
 const {normalizeBuildEnvironment} = require("../scripts/build-environment");
 const {assembleNativeNotices} = require("../scripts/prepare-native-notices");
 const {fileHash} = require("../scripts/build-source-inputs");
+const {tempDir} = require("./common/temp-dir");
 
 /** @param {import('node:test').TestContext} t */
 function nativeNoticeFixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-build-release-notice-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-build-release-notice-");
   const source = path.join(root, "LICENSE.txt"); fs.writeFileSync(source, "Fixture license text.\n");
   const assembled = assembleNativeNotices([{component: "fixture", path: source, sha256: fileHash(source)}], path.join(root, "assembled"));
   const receiptPath = path.join(path.dirname(assembled.notice.path), "native-notices.json");

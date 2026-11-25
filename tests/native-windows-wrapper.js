@@ -1,7 +1,6 @@
 "use strict";
 
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const test = require("node:test");
@@ -10,6 +9,7 @@ const {fileHash} = require("../scripts/build-source-inputs");
 const {coffSectionPayloads} = /** @type {{coffSectionPayloads: (file: string) => Array<{number: number, bytes: number, virtualSize: number, characteristics: number, sha256: string}>}} */ (require("../scripts/native-compiler-isolation"));
 const {profileGateNames, windowsWrapperPlan, inspectWindowsWrapper, transformWindowsWrapper, extractSpecializationIds, verifyWindowsHostRetention, verifySpecializationIds, windowsDeviceLinkArgs} = require("../scripts/native-windows-wrapper");
 const {deviceLinkArgs} = require("../scripts/build-native-gpu");
+const {tempDir} = require("./common/temp-dir");
 const gyp = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
 
 /** @typedef {{llvmObjcopy: string, llvmReadobj: string, llvmNm: string}} WrapperTools */
@@ -38,8 +38,7 @@ function specializationPropertyText(ids = [], options = {}) {
 }
 /** @param {import("node:test").TestContext} t @param {string | Buffer} host @param {string | Buffer} device @param {string[]} [properties] */
 function specializationFixture(t, host, device, properties = []) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-specialization-gate-"));
-  t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+  const directory = tempDir(t, "mom-specialization-gate-");
   const hostPath = path.join(directory, "host.obj"), devicePath = path.join(directory, "device.obj");
   writeFixture(hostPath, host); writeFixture(devicePath, device);
   const propertyPaths = properties.map((contents, index) => {
@@ -98,8 +97,7 @@ function readSectionNames(selected, file, cwd) {
 function retentionFixture(t) {
   const selected = toolchain;
   if (!selected) {throw new Error("LLVM toolchain unexpectedly unavailable");}
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-host-retention-"));
-  t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+  const directory = tempDir(t, "mom-host-retention-");
   const source = path.join(directory, "retention.c"), original = path.join(directory, "original.obj"), retained = path.join(directory, "retained.obj");
   fs.writeFileSync(source, [
     "__attribute__((section(\"__CLANG_OFFLOAD_BUNDLE__sycl-spir64\"), used)) static const unsigned char offload_data[4] = {1, 2, 3, 4};",
@@ -153,8 +151,7 @@ function fixtureSource() {
 
 test.describe("Windows SYCL wrapper transform", () => {
   test("profile and plan stay inside the maintained dispatcher contract", (t) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-wrapper-plan-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-wrapper-plan-");
     assert.deepEqual(profileGateNames("dpcpp-opencl"), {key: "dpcpp_opencl", register: "mom_native_register_dpcpp_opencl", unregister: "mom_native_unregister_dpcpp_opencl"});
     assert.throws(() => profileGateNames("acpp-hip"), /registration profile/);
     const plan = windowsWrapperPlan({input: path.join(directory, "input.obj"), output: path.join(directory, "output.obj"), profile: "oneapi",
@@ -166,8 +163,7 @@ test.describe("Windows SYCL wrapper transform", () => {
     const selected = toolchain;
     if (!selected) {throw new Error("LLVM toolchain unexpectedly unavailable");}
     const selectedTools = wrapperTools(selected);
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-wrapper-coff-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-wrapper-coff-");
     const source = path.join(directory, "fixture.c"), input = path.join(directory, "fixture.obj"), output = path.join(directory, "fixture-xcu.obj"), manifestPath = path.join(directory, "manifest.json");
     fs.writeFileSync(source, fixtureSource(), {flag: "wx"});
     const env = {...process.env, PATH: selected.bin + path.delimiter + (process.env["PATH"] || "")}, clangName = path.basename(selected.clang).toLowerCase();
@@ -186,8 +182,7 @@ test.describe("Windows SYCL wrapper transform", () => {
   });
 
   test("wrapper tool failures retain useful bounded diagnostics", t => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-wrapper-tool-fault-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-wrapper-tool-fault-");
     const input = path.join(directory, "fixture.obj"); fs.writeFileSync(input, "not inspected because the tool fails");
     const tools = {llvmObjcopy: process.execPath, llvmReadobj: process.execPath, llvmNm: process.execPath};
     assert.throws(() => inspectWindowsWrapper(input, tools, "input", "dpcpp"), error => {
@@ -197,8 +192,7 @@ test.describe("Windows SYCL wrapper transform", () => {
 
   test("wrapper audit bounds scratch copies and streams section payloads", {skip: llvmSkip}, t => {
     const selected = toolchain; if (!selected) {throw new Error("LLVM toolchain unavailable");}
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-wrapper-scratch-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-wrapper-scratch-");
     const source = path.join(directory, "fixture.c"), input = path.join(directory, "fixture.obj"), output = path.join(directory, "output.obj");
     fs.writeFileSync(source, fixtureSource());
     const built = spawnSync(selected.clang, ["-target", "x86_64-pc-windows-msvc", "-c", "-O0", "-fno-stack-protector", source, "-o", input], {encoding: "utf8", timeout: 30000});
@@ -224,8 +218,7 @@ test.describe("Windows SYCL wrapper transform", () => {
     const selected = toolchain, input = wala;
     if (!selected || !input) {throw new Error("Wala audit prerequisites unexpectedly unavailable");}
     const selectedTools = wrapperTools(selected);
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-wrapper-wala-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-wrapper-wala-");
     const output = path.join(directory, "walahash-wrapper-xcu.obj");
     const beforeHash = fileHash(input), before = inspectWindowsWrapper(input, selectedTools, "input", "dpcpp");
     const manifest = /** @type {WrapperManifest} */ (transformWindowsWrapper({input, output, profile: "dpcpp", tools: selectedTools}));
@@ -240,8 +233,7 @@ test.describe("Windows SYCL wrapper transform", () => {
     const selected = toolchain, input = wala;
     if (!selected || !input) {throw new Error("Wala audit prerequisites unexpectedly unavailable");}
     const selectedTools = wrapperTools(selected);
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-wrapper-negative-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-wrapper-negative-");
     const renamed = path.join(directory, "renamed.obj"), missing = path.join(directory, "missing.obj");
     transformWindowsWrapper({input, output: renamed, profile: "dpcpp", tools: selectedTools});
     assert.throws(() => inspectWindowsWrapper(renamed, selectedTools, "input", "dpcpp"), /CRT/);
@@ -394,8 +386,7 @@ test.describe("Windows SYCL specialization-ID regression gate", () => {
   });
 
   test("rejects an oversized regular input before reading it", (t) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-specialization-large-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-specialization-large-");
     const host = path.join(directory, "host.obj"), device = path.join(directory, "device.obj");
     writeFixture(device, "ordinary");
     const descriptor = fs.openSync(host, "w");

@@ -1,18 +1,15 @@
 "use strict";
 
 const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {zstdPin, toolNames, zstdSdkPlan, validateArchive, sourceInventory, readStagedArchive, zstdBuildRecipe,
   verifyZstdArchiveInput, verifyZstdTools, verifyZstdRecipe, verifyZstdOutputs, nativeZstdNoticeInputs, nativeZstdInputs, buildNativeZstd} = require("../scripts/build-native-zstd");
+const {tempDir} = require("./common/temp-dir");
 
+// Fixtures are synthetic: no compiler, archive tool or zstd executable is ever run.
 const linuxTools = {ar: "/tools/ar", cc: "/tools/icx", make: "/tools/make", mkdir: "/tools/mkdir", tar: "/tools/tar"};
 const base = "zstd-" + zstdPin.version;
-
-/** Temporary fixtures never invoke a compiler, archive tool or zstd executable. @param {import("node:test").TestContext} t */
-function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-zstd-")); t.after(() => fs.rmSync(root, {recursive: true, force: true})); return root;
-}
 
 function archiveFixture() {
   const members = [
@@ -38,7 +35,7 @@ function sourceTree(root) {
 
 /** Build a receipt fixture from inert ar bytes; the reader never executes a program. @param {import("node:test").TestContext} t */
 function sdkFixture(t) {
-  const root = fixture(t), source = sourceTree(root), library = path.join(root, "lib", "libzstd.a"), buildArchive = path.join(root, "build", "static", "libzstd.a");
+  const root = tempDir(t, "mom-native-zstd-"), source = sourceTree(root), library = path.join(root, "lib", "libzstd.a"), buildArchive = path.join(root, "build", "static", "libzstd.a");
   fs.mkdirSync(path.dirname(library), {recursive: true}); fs.mkdirSync(path.dirname(buildArchive), {recursive: true});
   fs.writeFileSync(library, "!<arch>\n"); fs.writeFileSync(buildArchive, "!<arch>\n");
   const inputRoot = path.join(root, "original-inputs"); fs.mkdirSync(inputRoot);
@@ -108,7 +105,7 @@ test.describe("Pinned static zstd source production and admission", {skip: proce
   });
 
   test("the build-only guard, archive pin and canonical input checks fail before output creation", t => {
-    const root = fixture(t), output = path.join(root, "new-sdk");
+    const root = tempDir(t, "mom-native-zstd-"), output = path.join(root, "new-sdk");
     const tools = Object.fromEntries(toolNames.map(name => {
       const file = path.join(root, name); fs.writeFileSync(file, "#!/bin/sh\nexit 0\n"); fs.chmodSync(file, 0o755); return [name, file];
     }));

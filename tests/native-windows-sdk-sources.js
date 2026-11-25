@@ -1,14 +1,15 @@
 "use strict";
-const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {spawnSync} = require("node:child_process");
 const {sdkComponents, sdkPatchScope, validateSourceRoots, sdkSourceEnvironment, sdkSourceFiles, verifySdkExport, prepareSdkSources, verifyPreparedSdkSources} = require("../scripts/prepare-native-sdk-sources");
 const components = sdkComponents("windows");
 const {pins} = require("../scripts/native-dpcpp-pins"), {fileHash} = require("../scripts/build-source-inputs");
+const {tempDir} = require("./common/temp-dir");
 
 /** Isolated source fixtures never use installed SDKs, network, compilers, VMs or GPUs.
  * @param {import('node:test').TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-sdk-sources-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-sdk-sources-");
   const source = path.join(root, "source"); fs.mkdirSync(source);
   return {root, source, output: path.join(root, "output"), roots: Object.fromEntries(Object.keys(components).map(key => [key, source]))};
 }

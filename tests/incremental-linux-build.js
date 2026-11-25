@@ -2,17 +2,16 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const vm = require("node:vm");
 const {execFileSync, spawnSync} = require("node:child_process");
+const {tempDir} = require("./common/temp-dir");
 const helper = path.resolve(__dirname, "../scripts/linux-build-state.js");
 
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-linux-incremental-test-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-linux-incremental-test-");
   /** @param {string} name @param {string | Buffer} text */
   const put = (name, text) => {
     fs.mkdirSync(path.dirname(path.join(root, name)), {recursive: true});
@@ -532,8 +531,7 @@ printf 'compile\\n' >> events
     const flags = execFileSync("bash", ["-ec", 'source scripts/build-helpers.sh; source scripts/build-helpers.sh; printf "%s\\n%s" "$CFLAGS" "$CXXFLAGS"'],
       {cwd: f.root, env: {...f.env, CFLAGS: "-DFIXTURE_USER_C", CXXFLAGS: "-DFIXTURE_USER_CXX"}, encoding: "utf8"});
     assert.equal(flags, "-DFIXTURE_USER_C\n-DFIXTURE_USER_CXX");
-    const sdk = fs.mkdtempSync(path.join(os.tmpdir(), "mom-system-header-test-"));
-    t.after(() => fs.rmSync(sdk, {recursive: true, force: true}));
+    const sdk = tempDir(t, "mom-system-header-test-");
     const header = path.join(sdk, "fixture-system.h");
     fs.writeFileSync(header, "#define SYSTEM_A 5\n");
     f.env["CPPFLAGS"] = "-isystem " + sdk;
@@ -740,8 +738,7 @@ printf 'compile\\n' >> events
 
   test("external dependency contents invalidate their object even with backdated mtimes", t => {
     const f = fixture(t);
-    const external = fs.mkdtempSync(path.join(os.tmpdir(), "mom-external-header-test-"));
-    t.after(() => fs.rmSync(external, {recursive: true, force: true}));
+    const external = tempDir(t, "mom-external-header-test-");
     const header = path.join(external, "sdk.h");
     fs.writeFileSync(header, "#define SDK_VALUE 1\n");
     f.put("native/a.c", `#include "${header}"\nint a(void) { return SDK_VALUE; }\n`);

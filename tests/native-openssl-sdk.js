@@ -1,22 +1,19 @@
 "use strict";
 
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {opensslPin, configureOptions, toolNames, opensslSdkPlan, opensslSdkEnvironment, validateArchive, opensslBuildRecipe, nativeOpenSslInputs, buildNativeOpenSsl, stageWindowsHeaders} = require("../scripts/build-native-openssl");
 const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
+const {tempDir} = require("./common/temp-dir");
 const sysroot = linuxSysrootRecord({receiptSha256: linuxSysrootReceiptSha256});
 
+// Fixtures are synthetic: no compiler, OpenSSL or miner is ever run.
 const linuxTools = {ar: "/tools/ar", cc: "/tools/clang", make: "/tools/make", perl: "/tools/perl", ranlib: "/tools/ranlib", tar: "/tools/tar"};
 const windowsTools = {ar: "/tools/lib.exe", cc: "/tools/cl.exe", link: "/tools/link.exe", make: "/tools/nmake.exe", perl: "/tools/perl.exe", rc: "/tools/rc.exe", tar: "/tools/tar.exe"};
 
-/** Temporary fixtures never execute a compiler, OpenSSL or miner. @param {import("node:test").TestContext} t */
-function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-openssl-")); t.after(() => fs.rmSync(root, {recursive: true, force: true})); return root;
-}
-
 /** @param {import("node:test").TestContext} t */
 function fakeTools(t) {
-  const root = fixture(t), tools = Object.fromEntries(toolNames("linux").map(name => {
+  const root = tempDir(t, "mom-native-openssl-"), tools = Object.fromEntries(toolNames("linux").map(name => {
     const file = path.join(root, name); fs.writeFileSync(file, "#!/bin/sh\nexit 0\n"); fs.chmodSync(file, 0o755); return [name, file];
   }));
   return {root, tools};
@@ -25,7 +22,7 @@ function fakeTools(t) {
 /** Build a receipt-shaped SDK from inert bytes; no output program is ever executed.
  * @param {import("node:test").TestContext} t @param {"linux" | "win32"} platform */
 function sdkFixture(t, platform) {
-  const root = fixture(t), extension = platform === "win32" ? ".lib" : ".a", executable = platform === "win32" ? "openssl.exe" : "openssl";
+  const root = tempDir(t, "mom-native-openssl-"), extension = platform === "win32" ? ".lib" : ".a", executable = platform === "win32" ? "openssl.exe" : "openssl";
   const license = path.join(root, "source", "LICENSE.txt"), header = path.join(root, "include", "openssl", "opensslv.h");
   fs.mkdirSync(path.dirname(license), {recursive: true}); fs.writeFileSync(license, "OpenSSL license notice\n");
   fs.mkdirSync(path.dirname(header), {recursive: true}); fs.writeFileSync(header, '#define OPENSSL_VERSION_STR "3.5.9"\n');
@@ -130,7 +127,7 @@ test.describe("Pinned static OpenSSL SDK production and admission", () => {
   });
 
   test("Windows stages the public source/generated header union without installing PDBs", t => {
-    const root = fixture(t), source = path.join(root, "source"), build = path.join(root, "build"), target = path.join(root, "headers");
+    const root = tempDir(t, "mom-native-openssl-"), source = path.join(root, "source"), build = path.join(root, "build"), target = path.join(root, "headers");
     for (const directory of [source, build]) {fs.mkdirSync(path.join(directory, "include/openssl"), {recursive: true});}
     fs.writeFileSync(path.join(source, "include/openssl/ssl.h"), "original public header");
     fs.writeFileSync(path.join(source, "include/openssl/ssl.h.in"), "must not be staged");
@@ -144,7 +141,7 @@ test.describe("Pinned static OpenSSL SDK production and admission", () => {
   });
 
   test("Windows public header staging rejects a non-file .h instead of following it", t => {
-    const root = fixture(t), source = path.join(root, "source"), build = path.join(root, "build");
+    const root = tempDir(t, "mom-native-openssl-"), source = path.join(root, "source"), build = path.join(root, "build");
     for (const directory of [source, build]) {fs.mkdirSync(path.join(directory, "include/openssl"), {recursive: true});}
     fs.mkdirSync(path.join(source, "include/openssl/redirect.h"));
     assert.throws(() => stageWindowsHeaders(source, build, path.join(root, "headers")), /regular public headers/);
@@ -173,7 +170,7 @@ test.describe("Pinned static OpenSSL SDK production and admission", () => {
   });
 
   test("the build-only boundary and invalid preflight fail before output creation", t => {
-    const root = fixture(t), output = path.join(root, "new-sdk");
+    const root = tempDir(t, "mom-native-openssl-"), output = path.join(root, "new-sdk");
     assert.throws(() => buildNativeOpenSsl("/missing.tar.gz", output, {version: 1, jobs: 2, tools: linuxTools}, {}), /MOM_AOT_BUILD_ONLY=1/);
     assert.equal(fs.existsSync(output), false);
     assert.throws(() => buildNativeOpenSsl("relative.tar.gz", output, {version: 1, jobs: 2, tools: linuxTools}, {MOM_AOT_BUILD_ONLY: "1"}), /absolute/);

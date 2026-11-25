@@ -1,16 +1,16 @@
 "use strict";
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), assert = require("node:assert/strict"), test = require("node:test");
+const fs = require("node:fs"), path = require("node:path"), assert = require("node:assert/strict"), test = require("node:test");
 const {windowsAcppStaticHostPlan, verifyAcppCache, auditAcppCompileCommands, buildWindowsAcppStaticHost,
   verifyIntelCompilerIdentity, verifyWindowsRocmResources, nativeRuntimeInputs, cleanEnvironment, targets, artifacts, forbiddenOutputs, admitSource, archiveObjectInputs} = require("../scripts/build-native-windows-acpp-sdk");
 const {commandSwitches} = require("../scripts/build-native-windows-llvm-sdk");
 const {windowsIntelRuleOverride} = require("../scripts/prepare-native-jit-toolchain");
 const {fileHash} = require("../scripts/build-source-inputs");
+const {tempDir} = require("./common/temp-dir");
 
 /** Small explicit inputs; no CMake, compiler, VM, network or GPU is invoked. */
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-acpp-plan-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-windows-acpp-plan-");
   const file = (/** @type {string} */ name) => path.join(root, name);
   const include = file("windows/include"), libraries = file("windows/lib"), resource = file("clang-resource/include");
   for (const directory of [include, libraries, resource]) {fs.mkdirSync(directory, {recursive: true});}
@@ -48,8 +48,7 @@ test.describe("Windows AdaptiveCpp static host archive recipe", {skip: process.p
   });
 
   test("inventories real native libraries without admitting dangling or escaping aliases", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-acpp-runtime-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-acpp-runtime-");
     const runtime = path.join(root, "lib"), inside = path.join(runtime, "libLLVM.so.21");
     fs.mkdirSync(runtime); fs.writeFileSync(inside, "runtime payload");
     fs.symlinkSync("absent.so", path.join(runtime, "liboptional.so"));
@@ -192,8 +191,7 @@ test.describe("Windows AdaptiveCpp static host archive recipe", {skip: process.p
   });
 
   test("binds the historical Windows HIP pins and exact bitcode subset of the resource receipt", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-rocm-resources-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-windows-rocm-resources-");
     const deviceRoot = path.join(root, "install/amdgcn/bitcode"), configFile = path.join(root, "install/lib/cmake/AMDDeviceLibs/AMDDeviceLibsConfig.cmake");
     fs.mkdirSync(deviceRoot, {recursive: true}); fs.mkdirSync(path.dirname(configFile), {recursive: true});
     const bitcode = ["hip.bc", "ockl.bc", "ocml.bc", "oclc_abi_version_600.bc"].map(name => path.join(deviceRoot, name));

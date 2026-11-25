@@ -1,7 +1,8 @@
 "use strict";
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process"), {describe, test} = require("node:test");
 const assert = require("node:assert/strict");
+const {tempDir} = require("./common/temp-dir");
 
 describe("Windows HIP device allocation placement", () => {
   test("actual allocator retries unpublished allocations and preserves errors and ownership", {timeout: process.platform === "win32" ? 240000 : 30000}, t => {
@@ -20,8 +21,7 @@ describe("Windows HIP device allocation placement", () => {
      * @param {string} side */
     const body = side => lines.filter(line => line[0] === " " || line[0] === side)
       .map(line => line.slice(1)).join("\n").split("void *hip_allocator::raw_allocate_optimized_host")[0];
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hip-allocation-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-hip-allocation-");
     const scaffold = `
 #include <cassert>
 #include <cstddef>

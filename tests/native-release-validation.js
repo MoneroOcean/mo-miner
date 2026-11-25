@@ -6,11 +6,12 @@ const assert = require("node:assert/strict"), test = require("node:test");
 const {checkNativeRelease, auditNativeRelease, checkNativeExecutable, suiteTimeoutMs} = require("../scripts/check-native-release");
 const {fileHash} = require("../scripts/build-source-inputs");
 const gpuTuning = require("../gpu-tuning");
-const {hashTests} = require("../tests/vectors");
+const {hashTests} = require("./vectors");
 const {nativePeFixture} = require("./common/native-pe-fixture");
 const {sealNativePePages} = require("../scripts/native-pe-pages");
 const {packNativeEntrypoint} = require("../scripts/build-release");
 const {openclSyclEnv} = require("./common/gpu-test-modes");
+const {setStableMtime, transientRewriteRestore} = require("./common/file-times");
 const cpuVectorCount = hashTests.filter(definition => !definition.gpu).length;
 const portableCpuVectors = hashTests.filter(definition => definition.syclCpu);
 const portableCpuAlgos = new Set(portableCpuVectors.map(definition => definition.job.algo));
@@ -163,23 +164,6 @@ function transportedFixture(t, target) {
   return {...original, executable, source, entrypoint, record, producerFile, producer: original.producer,
     packingFile, packing, originEntrypoint: original.entrypoint, originRecord: original.record, calls, spawn,
     write: () => fs.writeFileSync(entrypoint, JSON.stringify(record))};
-}
-
-const stableFileTime = new Date(1600000000000);
-/** @param {string} file */
-function setStableMtime(file) {fs.utimesSync(file, stableFileTime, stableFileTime);}
-/** @param {string} file @returns {{mtimeNs: bigint, ctimeNs: bigint}} */
-function transientRewriteRestore(file) {
-  const original = fs.readFileSync(file), before = fs.statSync(file, {bigint: true}), changed = Buffer.from(original);
-  changed[0] = (changed[0] || 0) ^ 0xff;
-  fs.writeFileSync(file, changed);
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
-  fs.writeFileSync(file, original);
-  fs.utimesSync(file, stableFileTime, stableFileTime);
-  const after = fs.statSync(file, {bigint: true});
-  assert.equal(after.mtimeNs, before.mtimeNs, "restore the original mtime");
-  assert.notEqual(after.ctimeNs, before.ctimeNs, "the write must still advance ctime");
-  return {mtimeNs: after.mtimeNs, ctimeNs: after.ctimeNs};
 }
 
 /** @param {string[]} args */

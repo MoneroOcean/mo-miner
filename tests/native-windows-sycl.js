@@ -1,7 +1,9 @@
 "use strict";
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {spawnSync} = require("node:child_process");
 const {windowsStaticSdkPlan} = require("../scripts/build-native-windows-sdk");
+const {tempDir} = require("./common/temp-dir");
+const {extractCppBlock} = require("./common/cpp-source");
 const directory = path.join(__dirname, "native/dpcpp-static");
 const cmake = fs.readFileSync(path.join(directory, "CMakeLists.txt"), "utf8");
 const commonPatch = fs.readFileSync(path.join(__dirname, "../runtime/dpcpp-static-adapters.patch"), "utf8");
@@ -54,17 +56,12 @@ function patchBlock(name) {
   return patch.slice(start, end < 0 ? patch.length : end);
 }
 /** @param {import("node:test").TestContext} t */
-function temporary(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-static-sycl-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true})); return root;
-}
-/** @param {import("node:test").TestContext} t */
 function applyPinnedSource(t) {
   if (!pinnedSource) {
     t.skip("Set MOM_PINNED_WINDOWS_SOURCE explicitly for pinned-source applicability");
     return null;
   }
-  const root = temporary(t);
+  const root = tempDir(t, "mom-win-static-sycl-");
   for (const name of pinnedFiles) {
     const source = path.join(pinnedSource, name), destination = path.join(root, name);
     assert.ok(fs.existsSync(source), `Missing pinned source file: ${source}`);
@@ -100,7 +97,7 @@ test.describe("Static Windows SYCL linkage boundaries", {skip: process.platform 
     assert.equal((cmake.match(/target_compile_options\(sycl_object PRIVATE -fno-builtin\)/g) || []).length, 1);
   });
   test("the original static policy recognizes both Level Zero versions and preserves other adapters", t => {
-    const root = temporary(t), block = patchBlock("unified-runtime/cmake/helpers.cmake");
+    const root = tempDir(t, "mom-win-static-sycl-"), block = patchBlock("unified-runtime/cmake/helpers.cmake");
     for (const after of [false, true]) {
       const lines = block.split("\n").filter(line => line.startsWith(" ") || (line.startsWith(after ? "+" : "-") && !line.startsWith(after ? "+++" : "---"))).map(line => line.slice(1));
       const file = path.join(root, after ? "after.cmake" : "before.cmake");
@@ -115,7 +112,7 @@ test.describe("Static Windows SYCL linkage boundaries", {skip: process.platform 
     }
   });
   test("embedded Level Zero rejects explicit app layers and never probes a stale optional DLL", t => {
-    const root = temporary(t), file = path.join(root, "layers.cpp");
+    const root = tempDir(t, "mom-win-static-sycl-"), file = path.join(root, "layers.cpp");
     const added = levelZeroPatch.split("\n").filter(line => /^\+(?!\+)/.test(line)).map(line => line.slice(1)).join("\n");
     const guard = added.match(/#if defined\(MOM_EMBEDDED_LEVEL_ZERO\)\n[\s\S]*?\n#else/)?.[0] || "#if 0\n#else";
     // Execute the real native-profile guard. The excluded shared branch models the
@@ -162,7 +159,7 @@ int main() {
   });
 
   test("embedded Level Zero owns both contexts without a DLL entrypoint", t => {
-    const root = temporary(t), file = path.join(root, "lifetime.cpp"), executable = path.join(root, "lifetime");
+    const root = tempDir(t, "mom-win-static-sycl-"), file = path.join(root, "lifetime.cpp"), executable = path.join(root, "lifetime");
     const added = levelZeroPatch.split("\n").filter(line => /^\+(?!\+)/.test(line)).map(line => line.slice(1)).join("\n");
     const body = added.match(/#if defined\(MOM_EMBEDDED_LEVEL_ZERO\) && defined\(_WIN32\)\n([\s\S]*?)\n#endif/)?.[1] || "";
     // Compile the actual lifecycle body, not a second implementation. Its upstream context
@@ -184,7 +181,7 @@ int main() { initialized = live == 2 && ze_lib::context && loader::context; retu
   });
 
   test("the original loader lookup delegates only in dynamic mode", t => {
-    const root = temporary(t), file = path.join(root, "lookup.cpp"), executable = path.join(root, "lookup");
+    const root = tempDir(t, "mom-win-static-sycl-"), file = path.join(root, "lookup.cpp"), executable = path.join(root, "lookup");
     const before = patch.match(/^-void \*getURLoaderLibrary\(\)[^\n]+/m)?.[0].slice(1);
     const lines = patch.split("\n");
     const start = lines.findIndex(line => line === "+void *getURLoaderLibrary() {");
@@ -231,15 +228,8 @@ int main() { initialized = live == 2 && ze_lib::context && loader::context; retu
     const applied = applyPinnedSource(t);
     if (!applied) { return; }
     const root = applied.root, appliedLoader = fs.readFileSync(applied.loaderPath, "utf8");
-    const signature = "ur_result_t context_t::init() {", start = appliedLoader.indexOf(signature);
-    assert.ok(start >= 0, "Applied loader must contain context_t::init");
-    const open = appliedLoader.indexOf("{", start);
-    let depth = 0, close = -1;
-    for (let index = open; index < appliedLoader.length; ++index) {
-      if (appliedLoader[index] === "{") { ++depth; } else if (appliedLoader[index] === "}" && --depth === 0) { close = index; break; }
-    }
-    assert.ok(close > open, "Could not isolate applied context_t::init body");
-    const body = appliedLoader.slice(open + 1, close);
+    const init = extractCppBlock(appliedLoader, "ur_result_t context_t::init() {");
+    const body = init.slice(init.indexOf("{") + 1, init.lastIndexOf("}"));
     assert.match(body, /#if defined\(MOM_NATIVE_STATIC_ADAPTERS\)[\s\S]*staticAdapterRegistered/);
     assert.match(body, /#if !defined\(MOM_NATIVE_STATIC_ADAPTERS\)[\s\S]*LibLoader::loadAdapterLibrary/);
 
@@ -402,7 +392,7 @@ int main(int argc, char **argv) {
   });
 
   test("the actual CMake Windows branch removes dynamic CRT options without changing other options", t => {
-    const root = temporary(t), source = path.join(root, "source"); fs.mkdirSync(source);
+    const root = tempDir(t, "mom-win-static-sycl-"), source = path.join(root, "source"); fs.mkdirSync(source);
     const runtime = cmake.indexOf("add_library(mom-sycl-static STATIC $<TARGET_OBJECTS:sycl_object>)");
     const start = cmake.indexOf("if(WIN32)", runtime);
     const end = cmake.indexOf("\nendif()", start);
@@ -429,7 +419,7 @@ int main(int argc, char **argv) {
   });
 
   test("static exports compile without DLL annotations", t => {
-    const root = temporary(t), file = path.join(root, "exports.cpp");
+    const root = tempDir(t, "mom-win-static-sycl-"), file = path.join(root, "exports.cpp");
     fs.writeFileSync(file, "#include <type_traits>\n#include " + JSON.stringify(path.join(directory, "static-windows.h")) + "\n" +
       "__SYCL_EXPORT int exported();\n__SYCL_EXPORT_DEPRECATED(\"old\") int oldExport();\n__SYCL_DLL_LOCAL int local();\n" +
       "static_assert(std::is_same_v<decltype(exported), int()>);\n");
@@ -440,7 +430,7 @@ int main(int argc, char **argv) {
 
 test.describe("Embedded Windows loader artifact ownership", {skip: process.platform !== "linux"}, () => {
   test("the original DLL guard fails before and passes after the embedded ownership fix", t => {
-    const root = temporary(t), file = path.join(root, "entry.cpp");
+    const root = tempDir(t, "mom-win-static-sycl-"), file = path.join(root, "entry.cpp");
     const guard = levelZeroWindowsPatch.match(/^\+(#if !defined\(L0_STATIC_LOADER_BUILD\)[^\n]+)$/m)?.[1]; assert.ok(guard);
     for (const [name, condition, native, passes] of [["before", "#ifndef L0_STATIC_LOADER_BUILD", true, false], ["native", guard, true, true], ["shared", guard, false, true]]) {
       fs.writeFileSync(file, "#ifdef MOM_EMBEDDED_LEVEL_ZERO\nextern \"C\" int DllMain() {return 1;}\n#endif\n" + condition +
@@ -451,7 +441,7 @@ test.describe("Embedded Windows loader artifact ownership", {skip: process.platf
     }
   });
   test("the actual native CMake policy excludes DLL resources without changing shared behavior", t => {
-    const root = temporary(t), file = path.join(root, "resource.cmake");
+    const root = tempDir(t, "mom-win-static-sycl-"), file = path.join(root, "resource.cmake");
     const section = levelZeroWindowsPatch.split("diff --git a/source/CMakeLists.txt b/source/CMakeLists.txt\n")[1]?.split("\ndiff --git ")[0] || "";
     const body = section.split("\n").filter(line => line.startsWith("+") && !line.startsWith("+++")).map(line => line.slice(1)).join("\n"); assert.match(body, /target_sources/);
     fs.writeFileSync(file, "function(target_sources)\nset(resource_seen TRUE PARENT_SCOPE)\nendfunction()\nset(TARGET_LOADER_NAME ze_loader)\n" + body +

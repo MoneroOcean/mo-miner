@@ -1,8 +1,9 @@
 "use strict";
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {buildNativeArtifact} = require("../scripts/build-release"), {fileHash} = require("../scripts/build-source-inputs");
 const core = require("../scripts/build-native-windows-core"), gpu = require("../scripts/build-native-windows-gpu"), controller = require("../scripts/build-native-windows-controller");
 const packer = require("../scripts/pack-native-executable");
+const {tempDir} = require("./common/temp-dir");
 
 /** Simulate only producer boundaries; these tests never compile or execute a candidate.
  * @param {import("node:test").TestContext} t */
@@ -10,7 +11,7 @@ function fixture(t) {
   const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
   assert.ok(originalPlatform); Object.defineProperty(process, "platform", {value: "win32", configurable: true});
   t.after(() => Object.defineProperty(process, "platform", originalPlatform));
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-source-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-windows-source-");
   fs.writeFileSync(path.join(root, "git.exe"), "fixture");
   const configFile = path.join(root, "release.json"), output = path.join(root, "output"), coreFile = path.join(root, "core.json");
   fs.writeFileSync(coreFile, '{"version":1}');

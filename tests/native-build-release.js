@@ -10,13 +10,12 @@ const {ioPins} = require("../scripts/build-native-io");
 const {fileHash, nativeSourceInputs} = require("../scripts/build-source-inputs");
 const {elfSections, elfRangeHash, nativeElf, verifyNativeStrip} = require("../scripts/native-elf");
 const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
+const {tempDir} = require("./common/temp-dir");
 const sysroot = linuxSysrootRecord({receiptSha256: linuxSysrootReceiptSha256});
 const repo = path.resolve(__dirname, "..");
 /** @typedef {typeof import('../scripts/native-release-sdk-inputs') & {nativeZstdInputs: typeof import('../scripts/build-native-zstd').nativeZstdInputs,
  * nativeOpenSslInputs: typeof import('../scripts/build-native-openssl').nativeOpenSslInputs,
  * cudaImageInputs: typeof import('../scripts/native-cuda-images').cudaImageInputs}} ImageSourceReaders */
-/** @param {import("node:test").TestContext} t */
-function temporary(t) {const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-release-")); t.after(() => fs.rmSync(root, {recursive: true, force: true})); return root;}
 function configuration() {
   return {version: 1, cpu: {cache: "/sdk/cache", prepareCache: false},
     controller: {source: "/sdk/hermes", build: "/sdk/hermes-build", openssl: "/sdk/openssl", io: "/sdk/io", cc: "/sdk/cc", nvml: "/sdk/nvml.h"},
@@ -29,7 +28,7 @@ function configuration() {
 /** A relocated raw build handoff; the recorded SDK/config paths intentionally are not present.
  * @param {import("node:test").TestContext} t */
 function packingFixture(t) {
-  const root = temporary(t), origin = path.join(root, "origin"), transport = path.join(root, "transport"), output = path.join(root, "packed");
+  const root = tempDir(t, "mom-native-release-"), origin = path.join(root, "origin"), transport = path.join(root, "transport"), output = path.join(root, "packed");
   fs.mkdirSync(origin); fs.mkdirSync(transport);
   const originalBinary = path.join(origin, "mom"), sourcePath = path.join(transport, "mom"),
     originalProducer = path.join(origin, "result.json"), producerReceiptPath = path.join(transport, "result.json"),
@@ -192,11 +191,11 @@ test.describe("Native source-build SDK descriptor admission", () => {
   });
   test("control and oversized output paths are refused", () => {assert.equal(absolutePath("/tmp/a\n"), false); assert.equal(absolutePath("/" + "x".repeat(4096)), false);});
   test("malformed descriptors never create the output directory", {skip: process.platform !== "linux"}, t => {
-    const root = temporary(t), file = path.join(root, "sdk.json"), output = path.join(root, "output");
+    const root = tempDir(t, "mom-native-release-"), file = path.join(root, "sdk.json"), output = path.join(root, "output");
     fs.writeFileSync(file, "{}"); assert.throws(() => buildNativeRelease(file, output), /descriptor/); assert.equal(fs.existsSync(output), false);
   });
   test("existing artifacts are never overwritten", {skip: process.platform !== "linux"}, t => {
-    const root = temporary(t); assert.throws(() => buildNativeRelease(path.join(root, "missing.json"), root), /new absolute/);
+    const root = tempDir(t, "mom-native-release-"); assert.throws(() => buildNativeRelease(path.join(root, "missing.json"), root), /new absolute/);
   });
   test("outputs cannot contaminate maintained source inventories", {skip: process.platform !== "linux"}, () => {
     assert.throws(() => buildNativeRelease("/missing/sdk.json", path.join(repo, "native/new-build-output")), /maintained source tree/);
@@ -211,7 +210,7 @@ test.describe("Parallel native component assembly admission", () => {
   function config() {const c = configuration(); return {...c, components: {core: "/components/cpu-core.a", gpu: Object.fromEntries(Object.keys(c.gpu).map(key => [key, "/components/" + key + "/result.json"]))}};}
   /** @param {import('node:test').TestContext} t */
   function fixture(t) {
-    const root = temporary(t), core = path.join(root, "cpu-core.a"), object = path.join(root, "gpu.o"), receipt = path.join(root, "result.json");
+    const root = tempDir(t, "mom-native-release-"), core = path.join(root, "cpu-core.a"), object = path.join(root, "gpu.o"), receipt = path.join(root, "result.json");
     fs.writeFileSync(core, "!<arch>\n"); fs.writeFileSync(object, "object");
     const cpu = {gpu: true, portable: true, objectSha256: fileHash(core), sourceState: nativeSourceInputs(repo, "cpu")};
     const gpu = {factory: "mom_native_gpu_oneapi", object, objectSha256: fileHash(object), sourceState: nativeSourceInputs(repo, "gpu")};
@@ -286,7 +285,7 @@ test.describe("Receipt-derived Linux SDK assembly", {skip: process.platform !== 
    * values isolate assembly/order checks without a compiler, SDK, network or GPU.
    * @param {import('node:test').TestContext} t */
   function fixture(t) {
-    const root = temporary(t), c = configuration();
+    const root = tempDir(t, "mom-native-release-"), c = configuration();
     const put = (/** @type {string} */ name, data = "!<arch>\n") => {
       const file = path.join(root, name); fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, data); return file;
     };
@@ -610,7 +609,7 @@ return original.apply(this,arguments);};\n`);
 test.describe("Native SDK link files are explicit and content-bound", () => {
   /** @param {import("node:test").TestContext} t */
   function fixture(t) {
-    const root = temporary(t), c = configuration();
+    const root = tempDir(t, "mom-native-release-"), c = configuration();
     const put = (/** @type {string} */ name, /** @type {string} */ value) => {const file = path.join(root, name); fs.writeFileSync(file, value); return file;};
     c.sdk.cxx = put("cxx", "compiler"); c.controller.cc = put("cc", "compiler"); c.controller.nvml = put("nvml.h", "header");
     c.sdk.links = ["-L", root, "-lLLVMFixture"]; put("libLLVMFixture.a", "!<arch>\n");
@@ -634,7 +633,7 @@ test.describe("Native SDK link files are explicit and content-bound", () => {
   test("assembly preserves the C++ driver name through the actual manifest and link", {skip: process.platform !== "linux"}, t => {
     const found = spawnSync("sh", ["-c", "command -v clang++ || command -v clang++-21 || command -v clang++-20"], {encoding: "utf8", timeout: 5000});
     if (found.status !== 0) {t.skip("Clang C++ driver unavailable"); return;}
-    const output = temporary(t), c = configuration(); c.sdk.cxx = found.stdout.trim();
+    const output = tempDir(t, "mom-native-release-"), c = configuration(); c.sdk.cxx = found.stdout.trim();
     const source = fs.readFileSync(path.join(repo, "scripts/build-native-release.js"), "utf8");
     const alias = source.indexOf("  for (const [name, target]"), manifest = source.indexOf('  const manifest = path.join(output, "gpu-inputs.json");');
     const end = source.indexOf("\n  node({...sdk.controller", manifest);
@@ -656,7 +655,7 @@ test.describe("Native release and SDK stages share the portable release policy",
   for (const [name, value] of [["MOM_CPU_MARCH", "native"], ["MOM_DPCPP_IMPL", "custom"],
     ["MOM_COMBINED_TARGETS", "local"], ["MOM_LINUX_BUILD_PLAN_ONLY", "1"], ["MOM_FORCE_REBUILD", "yes"]]) {
     test("inherited " + name + " fails before descriptor access or output mutation", {skip: process.platform !== "linux"}, t => {
-      const root = temporary(t), output = path.join(root, "output");
+      const root = tempDir(t, "mom-native-release-"), output = path.join(root, "output");
       assert.throws(() => buildNativeRelease(path.join(root, "missing.json"), output, {[name || ""]: value}), new RegExp(name || ""));
       assert.equal(fs.existsSync(output), false);
     });
@@ -673,7 +672,7 @@ test.describe("Native release and SDK stages share the portable release policy",
 test.describe("Native build stages retain literal commands and bounded logging", () => {
   /** @param {import("node:test").TestContext} t @param {{runner?: string[], env?: NodeJS.ProcessEnv}} runner @param {{status: number | null, signal?: string, error?: Error}} result */
   function stage(t, runner, result = {status: 0}, logOutput = "") {
-    const output = temporary(t); fs.mkdirSync(path.join(output, "logs"));
+    const output = tempDir(t, "mom-native-release-"); fs.mkdirSync(path.join(output, "logs"));
     const calls = /** @type {{command: string, args: string[], options: import("node:child_process").SpawnSyncOptions}[]} */ ([]);
     const fake = /** @type {typeof spawnSync} */ ((command, args, options) => {
       calls.push({command, args: [...(args || [])], options: options || {}});
@@ -720,7 +719,7 @@ test.describe("Native build stages retain literal commands and bounded logging",
   });
   test("a stage cannot overwrite earlier diagnostic evidence", t => {const f = stage(t, {}); f.invoke(); assert.throws(f.invoke, /EEXIST/); assert.equal(f.calls.length, 1);});
   test("a failed controller command preserves its status and bounded compiler output", t => {
-    const root = temporary(t), log = path.join(root, "controller.log"), output = "early controller context\n" + "x".repeat(40000) + "\nactual compiler error\n";
+    const root = tempDir(t, "mom-native-release-"), log = path.join(root, "controller.log"), output = "early controller context\n" + "x".repeat(40000) + "\nactual compiler error\n";
     const cause = new Error("fixture spawn error"), result = {status: 2, stdout: output.slice(0, output.length - 24), stderr: "actual compiler error\n", error: cause};
     let calls = 0;
     const fake = /** @type {typeof spawnSync} */ (/** @type {unknown} */ (() => {calls++; return result;}));
@@ -731,7 +730,7 @@ test.describe("Native build stages retain literal commands and bounded logging",
     assert.equal(fs.readFileSync(log, "utf8"), result.stdout + result.stderr); assert.equal(failure.cause, cause); assert.equal(calls, 1);
   });
   test("a failed controller object compile keeps its full log and emits a bounded tail once", t => {
-    const root = temporary(t), output = path.join(root, "application"), object = path.join(output, "gpu-dispatch.o"),
+    const root = tempDir(t, "mom-native-release-"), output = path.join(root, "application"), object = path.join(output, "gpu-dispatch.o"),
       depfile = object + ".d", log = path.join(output, "gpu-dispatch.log"), fullOutput = "early object compiler context\n" +
         "x".repeat(40000) + "\nactual object compiler error\n", cause = "fixture compiler launch failure";
     fs.mkdirSync(output);
@@ -753,7 +752,7 @@ test.describe("Native build stages retain literal commands and bounded logging",
     assert.deepEqual(calls[0]?.includeRoots, ["/sdk/include"]);
   });
   test("a failed Ninja batch retains every object log and exposes a later edge error", t => {
-    const root = temporary(t), output = path.join(root, "application"), firstObject = path.join(output, "gpu-dispatch.o"),
+    const root = tempDir(t, "mom-native-release-"), output = path.join(root, "application"), firstObject = path.join(output, "gpu-dispatch.o"),
       secondObject = path.join(output, "driver-library.o"), firstLog = path.join(output, "gpu-dispatch.log"),
       secondLog = path.join(output, "driver-library.log"), firstDepfile = firstObject + ".d", secondDepfile = secondObject + ".d",
       secondOutput = "early edge context\n" + "x".repeat(40000) + "\nactual later compiler error\n", cause = "Ninja failed with status 1";
@@ -794,7 +793,7 @@ test.describe("Native ELF strip payload boundaries", () => {
   test("changed loaded layout is rejected", () => {const r = {sha256: "", bytes: 1, programHeaders: "layout", sections: parsed()}; assert.throws(() => verifyNativeStrip(r, {...r, programHeaders: "changed"}), /loaded layout/);});
   test("changed non-ALLOC GPU metadata is rejected too", () => {const r = {sha256: "", bytes: 1, programHeaders: "layout", sections: parsed().map(row => ({...row, flags: ""}))}; assert.throws(() => verifyNativeStrip(r, {...r, sections: r.sections.map(row => ({...row, sha256: "changed"}))}), /payload/);});
   test("removed runtime sections cannot pass as compactness", () => {const r = {sha256: "", bytes: 1, programHeaders: "layout", sections: parsed()}; assert.throws(() => verifyNativeStrip(r, {...r, sections: []}), /payload/);});
-  test("out-of-bounds regular-file reads fail before allocating a payload", t => {const file = path.join(temporary(t), "file"); fs.writeFileSync(file, "123"); assert.throws(() => elfRangeHash(file, 0, 4), /Invalid/); assert.throws(() => elfRangeHash(file, -1, 1), /Invalid/);});
+  test("out-of-bounds regular-file reads fail before allocating a payload", t => {const file = path.join(tempDir(t, "mom-native-release-"), "file"); fs.writeFileSync(file, "123"); assert.throws(() => elfRangeHash(file, 0, 4), /Invalid/); assert.throws(() => elfRangeHash(file, -1, 1), /Invalid/);});
 });
 
 test.describe("Legacy constructor metadata normalization preserves runtime payloads", () => {

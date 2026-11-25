@@ -9,6 +9,7 @@ const {buildInputs, oneapiCompilerPath, admitOneapiCompiler, verifyOneapiCompile
 const {fileHash, buildFileInputs} = require("../scripts/build-source-inputs");
 const {nativeGpuLinkArgs} = require("../scripts/build-native-application");
 const os = require("node:os");
+const {tempDir} = require("./common/temp-dir");
 const gyp = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
 const flags = dpcppGpuFlags(gyp), sources = syclSources(gyp);
 
@@ -261,8 +262,7 @@ test.describe("Static DPC++ image registration lifetime", {skip: process.platfor
     assert.throws(() => deviceRegistrationImports("", "acpp-hip"), /registration profile/);
   });
   test("real object remapping binds each profile's callbacks and leaves unrelated imports intact", (t) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-static-remap-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-static-remap-");
     const source = path.join(directory, "image.cpp"), object = path.join(directory, "image.o");
     fs.writeFileSync(source, 'extern "C" void __sycl_register_lib(void*);\nextern "C" void __sycl_unregister_lib(void*);\n' +
       'extern "C" void other_callback(void*);\n' +
@@ -310,8 +310,7 @@ test.describe("Static DPC++ image registration lifetime", {skip: process.platfor
     }
   });
   test("real static startup/shutdown fails before, and passes after, lifetime normalization", (t) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-static-registration-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const directory = tempDir(t, "mom-static-registration-");
     fs.writeFileSync(path.join(directory, "runtime.cpp"), "#include <cstdlib>\nint* state=new int(7);\n" +
       'extern "C" void register_image(){if(!state)std::_Exit(86);++*state;}\n' +
       'extern "C" void unregister_image(){if(!state)std::_Exit(87);--*state;}\n' +

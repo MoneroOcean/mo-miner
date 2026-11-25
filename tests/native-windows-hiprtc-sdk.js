@@ -1,10 +1,11 @@
 "use strict";
-const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const fs = require("node:fs"), path = require("node:path");
 const test = require("node:test"), assert = require("node:assert/strict");
 const {fileHash, sourceInputs} = require("../scripts/build-source-inputs");
 const {revision: comgrRevision} = require("../scripts/build-native-windows-comgr-sdk");
 const {dependencyHashes} = require("../scripts/build-native-windows-controller");
 const {sourceFiles, recipeFiles, windowsHiprtcPlan, verifyComgrHeader, verifyIntelCompilerIdentity, verifyLlvmToolIdentity, auditHiprtcSymbolClosure} = require("../scripts/build-native-windows-hiprtc-sdk");
+const {tempDir} = require("./common/temp-dir");
 
 const resourceRevision = comgrRevision;
 const clrRevision = "5b591b2ff64aac4c1c08be879b0d5f89fd713d50";
@@ -13,8 +14,7 @@ const linuxPlanSkip = process.platform !== "linux" ? "requires Linux-hosted POSI
 
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "mom-win-hiprtc-sdk-"));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = fs.realpathSync(tempDir(t, "mom-win-hiprtc-sdk-"));
   const mkdir = (/** @type {string} */ directory) => fs.mkdirSync(directory, {recursive: true});
   const write = (/** @type {string} */ file, /** @type {string} */ text = "fixture\n") => {
     mkdir(path.dirname(file)); fs.writeFileSync(file, text); return file;

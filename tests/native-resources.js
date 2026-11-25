@@ -5,11 +5,11 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const resources = require("../scripts/native-resources");
+const {tempDir} = require("./common/temp-dir");
 
 /** Create only this test's disposable build inputs. @param {import('node:test').TestContext} t */
 function fixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-resource-"));
-  t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+  const directory = tempDir(t, "mom-resource-");
   return {input: path.join(directory, "input.bc"), output: path.join(directory, "resources.inc")};
 }
 /** @param {string[]} args */

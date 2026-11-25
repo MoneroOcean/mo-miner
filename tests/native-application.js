@@ -1,10 +1,11 @@
 "use strict";
-const test = require("node:test"), assert = require("node:assert/strict"), path = require("node:path"), fs = require("node:fs"), os = require("node:os");
+const test = require("node:test"), assert = require("node:assert/strict"), path = require("node:path"), fs = require("node:fs");
 const {spawnSync} = require("node:child_process"), vm = require("node:vm");
 const {controllerEntry, nativeApplicationGpu, nativeGpuLinkArgs, nativeApplicationLinkPlan, nativeApplicationInputs,
   nativeApplicationLinkCacheInputs, nativeApplicationBuildInputs} = require("../scripts/build-native-application");
 const {fileHash, nativeSourceInputs} = require("../scripts/build-source-inputs");
 const {admittedJitCacheTag} = require("../scripts/native-jit-cache-tag");
+const {tempDir} = require("./common/temp-dir");
 
 test.describe("Native default-application compilation boundary", () => {
   const repo = path.resolve(__dirname, ".."), script = path.join(repo, "scripts/build-native-application.js");
@@ -150,8 +151,7 @@ test.describe("Native default-application compilation boundary", () => {
     }
   });
   test("application link admission treats -L operands as relocatable directories, not files", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-app-links-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-app-links-");
     const app = path.join(root, "app"), cpu = path.join(app, "core.a"), gpu = path.join(app, "gpu.o"), receipt = path.join(app, "gpu.json");
     fs.mkdirSync(app); fs.writeFileSync(cpu, "core"); fs.writeFileSync(gpu, "gpu");
     const core = {gpu: true, portable: true, objectSha256: fileHash(cpu), sourceState: nativeSourceInputs(repo, "cpu")};
@@ -170,8 +170,7 @@ test.describe("Native default-application compilation boundary", () => {
     assert.notEqual(tag(archiveA), tag(archiveB), "changing an explicitly linked archive changes identity");
   });
   test("link cache planning preserves order and rejects malformed search directories", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-app-link-plan-"));
-    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const root = tempDir(t, "mom-native-app-link-plan-");
     const lib = path.join(root, "lib"), archive = path.join(lib, "libcore.a"), file = path.join(root, "not-a-directory");
     fs.mkdirSync(lib); fs.writeFileSync(archive, "archive"); fs.writeFileSync(file, "file");
     const plan = nativeApplicationLinkCacheInputs(["-Wl,--start-group", "-L", lib, archive, "-Wl,--end-group"]);

@@ -1,14 +1,15 @@
 "use strict";
-const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), test = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {linuxStaticSdkPlan, linuxSdkJitInput, linuxSdkHeaders, linuxSdkDependencies, buildLinuxStaticSdk} = require("../scripts/build-native-dpcpp-sdk");
 const {fileHash} = require("../scripts/build-source-inputs"), {dpcppEntries} = require("../scripts/native-compiler-isolation");
 const {validateSourceRoots} = require("../scripts/prepare-native-sdk-sources");
+const {tempDir} = require("./common/temp-dir");
 const roots = Object.fromEntries(["dpcpp", "emhash", "umf", "levelZero", "computeHeaders", "hwloc", "openclLoader", "openclHeaders"].map(n => [n, "/source/" + n]));
 const tools = {cmake: "/tools/cmake", ninja: "/tools/ninja"};
 const plan = () => linuxStaticSdkPlan(roots, "/sdk/dpcpp", "/sdk/cuda", "/jit/compiler.o", "/new/linux-sdk", tools, 2);
 /** @param {import("node:test").TestContext} t */
 function jit(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-dpcpp-sdk-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const root = tempDir(t, "mom-dpcpp-sdk-");
   const object = path.join(root, "compiler.o"); fs.writeFileSync(object, "synthetic isolated ELF object");
   const receipt = {prefix: "mom_dpcpp23_", entryPoints: dpcppEntries, objectSha256: fileHash(object)};
   const save = () => fs.writeFileSync(path.join(root, "result.json"), JSON.stringify(receipt)); save(); return {root, object, receipt, save};
