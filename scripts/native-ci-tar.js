@@ -1,7 +1,9 @@
 "use strict";
 
-// Pinned GNU tar state transport for native CI: bounded pack, list and extract of same-run work roots, and disk preflight.
+// Pinned GNU tar state transport for native CI: bounded pack, list and extract of same-run work roots, disk
+// preflight, and the relative-path and canonical-directory admission shared by the handoff readers.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
+const {fileHash} = require("./build-source-inputs");
 
 const tar = "/usr/bin/tar", temp = "/tmp";
 
@@ -11,6 +13,18 @@ const linuxNativeBuildReserveBytes = 4 * 1024 * 1024 * 1024;
 function safeRelative(name) {
   return typeof name === "string" && name.length > 0 && name.length <= 4096 && !name.startsWith("/") &&
     !name.includes("\\") && !/[\r\n\0]/.test(name) && name.split("/").every(part => part && part !== "." && part !== "..");
+}
+
+/** Admit an existing directory by its exact canonical absolute path: no symlink, redirected
+ * parent or unnormalized spelling, so later path.join results stay inside the admitted tree.
+ * @param {unknown} value @param {string} label @returns {string} */
+function canonicalDirectory(value, label) {
+  if (typeof value !== "string" || !path.isAbsolute(value) || path.resolve(value) !== value || /[\r\n\0]/.test(value)) {
+    throw new Error(label + " must be an absolute canonical directory");
+  }
+  const stat = fs.lstatSync(value);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(value) !== value) {throw new Error(label + " is redirected or not a directory");}
+  return value;
 }
 
 /** @param {string} command @param {string[]} args @param {number} timeout @param {number} [maxBuffer] */
@@ -164,9 +178,34 @@ function tarExpandedBytes(archive, expectedMembers, timeoutMs = 15 * 60 * 1000) 
   return Number(total);
 }
 
+/** Admit a downloaded same-run archive: a single-link, canonical, bounded regular file whose bytes
+ * match its external SHA-256 pin. @param {string} file @param {string} sha256 */
+function admitPinnedArchive(file, sha256) {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.nlink !== 1 || stat.size < 1 || stat.size > 16 * 1024 ** 3 ||
+      fs.realpathSync(file) !== file || !/^[a-f0-9]{64}$/.test(sha256) || fileHash(file) !== sha256) {
+    throw new Error("Native CI input archive differs from its external pin: " + path.basename(file));
+  }
+}
+
+/** Restore a pinned same-run state tar holding exactly `roots` under `base`, refusing one that expands
+ * past `maximumBytes` or would eat into a four-GiB free-space reserve on `base`. `stepMs(capMs)`
+ * shortens each tar step's cap to what the caller's job deadline leaves.
+ * @param {string} archive @param {string} sha256 @param {string[]} roots @param {string} base
+ * @param {number} maximumBytes @param {(capMs: number) => number} stepMs */
+function restorePinnedState(archive, sha256, roots, base, maximumBytes, stepMs) {
+  admitPinnedArchive(archive, sha256);
+  const members = listState(archive, roots, stepMs(5 * 60 * 1000)),
+    expanded = tarExpandedBytes(archive, members.length, stepMs(5 * 60 * 1000));
+  if (expanded > maximumBytes || expanded + 4 * 1024 ** 3 > availableDiskBytes(base)) {
+    throw new Error("Native CI input " + path.basename(archive) + " exceeds its extraction bound or four-GiB disk reserve");
+  }
+  extractState(archive, base, roots, roots, stepMs(10 * 60 * 1000));
+}
+
 /** `expandedBytes` is the conservative sum of archive member sizes; input tars already occupy disk.
- * The app stage rechecks the free-space reserve after these roots have been restored. */
-/** @param {number} expandedBytes @param {number} tempAvailableBytes @param {number} runnerTempAvailableBytes */
+ * The app stage rechecks the free-space reserve after these roots have been restored.
+ * @param {number} expandedBytes @param {number} tempAvailableBytes @param {number} runnerTempAvailableBytes */
 function linuxNativeSdkDiskPreflight(expandedBytes, tempAvailableBytes, runnerTempAvailableBytes) {
   if (![expandedBytes, tempAvailableBytes, runnerTempAvailableBytes].every(value => Number.isSafeInteger(value) && value >= 0)) {
     throw new Error("Native SDK disk preflight needs safe nonnegative byte counts");
@@ -189,5 +228,5 @@ function availableDiskBytes(directory) {
   return Number(bytes);
 }
 
-module.exports = {availableDiskBytes, extractState, linuxNativeBuildReserveBytes, linuxNativeSdkDiskPreflight, listState,
-  packState, runTar, safeRelative, tar, tarExpandedBytes, temp};
+module.exports = {admitPinnedArchive, availableDiskBytes, canonicalDirectory, extractState, linuxNativeBuildReserveBytes, linuxNativeSdkDiskPreflight, listState,
+  packState, restorePinnedState, runTar, safeRelative, tar, tarExpandedBytes, temp};

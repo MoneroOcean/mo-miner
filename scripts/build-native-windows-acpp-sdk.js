@@ -12,7 +12,7 @@ const {isStaticArchive} = require("./native-audit");
 const {nativeRuntimeLibraries} = require("./native-sdk-runtime");
 const {auditCoffArchiveInputs} = require("./native-coff-archive");
 const {windowsIntelRuleOverride} = require("./prepare-native-jit-toolchain");
-const {verifyWindowsLlvmAdmission} = require("./build-native-windows-llvm-sdk");
+const {cmake, cmakeCacheValues, commandSwitches, verifyWindowsLlvmAdmission} = require("./build-native-windows-llvm-sdk");
 const {sdkStage, selectHostCompilers, hostCompilerEvidence} = require("./build-native-sycl-sdk");
 const repo = path.resolve(__dirname, "..");
 const targetTriple = "x86_64-pc-windows-msvc";
@@ -46,17 +46,6 @@ const recipeFiles = Object.freeze(["scripts/build-native-windows-acpp-sdk.js", "
  * @param {unknown} value @returns {value is string} */
 function literal(value) {
   return absolutePath(value) && path.normalize(value) === value && !/[;"$`\\]/.test(value);
-}
-/** @param {string} value */
-function cmake(value) {
-  if (typeof value !== "string" || value.length > 65536 || /[\r\n\0]/.test(value)) {
-    throw new Error("Invalid literal Windows ACPP CMake value");
-  }
-  let equals = "==";
-  for (const match of value.matchAll(/\](=*)\]/g)) {
-    if (match[1] !== undefined && match[1].length >= equals.length) {equals = "=".repeat(match[1].length + 1);}
-  }
-  return "[" + equals + "[" + value + "]" + equals + "]";
 }
 /** @param {string[]} values @param {string} label */
 function requirePaths(values, label) {
@@ -196,8 +185,7 @@ function windowsAcppStaticHostPlan(input, admittedLlvmLayout) {
 /** Parse CMake's cache once; the exact strings are inputs, not heuristics based on nearby names.
  * @param {string} file @param {ReturnType<typeof windowsAcppStaticHostPlan>} plan @param {string} source */
 function verifyAcppCache(file, plan, source) {
-  const text = fs.readFileSync(file, "utf8"), values = new Map();
-  for (const line of text.split(/\r?\n/)) {const match = line.match(/^([^/#][^:]*):[^=]*=(.*)$/); if (match) {values.set(match[1], match[2]);}}
+  const text = fs.readFileSync(file, "utf8"), values = cmakeCacheValues(text);
   if (values.has("CMAKE_SYSTEM_NAME") && values.get("CMAKE_SYSTEM_NAME") !== "Windows") {
     throw new Error("Windows ACPP CMake configuration drifted from its frozen plan: CMAKE_SYSTEM_NAME");
   }
@@ -232,12 +220,6 @@ function verifyIntelCompilerIdentity(build) {
   };
   return {c: read("C", /set\(CMAKE_C_COMPILER_ID "IntelLLVM"\)/),
     cxx: read("CXX", /set\(CMAKE_CXX_COMPILER_ID "IntelLLVM"\)/)};
-}
-
-/** @param {string} command @returns {string[]} */
-function commandSwitches(command) {
-  return [...command.matchAll(/(?:^|[\s"])(\/(?:[A-Za-z][A-Za-z0-9_:+.=-]*)|-[A-Za-z][A-Za-z0-9_:+.=-]*)(?=[\s"]|$)/g)]
-    .map(match => (match[1] || "").toUpperCase());
 }
 
 /** Bind archive membership and the receipt hash to the same audited compile database.
@@ -393,7 +375,7 @@ function verifyWindowsRocmResources(receiptFile, deviceRoot) {
  * @param {Omit<Parameters<typeof windowsAcppStaticHostPlan>[0], "tools">} input @param {NodeJS.ProcessEnv} [environment] */
 function buildWindowsAcppStaticHost(input, environment = process.env) {
   if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {
-    throw new Error("Windows ACPP cross-build requires Linuxx64 and MOM_AOT_BUILD_ONLY=1");
+    throw new Error("Windows ACPP cross-build requires Linux x64 and MOM_AOT_BUILD_ONLY=1");
   }
   // Tools come only from the admitted LLVM producer; catch caller/receipt shape drift before building.
   if (!input || !isDeepStrictEqual(Object.keys(input).sort(), buildInputKeys)) {
@@ -539,5 +521,5 @@ if (require.main === module) {
   } catch (error) {console.error(error instanceof Error ? error.message : "Windows ACPP static host SDK build failed"); process.exitCode = 1;}
 }
 
-module.exports = {windowsAcppStaticHostPlan, verifyAcppCache, auditAcppCompileCommands, commandSwitches, buildWindowsAcppStaticHost, admitSource, archiveObjectInputs,
+module.exports = {windowsAcppStaticHostPlan, verifyAcppCache, auditAcppCompileCommands, buildWindowsAcppStaticHost, admitSource, archiveObjectInputs,
   verifyIntelCompilerIdentity, verifyWindowsRocmResources, nativeRuntimeInputs, cleanEnvironment, targets, artifacts, forbiddenOutputs, recipeFiles, buildInputKeys};

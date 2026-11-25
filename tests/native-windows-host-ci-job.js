@@ -99,8 +99,8 @@ test.describe("Windows static host-component CI", {skip: process.platform !== "l
     assert.throws(() => hostJob.validatePins({...environment, MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256: "f".repeat(63)}),
       /Missing or malformed DPCPP_CUDA_MANIFEST pin/);
     assert.throws(() => hostJob.validatePins({...environment, MOM_CI_DEADLINE_EPOCH: epoch(120)}), /Insufficient budget/);
-    assert.throws(() => hostJob.validatePins({...environment, MOM_CI_DEADLINE_EPOCH: epoch(-1)}), /expired MOM_CI_DEADLINE_EPOCH/);
-    assert.throws(() => hostJob.validatePins({...environment, MOM_CI_DEADLINE_EPOCH: "12345"}), /Invalid or expired/);
+    assert.throws(() => hostJob.validatePins({...environment, MOM_CI_DEADLINE_EPOCH: epoch(-1)}), /MOM_CI_DEADLINE_EPOCH aggregate deadline is invalid or expired/);
+    assert.throws(() => hostJob.validatePins({...environment, MOM_CI_DEADLINE_EPOCH: "12345"}), /invalid or expired/);
     assert.equal(fs.readFileSync(output, "utf8"), text, "rejected pins or deadlines must not publish artifact names");
   });
 

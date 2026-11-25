@@ -3,7 +3,8 @@
 // Prepares one native CI job (.github/workflows/native-job.yml): exports the work roots the native
 // scripts derive and verify, the caller's producer pins, and the exact artifact transfer plan. Artifact
 // lists name files with "@" standing for MOM_NATIVE_CI_SUFFIX, the suffix every producer embeds.
-const fs = require("node:fs"), path = require("node:path");
+// Also owns the deadline and bounded-runner helpers the job scripts share.
+const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {ciSuffix, ciScopedEntries} = require("../native-ci-job");
 
 /** Environment name suffix -> /tmp/mom-native-<stem>-<suffix>. */
@@ -21,7 +22,7 @@ const roots = Object.freeze({
   WINDOWS_LLVM: "windows-llvm21", WINDOWS_JIT: "windows-jit", WINDOWS_JIT_RESOURCES: "windows-jit-resources",
   LINUX_SYSROOT: "linux-sysroot",
 });
-const maxUploads = 4;
+const maxUploads = 4, repo = path.resolve(__dirname, "../..");
 
 /** Derive the work roots; a GPU factory job also gets its profile-specific root.
  * @param {NodeJS.ProcessEnv} environment @returns {Record<string, string>} */
@@ -71,6 +72,40 @@ function uploadPlan(rows, runnerTemp) {
   });
 }
 
+/** native-job.yml's MOM_CI_DEADLINE_EPOCH (job start + timeout - 300 s, Unix seconds), required to be
+ * in the future. Every job script bounds its children by this one aggregate deadline.
+ * @param {NodeJS.ProcessEnv} environment @param {number} [nowMs] */
+function ciDeadline(environment, nowMs = Date.now()) {
+  const value = environment["MOM_CI_DEADLINE_EPOCH"] || "";
+  if (!/^[0-9]{10}$/.test(value) || Number(value) * 1000 <= nowMs) {
+    throw new Error("MOM_CI_DEADLINE_EPOCH aggregate deadline is invalid or expired");
+  }
+  return Number(value);
+}
+
+/** Milliseconds one child step may run: its own cap, shortened so `reserveMs` (final reporting,
+ * cleanup or later phases) still fits before `endMs`. A step with under one second left is refused
+ * with `message` rather than started with a timeout it cannot meet.
+ * @param {number} endMs @param {number} capMs @param {number} reserveMs @param {string} message */
+function boundedStepMs(endMs, capMs, reserveMs, message) {
+  const ms = Math.min(capMs, endMs - Date.now() - reserveMs);
+  if (!Number.isSafeInteger(endMs) || !Number.isSafeInteger(ms) || ms < 1000) {throw new Error(message);}
+  return ms;
+}
+
+/** Run one repository Node script inside the memory-scoped CI wrapper under GNU timeout (TERM, then
+ * KILL five seconds later). The outer spawn timeout only backs up a wedged wrapper.
+ * @param {string} script @param {string[]} args @param {number} timeoutMs from boundedStepMs @param {string} label */
+function runBoundedNode(script, args, timeoutMs, label) {
+  const seconds = Math.floor(timeoutMs / 1000), memoryScope = path.join(repo, "scripts/run-bounded-native-ci.sh");
+  const result = spawnSync(memoryScope, [fs.realpathSync("/usr/bin/timeout"), "--signal=TERM", "--kill-after=5s", seconds + "s",
+    process.execPath, path.join(repo, script), ...args], {cwd: repo, env: process.env, stdio: "inherit", timeout: timeoutMs + 10000});
+  if (result.error || result.signal || result.status !== 0) {
+    const reason = result.status === 124 ? " (deadline)" : result.signal ? " (" + result.signal + ")" : "";
+    throw new Error(label + ": " + script + reason, {cause: result.error});
+  }
+}
+
 /** Write the job environment and transfer plan for the workflow. A work root left by an earlier job
  * on the same runner is rejected, so every producer starts from fresh roots.
  * @param {NodeJS.ProcessEnv} environment @param {string} [temp] */
@@ -96,7 +131,7 @@ function prepareJob(environment, temp = "/tmp") {
   return {values, outputs};
 }
 
-module.exports = {roots, nativeCiEnvironment, parsePins, names, downloadPattern, uploadPlan, prepareJob};
+module.exports = {roots, nativeCiEnvironment, parsePins, names, downloadPattern, uploadPlan, prepareJob, ciDeadline, boundedStepMs, runBoundedNode};
 
 if (require.main === module) {
   try {

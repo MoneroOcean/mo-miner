@@ -51,7 +51,7 @@ function runWindowsLlvmChain(environment = process.env) {
   }
 }
 
-module.exports = {phases, stateFiles, phaseEnvironment, runWindowsLlvmChain};
+module.exports = {phases, phaseEnvironment};
 
 if (require.main === module) {
   try {

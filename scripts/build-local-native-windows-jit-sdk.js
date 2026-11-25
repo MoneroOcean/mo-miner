@@ -113,7 +113,9 @@ function verifyLocalWindowsJitToolchain(descriptorFile, sdk, nativeTools, output
   }
   const currentInputs = buildFileInputs(Object.keys(result["inputs"]));
   if (!isDeepStrictEqual(currentInputs, result["inputs"])) {throw new Error("Windows JIT toolchain input fingerprints are stale");}
-  const expectedEntries = ["bin", "lib", "vfs.json", "heatutils-source-options.cmake", "intel-link-rules.cmake", "toolchain.cmake", "result.json"];
+  // The local descriptor always selects icx-cl, so the plan carries the Intel rule override; derive
+  // the entry from the plan anyway so it cannot disagree with what the producer writes.
+  const expectedEntries = ["bin", "lib", ...[...expectedGenerated.keys()].map(file => path.basename(file)), "result.json"];
   verifyBuildDirectoryEntries(output, expectedEntries, "Windows JIT toolchain output");
   return result;
 }
@@ -369,6 +371,4 @@ async function buildLocalNativeWindowsJitSdk(input, dependencies = {}) {
     jobs, buildOnly: true, compiled: true, executed: false, publicationQualified: false, reused: existing};
 }
 
-module.exports = {localWindowsJitSdkPaths, localWindowsJitCompilerConfig, verifyLocalWindowsJitToolchain,
-  localWindowsJitIsolationTools, localWindowsJitToolsManifest, expectedIsolationHandoff, verifyLocalWindowsJitIsolation,
-  admitLocalWindowsJitInputs, buildLocalNativeWindowsJitSdk};
+module.exports = {localWindowsJitSdkPaths, localWindowsJitCompilerConfig, expectedIsolationHandoff, buildLocalNativeWindowsJitSdk};

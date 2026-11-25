@@ -2,9 +2,9 @@
 
 // Reconstruct the selected Windows host SDK roots from the exact locked archive cohort.
 // This is extraction/composition only: it does not install Microsoft tooling or admit an app.
-const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {createHash} = require("node:crypto");
+const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {buildPathsOverlap, fileHash, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {windowsHostSdkCatalog, verifyWindowsHostSdkArchives} = require("./fetch-native-sdk-sources");
 const windowsIntelRuntimeCatalog = require("../runtime/windows-intel-runtime.json");
 const repo = path.resolve(__dirname, ".."), MAX_ENTRIES = 50000, MAX_EXPANDED = 2 * 1024 * 1024 * 1024,
@@ -62,15 +62,6 @@ function fold(value) {return value.normalize("NFC").toLowerCase();}
 
 /** Keep receipt ordering independent of the host locale. @param {string} a @param {string} b */
 function compare(a, b) {return a < b ? -1 : a > b ? 1 : 0;}
-
-/** @param {string} file */
-function hashFile(file) {
-  const hash = createHash("sha256"), fd = fs.openSync(file, "r"), buffer = Buffer.alloc(64 * 1024);
-  try {
-    for (;;) {const bytes = fs.readSync(fd, buffer, 0, buffer.length, null); if (!bytes) {break;} hash.update(buffer.subarray(0, bytes));}
-  } finally {fs.closeSync(fd);}
-  return hash.digest("hex");
-}
 
 /** MSI IDT exports have a column header, type row, primary-key declaration, and tabular data. @param {string} text @param {string} table */
 function parseIdt(text, table) {
@@ -265,7 +256,7 @@ function toolIdentity(executable, args, expect) {
     env: {PATH: "/usr/bin:/bin", HOME: "/tmp", LC_ALL: "C", LANG: "C"}});
   const output = (result.stdout || "") + (result.stderr || "");
   if (result.error || result.status !== 0 || !output.includes(expect)) {throw new Error("Unexpected Windows SDK extraction tool version: " + path.basename(executable));}
-  return {path: real, sha256: hashFile(real), bytes: st.size, version: output.trim().slice(0, 256)};
+  return {path: real, sha256: fileHash(real), bytes: st.size, version: output.trim().slice(0, 256)};
 }
 
 /** @param {string} msi @param {string} table @param {string} output @param {number} deadline @param {{value:number}} total */
@@ -280,7 +271,7 @@ function exportMsiTable(msi, table, output, deadline, total) {
 function addSelectedFile(source, outputRoot, destination, claims, directories, origin) {
   const rel = safeRelative(destination), st = fs.lstatSync(source);
   if (!st.isFile() || st.isSymbolicLink() || st.nlink !== 1) {throw new Error("Selected SDK file is not a private regular file");}
-  const sha256 = hashFile(source), key = fold(rel), prior = claims.get(key);
+  const sha256 = fileHash(source), key = fold(rel), prior = claims.get(key);
   if (directories.has(key)) {throw new Error("SDK file collides with a case-insensitive directory: " + rel);}
   const parts = rel.split("/");
   for (let index = 1; index < parts.length; index++) {
@@ -296,7 +287,7 @@ function addSelectedFile(source, outputRoot, destination, claims, directories, o
   fs.mkdirSync(path.dirname(target), {recursive: true});
   if (fs.existsSync(target)) {throw new Error("Unexpected preexisting SDK output path");}
   fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL); fs.chmodSync(target, 0o644); fs.utimesSync(target, 0, 0);
-  if (hashFile(target) !== sha256) {throw new Error("SDK selected-file copy failed hash verification");}
+  if (fileHash(target) !== sha256) {throw new Error("SDK selected-file copy failed hash verification");}
   claims.set(key, {path: rel, sha256, bytes: st.size, origins: [origin]});
 }
 
@@ -326,11 +317,11 @@ function verifyArchiveInputs(archiveRoot, work) {
     if (typeof file !== "string") {throw new Error("Windows SDK archive receipt path is absent: " + key);}
     const st = fs.lstatSync(file);
     if (item.url !== row.url || item.sha256 !== row.sha256 || item.bytes !== st.size || st.size > row.maxBytes ||
-        !st.isFile() || st.isSymbolicLink() || st.nlink !== 1 || hashFile(file) !== row.sha256 || path.dirname(file) !== fs.realpathSync(archiveRoot) ||
+        !st.isFile() || st.isSymbolicLink() || st.nlink !== 1 || fileHash(file) !== row.sha256 || path.dirname(file) !== fs.realpathSync(archiveRoot) ||
         path.basename(file) !== row.fileName) {throw new Error("Windows SDK archive receipt row differs from locked bytes: " + key);}
     totalBytes += st.size; if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_INPUT) {throw new Error("Windows SDK archive inputs exceed aggregate cap");}
     const staged = path.join(work, row.fileName); fs.copyFileSync(file, staged, fs.constants.COPYFILE_EXCL);
-    if (hashFile(staged) !== row.sha256) {throw new Error("Staged Windows SDK archive hash mismatch");}
+    if (fileHash(staged) !== row.sha256) {throw new Error("Staged Windows SDK archive hash mismatch");}
     archives[key] = {path: file, sha256: row.sha256, bytes: st.size, staged};
   }
   if (fileHash(receiptPath) !== receiptHash) {throw new Error("Windows SDK fetch receipt changed during verification");}
@@ -347,9 +338,7 @@ function prepareWindowsHostSdk(archiveRoot, output, environment = process.env) {
   if (destination !== path.resolve(output) || destination === repo || destination.startsWith(repo + path.sep) ||
       (() => {try {fs.lstatSync(destination); return true;} catch {return false;}})() ||
       (() => {try {fs.lstatSync(work); return true;} catch {return false;}})()) {throw new Error("Windows host SDK output/work paths must be new and outside the repository");}
-  /** @param {string} base @param {string} candidate */
-  const inside = (base, candidate) => {const rel = path.relative(base, candidate); return !path.isAbsolute(rel) && rel !== ".." && !rel.startsWith(".." + path.sep);};
-  if (inside(archiveReal, destination) || inside(destination, archiveReal) || inside(archiveReal, work) || inside(work, archiveReal)) {throw new Error("Windows host SDK output overlaps archive inputs");}
+  if (buildPathsOverlap(archiveReal, destination) || buildPathsOverlap(archiveReal, work)) {throw new Error("Windows host SDK output overlaps archive inputs");}
   const recipeLeaves = ["scripts/prepare-native-windows-sdk.js", "scripts/fetch-native-sdk-sources.js", "scripts/build-source-inputs.js", "runtime/windows-host-sdk.json"];
   const recipe = sourceInputs(repo, [], recipeLeaves), fetchReceipt = path.join(archiveReal, "fetch.json");
   const sourceReceiptHash = fileHash(fetchReceipt), toolRows = [
@@ -441,7 +430,7 @@ function prepareWindowsHostSdk(archiveRoot, output, environment = process.env) {
         if (target === null) {continue;}
         const selectorKey = [selection.package, selection.sourcePrefix, selection.destinationPrefix, selection.kind].join("\0");
         selectorHits.set(selectorKey, (selectorHits.get(selectorKey) || 0) + 1);
-        const origin = {package: key, packageSha256: row.sha256, member: file.path, sha256: hashFile(file.full), bytes: file.bytes};
+        const origin = {package: key, packageSha256: row.sha256, member: file.path, sha256: fileHash(file.full), bytes: file.bytes};
         addSelectedFile(file.full, path.join(destination, "sdk"), target, claims, directoryClaims, origin);
         provenance.push({destination: target, ...origin});
       }
@@ -458,9 +447,9 @@ function prepareWindowsHostSdk(archiveRoot, output, environment = process.env) {
   const descriptorFile = path.join(destination, "sdk.json"); fs.writeFileSync(descriptorFile, JSON.stringify(sdkDescriptor, null, 2) + "\n", {flag: "wx", mode: 0o644});
   fs.writeFileSync(path.join(destination, "files.json"), JSON.stringify({files: selectedRows, origins: provenance}, null, 2) + "\n", {flag: "wx", mode: 0o644});
   const currentRecipe = sourceInputs(repo, [], recipeLeaves); verifySourceInputs(recipe, currentRecipe, "Windows host-SDK extraction recipe");
-  for (const [key, archive] of Object.entries(inputs.archives)) {if (hashFile(archive.path) !== archive.sha256) {throw new Error("Windows SDK archive changed during extraction: " + key);}}
-  for (const tool of toolRows) {if (hashFile(tool.path) !== tool.sha256) {throw new Error("Windows SDK extraction tool changed during preparation: " + path.basename(tool.path));}}
-  if (hashFile(fetchReceipt) !== inputs.receiptHash) {throw new Error("Windows SDK archive receipt changed during extraction");}
+  for (const [key, archive] of Object.entries(inputs.archives)) {if (fileHash(archive.path) !== archive.sha256) {throw new Error("Windows SDK archive changed during extraction: " + key);}}
+  for (const tool of toolRows) {if (fileHash(tool.path) !== tool.sha256) {throw new Error("Windows SDK extraction tool changed during preparation: " + path.basename(tool.path));}}
+  if (fileHash(fetchReceipt) !== inputs.receiptHash) {throw new Error("Windows SDK archive receipt changed during extraction");}
   // Only this invocation's fresh, canonical scratch is disposable; failures retain diagnostics.
   if (fs.realpathSync(work) !== work || !fs.lstatSync(work).isDirectory() || fs.lstatSync(work).isSymbolicLink()) {throw new Error("Windows SDK scratch identity changed");}
   fs.rmSync(work, {recursive: true});

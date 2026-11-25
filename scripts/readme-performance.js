@@ -16,11 +16,6 @@ const performanceColumns = [
   {os: "linux", column: "Linux"}, {os: "windows", column: "Windows"},
 ];
 
-/** @param {unknown} value @returns {value is Record<string, unknown>} */
-function isRecord(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 /** @param {string} line @returns {string[]} */
 function cells(line) {
   return line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
@@ -125,6 +120,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  appendOutputTail, isRecord, maxCapturedOutput, parseRate, parseReadmePerformance, platformColumns,
+  appendOutputTail, maxCapturedOutput, parseRate, parseReadmePerformance, platformColumns,
   readPerformanceFile, reportedRates,
 };

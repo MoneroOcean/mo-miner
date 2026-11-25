@@ -56,7 +56,7 @@ function linuxGeneratedCompileInputs(source, output) {
   return files.filter(file => fs.existsSync(file));
 }
 
-/** Match the environment used by run() while making inherited AOT test controls inert. */
+/** Like run(), make inherited AOT test controls inert; compile batches also drop the AOT build-input selectors. */
 function linuxCompileEnvironment() {
   const environment = {...process.env};
   for (const name of ["MOM_AOT_PROCESS_EXIT", "MOM_AOT_RUN_CONTROLLER", "MOM_AOT_CHILD_TASK", "MOM_AOT_BULK",

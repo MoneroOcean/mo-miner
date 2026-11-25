@@ -6,6 +6,7 @@ const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} 
 const {hasExactBuildFields, fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
 const {archiveName, archiveSha256} = require("./native-llvm-sdk");
 const {verifyLinuxLlvmAdmission} = require("./build-native-llvm-sdk");
+const {availableDiskBytes, canonicalDirectory} = require("./native-ci-tar");
 
 const repo = path.resolve(__dirname, ".."), format = "mom-linux-llvm-tools-handoff-v1",
   acppFrontendFormat = "mom-linux-llvm-acpp-frontend-handoff-v1";
@@ -20,7 +21,7 @@ const toolRows = [
   {path: "bin/llvm-lib", type: "symlink", target: "llvm-ar"}, {path: "bin/llvm-ranlib", type: "symlink", target: "llvm-ar"}
 ];
 const recipeFiles = ["scripts/native-linux-llvm-tools.js", "scripts/build-native-llvm-sdk.js", "scripts/native-llvm-sdk.js",
-  "scripts/native-audit.js", "scripts/build-source-inputs.js"];
+  "scripts/native-audit.js", "scripts/build-source-inputs.js", "scripts/native-ci-tar.js"];
 const maxReceiptBytes = 8 << 20, maxArchiveBytes = 2 * 1024 ** 3, maxEntries = 32,
   maxHandoffBytes = 1 << 30, outputReserveBytes = 4 * 1024 ** 3,
   maxFrontendFiles = 4096, maxFrontendBytes = 256 << 20, maxFrontendManifestBytes = 8 << 20;
@@ -36,24 +37,6 @@ function sourceArchivePolicy(testPolicy) {
     throw new Error("Linux LLVM test-only source archive policy is malformed");
   }
   return {name: testPolicy.testOnlySourceArchiveName, sha256: testPolicy.testOnlySourceArchiveSha256};
-}
-
-/** @param {string} directory */
-function availableBytes(directory) {
-  const stat = fs.statfsSync(directory, {bigint: true});
-  if (stat.bsize <= 0n) {throw new Error("Cannot determine Linux LLVM tool handoff output capacity");}
-  const bytes = stat.bavail * stat.bsize;
-  return bytes > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(bytes);
-}
-
-/** @param {string} value @param {string} label */
-function canonicalDirectory(value, label) {
-  if (typeof value !== "string" || !path.isAbsolute(value) || path.resolve(value) !== value || /[\r\n\0]/.test(value)) {
-    throw new Error(label + " must be an absolute canonical path");
-  }
-  const stat = fs.lstatSync(value);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(value) !== value) {throw new Error(label + " must be a real directory");}
-  return value;
 }
 
 /** @param {string} file @param {number} maximum @param {string} label */
@@ -450,7 +433,7 @@ function exportLinuxLlvmRole(admittedSdkRoot, outputRoot, reader, testPolicy, ro
     Object.values(inputReceipts).reduce((sum, receipt) => sum + receipt.bytes, 0);
   const requiredBytes = 2 * totalBytes + outputReserveBytes;
   if (!Number.isSafeInteger(totalBytes) || totalBytes < 1 || totalBytes > maxHandoffBytes || !Number.isSafeInteger(requiredBytes) ||
-      availableBytes(outputParent) < requiredBytes) {
+      availableDiskBytes(outputParent) < requiredBytes) {
     throw new Error("Linux LLVM tool handoff payload exceeds its bound or lacks output/pack space reserve");
   }
   fs.mkdirSync(outputRoot, {mode: 0o700});

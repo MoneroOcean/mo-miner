@@ -3,7 +3,7 @@
 // Native CI Windows host SDK sources, LLVM descriptor and cross-built LLVM phases.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
-const {appendWorkflowOutputs, ciBuildJobs, ciSuffix, hasExactKeys, runNode, runNodeProcessGroup} = require("./native-ci-job");
+const {appendWorkflowOutputs, ciBuildJobs, ciSuffix, runNode, runNodeProcessGroup} = require("./native-ci-job");
 const {hasExactBuildFields, containsBuildPath, fileHash, readBuildBytes, readBuildJson, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {verifyWindowsHostSdkArchives, windowsHostSdkCatalog} = require("./fetch-native-sdk-sources");
 const {windowsControllerHandoffInputs, windowsLocalControllerHandoffInputs} = require("./native-windows-controller-handoff");
@@ -230,7 +230,7 @@ function windowsHostSdkPackageMembers(state) {
  * @param {unknown} value @returns {{msvcLibraries:string[],ucrtLibraries:string[],importLibraries:string[]}} */
 function validateWindowsLlvmLibraryPolicy(value) {
   const groups = ["msvcLibraries", "ucrtLibraries", "importLibraries"];
-  if (!hasExactKeys(value, groups)) {throw new Error("Windows LLVM library policy must name all ordered library groups");}
+  if (!hasExactBuildFields(value, groups)) {throw new Error("Windows LLVM library policy must name all ordered library groups");}
   const seen = new Set(), policy = /** @type {Record<string,unknown>} */ (value), result = /** @type {Record<string,string[]>} */ ({});
   for (const group of groups) {
     const names = policy[group];
@@ -250,7 +250,7 @@ function validateWindowsLlvmLibraryPolicy(value) {
  * @param {{path:string,sha256:string,linkTarget?:string}} pin @param {string} label */
 function auditWindowsLlvmToolFile(pin, label) {
   const keys = pin && Object.hasOwn(pin, "linkTarget") ? ["path", "sha256", "linkTarget"] : ["path", "sha256"];
-  if (!hasExactKeys(pin, keys) || !path.isAbsolute(pin.path) || /[\r\n\0]/.test(pin.path) || !/^[a-f0-9]{64}$/.test(pin.sha256)) {
+  if (!hasExactBuildFields(pin, keys) || !path.isAbsolute(pin.path) || /[\r\n\0]/.test(pin.path) || !/^[a-f0-9]{64}$/.test(pin.sha256)) {
     throw new Error("Windows LLVM tool pin is malformed: " + label);
   }
   const stat = fs.lstatSync(pin.path); let file = pin.path;
@@ -311,9 +311,9 @@ function composeWindowsLlvmDescriptor(input, identityKeys) {
   const pinKeys = ["resultSha256", "descriptorSha256", "filesSha256", "overlaySha256"], toolKeys = ["clangCl", "lldLink", "llvmNm", "clangResourceInclude"],
     policy = validateWindowsLlvmLibraryPolicy(input?.libraryPolicy === undefined ? defaultWindowsNativeLibraryPolicy() : input.libraryPolicy);
   if (!input || !path.isAbsolute(input.windowsSdkRoot) || /[\r\n\0]/.test(input.windowsSdkRoot) ||
-      !hasExactKeys(input.windowsSdkPins, pinKeys) || Object.values(input.windowsSdkPins).some(hash => !/^[a-f0-9]{64}$/.test(hash)) ||
-      !hasExactKeys(input.hermesExpectation, ["kind", ...identityKeys, "handoffSha256"]) || input.hermesExpectation.kind !== "hermes" ||
-      !hasExactKeys(input.tools, toolKeys) || typeof input.tools.clangResourceInclude !== "string" ||
+      !hasExactBuildFields(input.windowsSdkPins, pinKeys) || Object.values(input.windowsSdkPins).some(hash => !/^[a-f0-9]{64}$/.test(hash)) ||
+      !hasExactBuildFields(input.hermesExpectation, ["kind", ...identityKeys, "handoffSha256"]) || input.hermesExpectation.kind !== "hermes" ||
+      !hasExactBuildFields(input.tools, toolKeys) || typeof input.tools.clangResourceInclude !== "string" ||
       !path.isAbsolute(input.tools.clangResourceInclude) || /[\r\n\0]/.test(input.tools.clangResourceInclude)) {
     throw new Error("Windows LLVM descriptor composition requires explicit source pins and tool paths");
   }
@@ -439,8 +439,8 @@ function windowsNativeLlvmDescriptorCiPreflight(args, environment = process.env,
     throw new Error("Windows LLVM descriptor input has an unexpected composer schema");
   }
   if (input.windowsSdkRoot !== state.windowsSdkRoot || input.hermesRoot !== state.hermesRoot ||
-      !hasExactKeys(input.hermesExpectation, ["kind", "handoffSha256"]) || input.hermesExpectation.kind !== "hermes" ||
-      !hasExactKeys(input.tools, ["clangCl", "lldLink", "llvmNm", "clangResourceInclude"])) {
+      !hasExactBuildFields(input.hermesExpectation, ["kind", "handoffSha256"]) || input.hermesExpectation.kind !== "hermes" ||
+      !hasExactBuildFields(input.tools, ["clangCl", "lldLink", "llvmNm", "clangResourceInclude"])) {
     throw new Error("Windows LLVM descriptor SDK/Hermes inputs must be the exact same-run roots and handoff");
   }
   const toolPins = [
@@ -449,7 +449,7 @@ function windowsNativeLlvmDescriptorCiPreflight(args, environment = process.env,
     ["llvmNm", input.tools.llvmNm, ["path", "sha256"]],
   ];
   for (const [label, pin, pinKeys] of toolPins) {
-    if (!hasExactKeys(pin, pinKeys)) {throw new Error("Windows LLVM descriptor tool pin is malformed: " + label);}
+    if (!hasExactBuildFields(pin, pinKeys)) {throw new Error("Windows LLVM descriptor tool pin is malformed: " + label);}
   }
   if (typeof input.tools.clangResourceInclude !== "string" || !path.isAbsolute(input.tools.clangResourceInclude) ||
       /[\r\n\0]/.test(input.tools.clangResourceInclude)) {throw new Error("Windows LLVM Clang resource include path is malformed");}

@@ -4,17 +4,15 @@
 const path = require("node:path");
 const {isDeepStrictEqual} = require("node:util");
 const {validateWindowsLlvmSdkConfig, validateWindowsControllerConfig} = require("./build-native-windows-controller");
+const {isObject} = require("../helper/validate");
 
 const hash = /^[a-f0-9]{64}$/;
 
-/** @param {unknown} value @returns {value is Record<string, unknown>} */
-function object(value) {return Boolean(value && typeof value === "object" && !Array.isArray(value));}
-
 /** @param {unknown} value @param {"io" | "hermes"} kind */
 function admittedHandoff(value, kind) {
-  if (!object(value) || value["kind"] !== kind || typeof value["handoff"] !== "string" ||
+  if (!isObject(value) || value["kind"] !== kind || typeof value["handoff"] !== "string" ||
       !path.isAbsolute(value["handoff"]) || path.resolve(value["handoff"]) !== value["handoff"] ||
-      typeof value["handoffSha256"] !== "string" || !hash.test(value["handoffSha256"]) || !object(value["files"])) {
+      typeof value["handoffSha256"] !== "string" || !hash.test(value["handoffSha256"]) || !isObject(value["files"])) {
     throw new Error("Windows application config requires the same-run admitted " + kind + " handoff");
   }
 }
@@ -23,7 +21,7 @@ function admittedHandoff(value, kind) {
  * for producer admission. Local builds call the shared descriptor composer directly.
  * @param {unknown} input */
 function composeWindowsApplicationConfig(input) {
-  if (!object(input)) {throw new Error("Invalid Windows application config composition input");}
+  if (!isObject(input)) {throw new Error("Invalid Windows application config composition input");}
   admittedHandoff(input["io"], "io");
   admittedHandoff(input["hermes"], "hermes");
   return composeWindowsApplicationDescriptor(input);
@@ -34,25 +32,25 @@ function composeWindowsApplicationConfig(input) {
  * Hermes compiler rather than treating the executable as a Windows support-library member.
  * @param {unknown} input */
 function composeWindowsApplicationDescriptor(input) {
-  if (!object(input)) {throw new Error("Invalid Windows application config composition input");}
+  if (!isObject(input)) {throw new Error("Invalid Windows application config composition input");}
   const row = input;
-  if (!object(row["tools"]) || !object(row["io"]) || !object(row["hermes"]) || !object(row["hermesAot"]) ||
-      !object(row["llvmDescriptor"]) || !Array.isArray(row["allowedImports"])) {
+  if (!isObject(row["tools"]) || !isObject(row["io"]) || !isObject(row["hermes"]) || !isObject(row["hermesAot"]) ||
+      !isObject(row["llvmDescriptor"]) || !Array.isArray(row["allowedImports"])) {
     throw new Error("Windows application config input is incomplete");
   }
   const expectedInputKeys = ["allowedImports", "hermes", "hermesAot", "io", "llvmDescriptor", "tools"],
     hasApplication = Object.hasOwn(row, "application");
   if (!isDeepStrictEqual(Object.keys(row).sort(), [...expectedInputKeys, ...(hasApplication ? ["application"] : [])].sort()) ||
-      hasApplication && !object(row["application"])) {throw new Error("Windows application config input has an unexpected shape");}
+      hasApplication && !isObject(row["application"])) {throw new Error("Windows application config input has an unexpected shape");}
   const llvm = validateWindowsLlvmSdkConfig(row["llvmDescriptor"]), io = /** @type {{libraries?: unknown}} */ (row["io"]),
     hermes = /** @type {{hermes?: unknown,intelRuntime?: unknown}} */ (row["hermes"]),
     hermesAot = /** @type {{artifacts?: unknown,files?: unknown}} */ (row["hermesAot"]);
-  if (!object(io.libraries) || !object(hermes.hermes) || !object(hermes.intelRuntime)) {
+  if (!isObject(io.libraries) || !isObject(hermes.hermes) || !isObject(hermes.intelRuntime)) {
     throw new Error("Windows support readers returned incomplete inputs");
   }
   const runtime = /** @type {{libRoot?: unknown,libraries?: unknown}} */ (hermes.intelRuntime),
     runtimeLibraries = runtime.libraries;
-  if (typeof runtime.libRoot !== "string" || !path.isAbsolute(runtime.libRoot) || !object(runtimeLibraries) || !Object.keys(runtimeLibraries).length ||
+  if (typeof runtime.libRoot !== "string" || !path.isAbsolute(runtime.libRoot) || !isObject(runtimeLibraries) || !Object.keys(runtimeLibraries).length ||
       Object.values(runtimeLibraries).some(file => typeof file !== "string" || !llvm.windowsSdk.msvcLibraries.includes(file)) ||
       !llvm.windowsSdk.libraryRoots.includes(runtime.libRoot)) {
     throw new Error("Windows LLVM descriptor does not retain the admitted Hermes Intel runtime inputs");
@@ -63,7 +61,7 @@ function composeWindowsApplicationDescriptor(input) {
       typeof shermaot !== "string" || typeof llvmReadobj !== "string" || hasObjdump && typeof tools["llvmObjdump"] !== "string") {
     throw new Error("Windows application config needs explicit shermaot and llvm-readobj paths");
   }
-  if (!object(hermesAot["artifacts"]) || !object(hermesAot["files"]) || hermesAot["artifacts"]["compiler"] !== shermaot ||
+  if (!isObject(hermesAot["artifacts"]) || !isObject(hermesAot["files"]) || hermesAot["artifacts"]["compiler"] !== shermaot ||
       typeof hermesAot["files"][shermaot] !== "string" || !hash.test(hermesAot["files"][shermaot])) {
     throw new Error("Selected shermaot is not bound to the admitted Linux Hermes compiler receipt");
   }

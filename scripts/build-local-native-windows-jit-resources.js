@@ -179,4 +179,4 @@ function buildLocalWindowsJitResources(localSdk, tools, dependencies = {}) {
   buildOnly: true, executed: false, publicationQualified: false, reused};
 }
 
-module.exports = {localWindowsJitResourcePaths, admittedLocalSdkContext, buildLocalWindowsJitResources};
+module.exports = {localWindowsJitResourcePaths, buildLocalWindowsJitResources};

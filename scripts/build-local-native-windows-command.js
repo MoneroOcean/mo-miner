@@ -26,7 +26,7 @@ function verifyNodeVersionPin() {
     linuxInstaller = fs.readFileSync(path.join(repo, "scripts/install-dev.sh"), "utf8"),
     linuxPin = /^NODE_VERSION=\$\{MOM_NODE_VERSION-([^}]+)\}$/m.exec(linuxInstaller)?.[1];
   if (windowsPins.length !== 1 || windowsPins[0] !== nodeVersion.slice(1) || linuxPin !== nodeVersion.slice(1)) {
-    throw new Error("Local Windows/WSL Node pin must match the maintained scripts/install-dev.ps1 version");
+    throw new Error("Local Windows/WSL Node pin must match the maintained scripts/install-dev.ps1 and install-dev.sh versions");
   }
 }
 
@@ -563,7 +563,7 @@ if (require.main === module) {
   try {main(process.argv.slice(2));} catch (error) {console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1;}
 }
 
-module.exports = {localWindowsReleaseRoots, ensureNativeWindowsReleaseRoots, windowsToolPreflight, launchLocalNativeWindowsRelease,
+module.exports = {localWindowsReleaseRoots, ensureNativeWindowsReleaseRoots, launchLocalNativeWindowsRelease,
   windowsPreflightSource,
-  mapWslPath, windowsPathToWsl, wslPathToWindows, readBoundedJson, runWindowsSupportBridge, admitWindowsBridgeResult,
-  runLocalWindowsWslRelease, launchWslWindowsWorker, launchWslBootstrap, main, nodeVersion};
+  windowsPathToWsl, wslPathToWindows, readBoundedJson, runWindowsSupportBridge, admitWindowsBridgeResult,
+  runLocalWindowsWslRelease, main, nodeVersion};

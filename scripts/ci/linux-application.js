@@ -10,9 +10,10 @@ const {spawn} = require("node:child_process");
 const ciRelease = require("../native-ci-linux-release"),
   ciSources = require("../native-ci-linux-sources"),
   ciTar = require("../native-ci-tar");
-const {applicationBuildFiles, applicationBuildName, ciSuffix} = require("../native-ci-job");
+const {appendWorkflowOutputs, applicationBuildFiles, applicationBuildName, ciSuffix} = require("../native-ci-job");
 const {fileHash, readBuildJson} = require("../build-source-inputs");
-const {canonicalFile, appendOutputs} = require("./seal");
+const {canonicalFile} = require("./seal");
+const {boundedStepMs} = require("./job");
 
 const repo = path.resolve(__dirname, "../..");
 // The outer stage log and the copied linker log are bounded so a runaway build cannot fill the runner.
@@ -136,12 +137,9 @@ function applicationHandoffPlan(environment) {
   return plan;
 }
 
-/** Remaining milliseconds before the aggregate deadline, capped; refuses to start with under one second.
- * @param {number} deadline Unix seconds @param {number} capMs */
+/** Remaining milliseconds before the aggregate deadline, capped. @param {number} deadline Unix seconds @param {number} capMs */
 function remainingMs(deadline, capMs) {
-  const milliseconds = Math.min(capMs, deadline * 1000 - Date.now());
-  if (!Number.isSafeInteger(milliseconds) || milliseconds < 1000) {throw new Error("Linux application aggregate deadline expired during handoff sealing");}
-  return milliseconds;
+  return boundedStepMs(deadline * 1000, capMs, 0, "Linux application aggregate deadline expired during handoff sealing");
 }
 
 /** Bind the raw executable to its producer receipt, entrypoint and derived config; pack those
@@ -189,10 +187,10 @@ function bindApplicationHandoff(environment = process.env) {
   if (fileHash(runtimeBinary) !== artifact.sha256 || fileHash(binary) !== artifact.sha256) {
     throw new Error("Runtime handoff copy differs from the pinned build receipt");
   }
-  const outputs = {sha256: artifact.sha256, artifact_name: "native-linux-executable-" + suffix, executable_bytes: artifact.bytes,
+  const outputs = {sha256: artifact.sha256, artifact_name: "native-linux-executable-" + suffix, executable_bytes: String(artifact.bytes),
     entrypoint_sha256: entrypointRecord.sha256, producer_receipt_sha256: resultRecord.sha256,
     build_handoff_artifact_name: evidenceName + ".tar", build_handoff_bundle_sha256: fileHash(archive), build_handoff_sha256: handoffSha256};
-  appendOutputs(outputs, environment);
+  appendWorkflowOutputs(environment, outputs);
   console.log("Bound same-run Linux executable and compact build evidence: " + artifact.sha256);
   return outputs;
 }
@@ -204,7 +202,7 @@ async function main(args) {
   if (command === "component-profile") {
     componentProfile();
   } else if (command === "component-seal") {
-    appendOutputs(sealLinuxComponent(ciSources.ciPaths(), componentProfile()));
+    appendWorkflowOutputs(process.env, sealLinuxComponent(ciSources.ciPaths(), componentProfile()));
   } else if (command === "application-build") {
     return runApplicationBuild();
   } else if (command === "application-bind") {
@@ -215,8 +213,7 @@ async function main(args) {
   return 0;
 }
 
-module.exports = {componentProfile, sealLinuxComponent, runApplicationBuild, copyLinkDiagnostics, assertApplicationReceipts,
-  applicationHandoffPlan, bindApplicationHandoff, main};
+module.exports = {componentProfile, sealLinuxComponent, runApplicationBuild, main};
 
 if (require.main === module) {
   main(process.argv.slice(2)).then(status => {process.exitCode = status;}, error => {

@@ -108,7 +108,7 @@ function hostCompilerEvidence(compilers, query) {
  * @param {string[]} libraries */
 function admitCudaLibraries(libraries) {
   if (libraries.length !== 2 || new Set(libraries.map(file => path.basename(file))).size !== 2 || libraries.some(file =>
-    fileHash(file) !== Reflect.get(cudaPins, path.basename(file)))) {throw new Error("CUDA runtime libraries do not match the reviewed12.6.77 pair");}
+    fileHash(file) !== Reflect.get(cudaPins, path.basename(file)))) {throw new Error("CUDA runtime libraries do not match the reviewed 12.6.77 pair");}
 }
 
 /** One literal CMake recipe; no shell expansion, host-SDK fallback or backend auto-detection.
@@ -124,7 +124,7 @@ function staticSyclSdkPlan(source, llvm, cuda, output, jobs, environment = {}, s
     comgr: environment["MOM_AOT_COMGR_RECEIPT"] || ""} : undefined;
   const repo = path.resolve(__dirname, ".."), roots = [source, llvm, cuda, repo, ...Object.values(hip || {})];
   if (![...roots, output].every(absolutePath) || !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {
-    throw new Error("Static SYCL SDK needs absolute roots and jobs in1..16");
+    throw new Error("Static SYCL SDK needs absolute roots and jobs in 1..16");
   }
   const hostCompilers = selectHostCompilers(llvm, selectedHostCompilers);
   const intelOneApiHostPair = /(?:^|\/)intel\/oneapi\/compiler\/[^/]+\/bin\/icx$/.test(hostCompilers.cc) &&
@@ -190,7 +190,7 @@ function sdkStage(command, log, env) {
  * @param {NodeJS.ProcessEnv} [environment] @param {{cc: string, cxx: string}} [selectedHostCompilers] */
 function buildStaticSyclSdk(source, llvm, cuda, output, environment = process.env, selectedHostCompilers) {
   if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {
-    throw new Error("Static SYCL SDK compilation requires Linuxx64 and MOM_AOT_BUILD_ONLY=1; no GPU execution is performed");
+    throw new Error("Static SYCL SDK compilation requires Linux x64 and MOM_AOT_BUILD_ONLY=1; no GPU execution is performed");
   }
   const env = nativeSdkEnvironment(environment), plan = staticSyclSdkPlan(source, llvm, cuda, output,
     nativeBuildJobs(env), env, selectedHostCompilers);
@@ -227,8 +227,8 @@ function buildStaticSyclSdk(source, llvm, cuda, output, environment = process.en
   const hipFiles = [];
   if (plan.hip) {
     const selected = plan.hip, hip = rocmInputs(selected.rocm, selected.comgr), lld = lldInputs(selected.lld, version);
-    verifyComgrSdkSelection(hip.comgr, llvm, selected.lld, selected.bitcode, version);
     if (!hip.comgr) {throw new Error("Missing verified COMGR component");}
+    verifyComgrSdkSelection(hip.comgr, llvm, selected.lld, selected.bitcode, version);
     const bitcode = fs.readdirSync(selected.bitcode).filter(name => /^[A-Za-z0-9_.-]+\.bc$/.test(name));
     if (!["ockl.bc", "ocml.bc"].every(name => bitcode.includes(name)) || !bitcode.some(name => /^oclc_abi_version_[0-9]+\.bc$/.test(name))) {
       throw new Error("Static HIP JIT needs explicit ROCm builtins and ABI bitcode");

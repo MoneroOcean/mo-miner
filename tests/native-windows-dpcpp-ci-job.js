@@ -49,7 +49,7 @@ test.describe("Windows original static DPC++ job script", {skip: process.platfor
   test("preflight rejects malformed, expired and too-short deadlines and every missing or malformed pin", () => {
     const now = Math.floor(Date.now() / 1000), good = preflightEnv(now);
     for (const epoch of ["", "12345", String(now + 900) + "0", "abcdefghij"]) {
-      assert.throws(() => jobEnvironment({...good, MOM_CI_DEADLINE_EPOCH: epoch}, now), /Malformed MOM_CI_DEADLINE_EPOCH/);
+      assert.throws(() => jobEnvironment({...good, MOM_CI_DEADLINE_EPOCH: epoch}, now), /MOM_CI_DEADLINE_EPOCH aggregate deadline is invalid/);
     }
     for (const epoch of [now, now - 60]) {
       assert.throws(() => jobEnvironment({...good, MOM_CI_DEADLINE_EPOCH: String(epoch)}, now), /expired/);

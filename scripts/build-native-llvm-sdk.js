@@ -814,7 +814,7 @@ function verifyLinuxLlvmAdmission(output) {
 }
 
 module.exports = {archiveSha256, recipeFiles, toolsComponents, metadataInstallTargets, installTargets, linuxLlvmSdkPlan, verifySourceVersion,
-  llvmSourceSnapshot, verifyArchiveCatalog, llvmStaticTargets, linuxDistributionSelection, verifyDistributionGraph, cmakeCache, verifyCMakeCache,
+  llvmSourceSnapshot, verifyArchiveCatalog, llvmStaticTargets, linuxDistributionSelection, verifyDistributionGraph, cmakeCache,
   verifyAmdgpulibCallsCompileFlag, auditLinuxLlvmPrefix, phaseBuildArgs, findClangLinkCommand, verifyLinuxLlvmAdmission};
 
 if (require.main === module) {

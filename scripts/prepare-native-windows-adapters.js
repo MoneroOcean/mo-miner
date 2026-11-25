@@ -4,7 +4,7 @@
 // original opaque dispatch factory each. Driver thunks derive signatures from official headers.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, sourceInputs, verifySourceInputs, readBuildJsonSnapshot} = require("./build-source-inputs");
+const {containsBuildPath, fileHash, sourceInputs, verifySourceInputs, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {verifyPreparedSdkSources, sdkSourceFiles, sdkSourceEnvironment} = require("./prepare-native-sdk-sources");
 const {compileCommand, dependencyHashes, validateWindowsControllerConfig, windowsToolEnvironment, parseImports} = require("./build-native-windows-controller");
 const {windowsResponseFile} = require("./native-windows-application");
@@ -110,8 +110,7 @@ function prepareWindowsAdapters(sdkFile, descriptorFile, cuda, output, environme
   if (!path.isAbsolute(output) || /[\r\n\0]/.test(output) || fs.existsSync(output)) {throw new Error("Select a new absolute Windows adapter output");}
   const target = path.join(fs.realpathSync(path.dirname(output)), path.basename(output));
   for (const root of [path.dirname(sdkFile), cuda, ...Object.values(before.source.prepared).map((/** @type {{root: string}} */ value) => value.root)]) {
-    const relative = path.relative(fs.realpathSync(root), target);
-    if (!relative || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep))) {throw new Error("Windows adapter output overlaps source or SDK inputs");}
+    if (containsBuildPath(fs.realpathSync(root), target)) {throw new Error("Windows adapter output overlaps source or SDK inputs");}
   }
   const env = sdkSourceEnvironment(windowsToolEnvironment(environment)), startedAt = Date.now(), bin = path.dirname(config.tools.llvmReadobj);
   const tools = {llvmNm: config.tools.llvmNm, llvmObjcopy: path.join(bin, "llvm-objcopy"), llvmAr: path.join(bin, "llvm-ar")};

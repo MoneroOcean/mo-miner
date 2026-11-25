@@ -201,7 +201,7 @@ function prepareWindowsJitToolchain(descriptorFile, sdk, nativeTools, output, en
   return result;
 }
 
-module.exports = {heatUtilsSourceOptions, windowsIntelRuleOverride, validateWindowsJitDescriptor, windowsJitToolchainPlan, prepareWindowsJitToolchain};
+module.exports = {windowsIntelRuleOverride, validateWindowsJitDescriptor, windowsJitToolchainPlan, prepareWindowsJitToolchain};
 if (require.main === module) {
   try {
     const [descriptor, sdk, nativeTools, output, cc, cxx, extra] = process.argv.slice(2);

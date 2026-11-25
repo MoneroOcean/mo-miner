@@ -346,14 +346,8 @@ async function prepareLocalAmdhipWindows(input, environment = process.env, depen
   const selected = windowsAmdhipCatalog(), workspace = path.dirname(input.sourceRoot), sourcePaths = localRocm.localRocmSdkPaths(workspace),
     recipe = amdhipRecipe(), recipeSha256 = createHash("sha256").update(JSON.stringify(recipe)).digest("hex"), producerSha256 = sourceIO.fileHash(__filename),
     git = "/usr/bin/git", outputStat = fs.lstatSync(input.output, {throwIfNoEntry: false});
-  /** @param {string} root */
-  const disjoint = root => {
-    const rel = path.relative(root, input.output), reverse = path.relative(input.output, root);
-    return rel !== "" && reverse !== "" && (path.isAbsolute(rel) || rel === ".." || rel.startsWith(".." + path.sep)) &&
-      (path.isAbsolute(reverse) || reverse === ".." || reverse.startsWith(".." + path.sep));
-  };
   if (sourcePaths.source !== input.sourceRoot || outputStat || input.output.startsWith(repo + path.sep) ||
-      path.dirname(input.output) !== fs.realpathSync(path.dirname(input.output)) || ![input.sourceRoot, input.llvmOutput].every(disjoint)) {
+      path.dirname(input.output) !== fs.realpathSync(path.dirname(input.output)) || [input.sourceRoot, input.llvmOutput].some(root => sourceIO.buildPathsOverlap(root, input.output))) {
     throw new Error("Local AMD output must be new, canonical, outside the checkout, and disjoint from source and LLVM inputs");
   }
   for (const directory of [workspace, path.join(workspace, "sources"), input.sourceRoot, path.join(input.sourceRoot, "roots/clr"), input.llvmOutput]) {

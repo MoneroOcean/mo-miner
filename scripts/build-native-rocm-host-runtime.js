@@ -139,7 +139,7 @@ function validateConfig(input) {
 function rocmHostPlan(input, output, jobs, sdkRoots = /** @type {RocmSdkRoots} */ ({}), sysroot = {root: "<SYSROOT>", toolchain: "<SYSROOT-TOOLCHAIN>"}) {
   const c = validateConfig(input);
   if (!literalPath(output) || !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {
-    throw new Error("Native ROCm host runtime needs a literal output and jobs in1..16");
+    throw new Error("Native ROCm host runtime needs a literal output and jobs in 1..16");
   }
   const llvm = sdkRoots.llvm || "<COMGR-LLVM>", comgrPackage = sdkRoots.comgrPackage || "<COMGR-PACKAGE>",
     device = sdkRoots.device || "<COMGR-DEVICE-LIBS>", deviceLibPath = path.join(device, "amdgcn/bitcode");
@@ -455,7 +455,7 @@ function requireCache(cacheFile, name, value) {
  * @param {unknown} input @param {string} output @param {NodeJS.ProcessEnv} [environment] @param {string} [configFile] */
 function buildRocmHostRuntime(input, output, environment = process.env, configFile) {
   if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {
-    throw new Error("Native ROCm host runtime compilation requires Linuxx64 and MOM_AOT_BUILD_ONLY=1");
+    throw new Error("Native ROCm host runtime compilation requires Linux x64 and MOM_AOT_BUILD_ONLY=1");
   }
   const c = validateConfig(input);
   if (!literalPath(output) || fs.lstatSync(output, {throwIfNoEntry: false}) ||
@@ -811,6 +811,6 @@ if (require.main === module) {
   } catch (error) {console.error(error instanceof Error ? error.message : "Native ROCm host runtime build failed"); process.exitCode = 1;}
 }
 
-module.exports = {pins, archiveNames, hsakmtInstallArchiveName, xxdPin, packageOwners, staticInputOrigin, validateConfig, rocmHostPlan, hostEnvironment, withPrivateBuildDirectories, packageOrigin, parsePackageOrigin, compileDepfiles, readCompileDatabase,
+module.exports = {pins, archiveNames, hsakmtInstallArchiveName, xxdPin, packageOwners, validateConfig, rocmHostPlan, hostEnvironment, withPrivateBuildDirectories, parsePackageOrigin, compileDepfiles, readCompileDatabase,
   useStableHipPchStdin, patchExportedHipPchScript, useExplicitRocrDeviceLibPath, patchExportedRocrDeviceLibPath,
   buildRocmHostRuntime};

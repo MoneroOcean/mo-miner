@@ -3,7 +3,7 @@
 // Native-Windows half of the WSL release build. Original source receipts survive
 // transport unchanged; only selected support artifacts are exported back to WSL.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto");
-const support = require("./build-local-native-windows-support"), sources = require("./fetch-native-sdk-sources"),
+const support = require("./build-local-native-windows-support"), {samePath} = support, sources = require("./fetch-native-sdk-sources"),
   ci = require("./native-ci-windows-controller"), exporter = require("./build-local-native-windows-support-export");
 const {hasExactBuildFields, requireBuildFields, buildPathsOverlap, fileHash} = require("./build-source-inputs"), {opensslPin} = require("./build-native-openssl");
 const repo = fs.realpathSync(path.resolve(__dirname, "..")), maxInputBytes = 64 << 10, maxToolsBytes = 128 << 10, maxOutputBytes = 16 << 20;
@@ -13,8 +13,6 @@ const inputKeys = ["exportWorkspace", "hermesArchive", "workspace"], archiveKeys
 /** @typedef {{workspace:string,exportWorkspace:string,hermesArchive:{path:string,sha256:string,rootName:string,originalRoot:string}}} WindowsSupportCommandInput */
 /** @typedef {import('./build-local-native-windows-support').WindowsSupportTools} WindowsSupportTools */
 
-/** @param {string} left @param {string} right */
-function samePath(left, right) {return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;}
 /** @param {string} file @param {string} label */
 function canonicalJsonFile(file, label) {
   if (typeof file !== "string" || !path.isAbsolute(file) || path.resolve(file) !== file || /[\r\n\0]/.test(file) || buildPathsOverlap(file, repo)) {
@@ -218,9 +216,9 @@ async function buildLocalWindowsSupportCommand(input, dependencies = {}) {
       ![input.workspace, input.exportWorkspace, input.hermesArchive.path].every(file => typeof file === "string" && path.isAbsolute(file) && !/[\r\n\0]/.test(file))) {
     throw new Error("Local Windows support needs explicit workspaces, tools and the original pinned Hermes source archive");
   }
-  const relative = path.relative(input.workspace, input.exportWorkspace), reverse = path.relative(input.exportWorkspace, input.workspace),
-    separate = (/** @type {string} */ value) => path.isAbsolute(value) || value === ".." || value.startsWith(".." + path.sep);
-  if (!separate(relative) || !separate(reverse)) {throw new Error("Windows producer and selected-export workspaces must be disjoint");}
+  if (buildPathsOverlap(input.workspace, input.exportWorkspace)) {throw new Error("Windows producer and selected-export workspaces must be disjoint");}
+  // Not localBuildJobs(): the support producer fixes jobs = 2 in its Hermes/IO/OpenSSL cache
+  // fingerprints (build-local-native-windows-support.js), so MOM_BUILD_JOBS must not vary here.
   const environment = /** @type {NodeJS.ProcessEnv} */ ({...process.env, ...(dependencies.environment || {}),
       MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2", OMP_NUM_THREADS: "2"}),
     tools = (dependencies.validateTools || support.validateWindowsSupportTools)(input.tools, "win32"),
@@ -263,7 +261,7 @@ async function buildLocalWindowsSupportCommand(input, dependencies = {}) {
     exportRetirementCandidates: exported.retirementCandidates};
 }
 
-module.exports = {sourceDirectory, buildLocalWindowsSupportCommand, runLocalWindowsSupportCommandCli};
+module.exports = {buildLocalWindowsSupportCommand, runLocalWindowsSupportCommandCli};
 if (require.main === module) {
   runLocalWindowsSupportCommandCli(process.argv.slice(2)).catch(error => {
     console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1;

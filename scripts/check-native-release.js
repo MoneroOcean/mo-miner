@@ -3,6 +3,7 @@
 // Qualification driver only: it builds nothing and never treats the build receipt as a pass.
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
+const {isObject: record} = require("../helper/validate");
 const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {matchesProducerReceipt} = require("./build-release");
 const {validCiSuffix} = require("./native-ci-job");
@@ -28,8 +29,6 @@ const portableCpuAlgos = new Set(portableCpuVectors.map(definition => definition
 const gpuAlgos = new Set(hashTests.filter(definition => definition.gpu && !definition.portableOnly).map(definition => definition.job.algo));
 const portableCpuTestCount = portableCpuVectors.length + portableCpuAlgos.size * 2 + 1;
 
-/** @param {unknown} value @returns {value is Record<string, unknown>} */
-function record(value) {return typeof value === "object" && value !== null && !Array.isArray(value);}
 
 /** @param {string} value @param {string} label */
 function absoluteFile(value, label) {
@@ -977,4 +976,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = {checkNativeRelease, auditNativeRelease, checkNativeExecutable, admitCandidate, testEnvironment, suiteTimeoutMs};
+module.exports = {checkNativeRelease, auditNativeRelease, checkNativeExecutable, admitCandidate, suiteTimeoutMs};

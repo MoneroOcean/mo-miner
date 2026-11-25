@@ -12,6 +12,8 @@ const {requireLinuxSysroot, linuxSysrootRecord} = require("./native-linux-sysroo
 const repo = path.resolve(__dirname, "..");
 const hermesPins = Object.freeze({revision: "26fbb82fad39d9d06901adb1d6d630dacc84c877",
   promiseSha256: "071f4322f9dba4fa06992065bc5f1eb9b11e49c9b1b6336d31f377b3e9801184"});
+// sourceInputsCurrent is the SHA-256 of the current scripts/build-source-inputs.js: any edit to that
+// shared helper must update it, or resuming a legacy Hermes cache fails as an unrecognized baseline.
 const resumeBaseline = Object.freeze({producer: "872a5c25eeacdd0d3438d7ca2cc4d9bda961f452f5f9269d3b3b42b22a16ae2a",
   windowsSourceInputs: "cbe016232d5ca594d97f58657673723802173efbaf42f70e0c5de05aa57441f0",
   linuxSourceInputs: "74e04fdb0227950aba00b27af02065f02ab700a30bf8b807f0fd1b84dc139330",
@@ -303,7 +305,7 @@ function buildNativeHermes(input, output, tools, jobs, environment = process.env
   return result;
 }
 
-module.exports = {hermesPins, hermesRecipeFiles, hermesSdkPlan, hermesSourceFiles, validateHermesCMakeCache, validateHermesResumeMetadata,
+module.exports = {hermesPins, hermesRecipeFiles, hermesSdkPlan, hermesSourceFiles, validateHermesCMakeCache,
   validateHermesResumeCache, copyHermesSourceChanges, hermesResumeBaseline: resumeBaseline, buildNativeHermes};
 if (require.main === module) {
   try {

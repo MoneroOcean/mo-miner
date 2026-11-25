@@ -375,5 +375,4 @@ async function buildLocalNativeWindowsHostComponent(input, dependencies = {}) {
     jobs, buildOnly: true, compiled: true, executed: false, publicationQualified: false, reused: existing};
 }
 
-module.exports = {localWindowsHostComponentPaths, checkManagedRoot, prepareLocalHiprtcSource, verifyLocalHiprtcSource,
-  downloadWindowsCudart, admitWorkspaceInputs, buildLocalNativeWindowsHostComponent};
+module.exports = {localWindowsHostComponentPaths, buildLocalNativeWindowsHostComponent};

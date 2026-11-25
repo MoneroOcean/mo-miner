@@ -9,6 +9,7 @@ const ciJob = require("./native-ci-job"),
   ciWindowsLlvm = require("./native-ci-windows-llvm"),
   dpcppInputs = require("./native-dpcpp-cuda-inputs"), {hasExactBuildFields, containsBuildPath, fileHash, readBuildJson} = require("./build-source-inputs");
 const {ciSuffix} = require("./native-ci-job");
+const {boundedStepMs} = require("./ci/job");
 const {jitSdkConfig} = require("./build-native-jit-sdk"), {jitBuildStages} = require("./native-jit-stages");
 const {verifyPreparedSdkSources} = require("./prepare-native-sdk-sources");
 const {verifyJitResources} = require("./prepare-native-sycl-jit-resources");
@@ -272,24 +273,17 @@ function extractPinnedRoot(archive, rootName, sha256, base, timeoutMs, maxExpand
   if (!members.length || members.length > maxMembers) {throw new Error("Windows JIT input archive member count is outside bounds");}
   const expanded = ciTar.tarExpandedBytes(archive, members.length, Math.min(timeoutMs, 15 * 60 * 1000));
   if (expanded > maxExpanded) {throw new Error("Windows JIT input archive exceeds its expanded-size bound");}
-  ciTar.linuxNativeSdkDiskPreflight(expanded, availableBytes(base), availableBytes(path.dirname(archive)));
+  ciTar.linuxNativeSdkDiskPreflight(expanded, ciTar.availableDiskBytes(base), ciTar.availableDiskBytes(path.dirname(archive)));
   if (fs.existsSync(path.join(base, rootName))) {throw new Error("Windows JIT input root already exists: " + rootName);}
   ciTar.extractState(archive, base, [rootName], [rootName], Math.min(timeoutMs, 30 * 60 * 1000));
   stableFile(archive, sha256, maxArchiveBytes, "Windows JIT input archive");
   return path.join(base, rootName);
 }
 
-/** @param {string} directory */
-function availableBytes(directory) {
-  const stat = fs.statfsSync(directory, {bigint: true}), bytes = stat.bavail * stat.bsize;
-  return bytes > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(bytes);
-}
-
 /** @param {ReturnType<typeof windowsJitCiJobPlan>} plan @param {number} capMs @param {number} reserveMs */
 function remaining(plan, capMs, reserveMs = 60 * 1000) {
-  const end = Math.min(Number(plan.jobDeadlineEpoch) * 1000, Number(plan.runDeadlineEpoch) * 1000), timeoutMs = Math.min(capMs, end - Date.now() - reserveMs);
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000) {throw new Error("Windows JIT phase exceeded the caller's job/run deadline");}
-  return timeoutMs;
+  return boundedStepMs(Math.min(Number(plan.jobDeadlineEpoch), Number(plan.runDeadlineEpoch)) * 1000, capMs, reserveMs,
+    "Windows JIT phase exceeded the caller's job/run deadline");
 }
 
 /** @param {ReturnType<typeof windowsJitCiJobPlan>} plan @param {ReturnType<typeof validateWindowsJitConfig>} [config] */
@@ -466,7 +460,7 @@ function runWindowsJitCiJob(stage, configPath, configSha256, environment = proce
 }
 
 module.exports = {windowsJitCiJobPlan, validateWindowsJitConfig, composeWindowsJitConfig, writeWindowsJitConfig,
-  validateWindowsJitDescriptorInputs, runWindowsJitCiJob};
+  validateWindowsJitDescriptorInputs};
 
 if (require.main === module) {
   try {

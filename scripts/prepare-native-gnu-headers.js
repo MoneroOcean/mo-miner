@@ -415,7 +415,7 @@ function buildGnuHeaderHandoff(state, target, options = {}) {
 }
 
 module.exports = {prepareLinuxGnuHeaders, verifyLinuxGnuHeaders, prepareWindowsGnuHeaders, verifyWindowsGnuHeaders,
-  prepareGnuHeaders, verifyGnuHeaders, virtualHeader, installedPackages, packageCopyrightAlias, capturePackageCopyright, auditGnuHeaders,
+  prepareGnuHeaders, virtualHeader, installedPackages, packageCopyrightAlias, capturePackageCopyright, auditGnuHeaders,
   buildGnuHeaderHandoff};
 if (require.main === module) {
   try {

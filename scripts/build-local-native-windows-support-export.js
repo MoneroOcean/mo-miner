@@ -6,7 +6,7 @@ const {hasExactBuildFields, verifyBuildDirectoryEntries, buildPathsOverlap, file
 const {ioPins} = require("./build-native-io"), {opensslPin} = require("./build-native-openssl"), {hermesPins} = require("./build-native-hermes");
 const {windowsLocalControllerHandoffInputs} = require("./native-windows-controller-handoff");
 const {copyWindowsControllerPath, copyWindowsControllerIntelRuntime, windowsControllerPackageInventory} = require("./native-ci-windows-controller");
-const windowsSupport = require("./build-local-native-windows-support");
+const windowsSupport = require("./build-local-native-windows-support"), {samePath} = windowsSupport;
 const repo = fs.realpathSync(path.resolve(__dirname, "..")), uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const exportMarker = ".mom-native-windows-support-export.json", exportMarkerValue = {version: 1, format: "mom-native-windows-support-export-cache-v1", checkout: repo},
   exportRecipeFiles = ["scripts/build-local-native-windows-support-export.js", "scripts/build-local-native-windows-support.js", "scripts/build-native-windows-core.js", "scripts/native-windows-controller-handoff.js",
@@ -15,8 +15,6 @@ const exportMarker = ".mom-native-windows-support-export.json", exportMarkerValu
   sourceReceiptKeys = ["hermesFetch", "hermesRoots", "ioFetch", "opensslFetch"], maxExportGenerations = 128;
 /** @typedef {{files:Array<{path:string,bytes:number,sha256:string}>,bytes:number}} WindowsControllerFileLedger */
 
-/** @param {string} left @param {string} right */
-function samePath(left, right) {return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;}
 /** @param {string} file @param {string} label */
 function canonicalFile(file, label) {
   if (typeof file !== "string" || !path.isAbsolute(file)) {throw new Error(label + " must be an absolute canonical regular file");}

@@ -33,7 +33,7 @@ function runLinuxJitChain(environment = process.env) {
     bundle_bytes: String(Number(proofOutputs["bundle_bytes"] || ""))});
 }
 
-module.exports = {phases, phaseArchive, runLinuxJitChain};
+module.exports = {phases};
 
 if (require.main === module) {
   try {

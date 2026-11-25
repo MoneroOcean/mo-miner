@@ -63,4 +63,4 @@ function prepareNativePackingTool(output, env = process.env, spawn = spawnSync) 
   return {upx: path.join(output, "upx"), upxSha256: tool.executable.sha256};
 }
 
-module.exports = {admitPackingFile, prepareNativePackingTool};
+module.exports = {prepareNativePackingTool};

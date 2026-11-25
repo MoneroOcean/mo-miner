@@ -2,13 +2,15 @@
 
 // Shared admission for the small installed DPC++/CUDA input handoff. CI owns tar
 // transport and provisioning; local and CI callers use this same producer/auditor.
-const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {createHash} = require("node:crypto");
+const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
 const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {capturePackageCopyright} = require("./prepare-native-gnu-headers");
 const {pins: dpcppPins, sdkIdentity: dpcppSdkIdentity} = require("./native-dpcpp-pins");
 const {sdkSourceFiles} = require("./prepare-native-sdk-sources");
 const {isStaticArchive} = require("./native-audit");
+const {canonicalExecutable, jsonHash} = require("./native-ci-job");
+const {safeRelative} = require("./native-ci-tar");
 
 const repo = path.resolve(__dirname, "..");
 const cudaPackageNames = ["cuda-cudart-12-6", "cuda-cudart-dev-12-6", "cuda-nvml-dev-12-6"];
@@ -19,23 +21,6 @@ const cudaPackageNames = ["cuda-cudart-12-6", "cuda-cudart-dev-12-6", "cuda-nvml
 /** @typedef {{kind:"prepared-receipts",workspaceRoot:string,fetchReceipt:{path:string,sha256:string},linuxPreparation:{path:string,sha256:string},
  * compilerPreparation:{path:string,sha256:string}}} PreparedDpcppCudaSourceOrigin */
 /** @typedef {string|{kind:"source-tar",sha256:string}|PreparedDpcppCudaSourceOrigin} DpcppCudaSourceOrigin */
-
-/** @param {string} value */
-function jsonHash(value) {return createHash("sha256").update(value).digest("hex");}
-
-/** @param {string} name */
-function safeRelative(name) {
-  return typeof name === "string" && name.length > 0 && name.length <= 4096 && !name.startsWith("/") &&
-    !name.includes("\\") && !/[\r\n\0]/.test(name) && name.split("/").every(part => part && part !== "." && part !== "..");
-}
-
-/** @param {string} file */
-function canonicalExecutable(file) {
-  const selected = fs.realpathSync(file), stat = fs.statSync(selected);
-  if (!stat.isFile()) {throw new Error("Missing native CI executable: " + file);}
-  fs.accessSync(selected, fs.constants.X_OK);
-  return selected;
-}
 
 /** Stage the SDK without changing its compiler alias chain. Selected-input admission
  * still rejects aliases that escape the staged root.
@@ -464,5 +449,5 @@ function stageDpcppCudaInputs(state, installedRoots, sourceOrigin, environment) 
 }
 
 module.exports = {cudaPackageNames, copyDpcppBuildInputs, copyCudaBuildInputs, auditCudaPackageCopyrights,
-  cudaToolkitProbeCMakeLists, probeCudaToolkit, inputFileRecord, preparedDpcppCudaSourceOrigin, dpcppCudaInputsManifest,
+  cudaToolkitProbeCMakeLists, probeCudaToolkit, preparedDpcppCudaSourceOrigin, dpcppCudaInputsManifest,
   auditDpcppCudaInputs, cudaToolkitProbeRoot, stageDpcppCudaInputs};

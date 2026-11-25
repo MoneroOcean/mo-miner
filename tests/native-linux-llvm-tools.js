@@ -7,7 +7,7 @@ const {fileHash, sourceInputs} = require("../scripts/build-source-inputs"),
 const {windowsLlvmSdkPlan} = require("../scripts/build-native-windows-llvm-sdk"), {archiveName} = require("../scripts/native-llvm-sdk");
 
 const recipeFiles = ["scripts/native-linux-llvm-tools.js", "scripts/build-native-llvm-sdk.js", "scripts/native-llvm-sdk.js",
-  "scripts/native-audit.js", "scripts/build-source-inputs.js"];
+  "scripts/native-audit.js", "scripts/build-source-inputs.js", "scripts/native-ci-tar.js"];
 const toolFiles = ["bin/lld", "bin/llvm-nm", "bin/llvm-ar", "bin/llvm-readobj", "bin/llvm-objcopy",
   "bin/llvm-rc", "bin/llvm-ml", "bin/llvm-tblgen", "bin/clang-tblgen"];
 const aliases = {"bin/lld-link": "lld", "bin/llvm-lib": "llvm-ar", "bin/llvm-ranlib": "llvm-ar"};

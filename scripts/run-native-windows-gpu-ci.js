@@ -9,8 +9,9 @@ const ciJob = require("./native-ci-job"),
   ciTar = require("./native-ci-tar"),
   ciWindowsGpu = require("./native-ci-windows-gpu"),
   ciWindowsLlvm = require("./native-ci-windows-llvm"),
-  dpcppInputs = require("./native-dpcpp-cuda-inputs"), {fileHash, readBuildJson, readBuildJsonSnapshot} = require("./build-source-inputs");
+  dpcppInputs = require("./native-dpcpp-cuda-inputs"), {readBuildJson, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {sdkComponents} = require("./prepare-native-sdk-sources");
+const {boundedStepMs} = require("./ci/job");
 const {linuxLlvmToolHandoffInputs, linuxLlvmAcppFrontendInputs} = require("./native-linux-llvm-tools");
 const {windowsNativeGpuConfig, windowsNativeAcppGpuConfig} = require("./native-windows-gpu-config");
 // Reserve the producer's five-minute build minimum, seven-minute pack budget and admission margin.
@@ -133,26 +134,15 @@ function windowsGpuCiJobPreflight(profile) {
     ...(plan.acpp ? [[plan.acpp.sourceTar, plan.pins["ACPP_SOURCE_BUNDLE"] || ""],
       [plan.acpp.sdkTar, plan.pins["ACPP_SDK_BUNDLE"] || ""], [plan.acpp.frontendTar, plan.pins["FRONTEND_BUNDLE"] || ""]] : [])]);
   if (plan.hipHeaders) {archives.push([plan.hipHeaders.archive, plan.pins["HIP_HEADERS_BUNDLE"] || ""]);}
-  for (const [file, pin] of archives) {pinnedArchive(file, pin);}
-  if (plan.cudaImages) {pinnedArchive(plan.cudaImages.archive, plan.cudaImages.bundleSha256);}
+  for (const [file, pin] of archives) {ciTar.admitPinnedArchive(file, pin);}
+  if (plan.cudaImages) {ciTar.admitPinnedArchive(plan.cudaImages.archive, plan.cudaImages.bundleSha256);}
   return plan;
-}
-
-/** @param {string} file @param {string} expected */
-function pinnedArchive(file, expected) {
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || fs.realpathSync(file) !== file ||
-      /[\r\n\0]/.test(file) || stat.size < 1 || stat.size > 16 * 1024 ** 3 || fileHash(file) !== expected) {
-    throw new Error("Windows GPU input archive differs from its external pin: " + path.basename(file));
-  }
 }
 
 /** Keep every subprocess and restore within the original job deadline.
  * @param {ReturnType<typeof windowsGpuCiJobPlan>} plan @param {number} capMs @param {number} [reserveMs] */
 function remaining(plan, capMs, reserveMs = 60000) {
-  const ms = Math.min(capMs, Number(plan.deadlineEpoch) * 1000 - Date.now() - reserveMs);
-  if (!Number.isSafeInteger(ms) || ms < 1000) {throw new Error("Windows GPU input preparation exhausted its job deadline");}
-  return ms;
+  return boundedStepMs(Number(plan.deadlineEpoch) * 1000, capMs, reserveMs, "Windows GPU input preparation exhausted its job deadline");
 }
 
 /** Bind SDK metadata to the just-finished producer, not a new self-attested hash.
@@ -190,18 +180,12 @@ function admitWindowsGpuDpcppInputs(state, manifestSha256, sourceSha256) {
   return dpcppInputs.auditDpcppCudaInputs(state, manifest, manifestSha256);
 }
 
-/** Restore one exact top-level cohort and keep a four-GiB disk reserve without keeping two copies.
+/** Restore one exact top-level cohort within the job deadline; only the four-GiB disk reserve
+ * bounds its size (see restorePinnedState).
  * @param {ReturnType<typeof windowsGpuCiJobPlan>} plan @param {string} archive @param {string} pin
  * @param {string} destination @param {string} root */
 function restore(plan, archive, pin, destination, root) {
-  pinnedArchive(archive, pin);
-  const members = ciTar.listState(archive, [root], remaining(plan, 5 * 60 * 1000)),
-    expanded = ciTar.tarExpandedBytes(archive, members.length, remaining(plan, 5 * 60 * 1000)),
-    space = fs.statfsSync(destination, {bigint: true});
-  if (BigInt(expanded) + 4n * 1024n ** 3n > space.bavail * space.bsize) {
-    throw new Error("Windows GPU input restore would consume its four-GiB disk reserve");
-  }
-  ciTar.extractState(archive, destination, [root], [root], remaining(plan, 10 * 60 * 1000));
+  ciTar.restorePinnedState(archive, pin, [root], destination, Number.POSITIVE_INFINITY, capMs => remaining(plan, capMs));
 }
 
 /** Run one existing factory producer; no runtime or hardware test is performed.

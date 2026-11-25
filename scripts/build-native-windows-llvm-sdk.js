@@ -52,17 +52,37 @@ const buildPhases = Object.freeze([
  * @param {unknown} value @returns {value is string} */
 const literal = value => typeof value === "string" && value.length <= 4096 && path.isAbsolute(value) &&
   !/[;"$`\\]/.test(value) && !Array.from(value).some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
-/** @param {string} value */
-const cmake = value => {
+/** Quote one value as a CMake bracket argument whose `=` run is longer than any `]=*]` inside it,
+ * so the value can never close the bracket early. Shared with the COMGR and ACPP producers.
+ * @param {string} value */
+function cmake(value) {
   if (typeof value !== "string" || value.length > 65536 || /[\r\n\0]/.test(value)) {
-    throw new Error("Windows LLVM CMake values must be bounded literal strings");
+    throw new Error("Windows CMake values must be bounded literal strings");
   }
   let equals = "==";
   for (const match of value.matchAll(/\](=*)\]/g)) {
     if (match[1] !== undefined && match[1].length >= equals.length) {equals = "=".repeat(match[1].length + 1);}
   }
   return "[" + equals + "[" + value + "]" + equals + "]";
-};
+}
+
+/** `NAME:TYPE=value` entries of a CMakeCache.txt; comments and blank lines are skipped and a
+ * repeated name keeps its last value. @param {string} text */
+function cmakeCacheValues(text) {
+  const values = new Map();
+  for (const line of text.split(/\r?\n/)) {
+    const entry = line.match(/^([^/#][^:]*):[^=]*=(.*)$/);
+    if (entry) {values.set(entry[1], entry[2]);}
+  }
+  return values;
+}
+
+/** Upper-cased `/switch` and `-switch` tokens of a compile command, for runtime-library audits.
+ * @param {string} command */
+function commandSwitches(command) {
+  return [...command.matchAll(/(?:^|[\s"])(\/(?:[A-Za-z][A-Za-z0-9_:+.=-]*)|-[A-Za-z][A-Za-z0-9_:+.=-]*)(?=[\s"]|$)/g)]
+    .map(match => (match[1] || "").toUpperCase());
+}
 
 /** Check each existing cache path component without following symlinks out of the Ninja tree.
  * @param {string} build @param {string} file @param {"file" | "directory"} finalKind @param {boolean} [optional] */
@@ -571,11 +591,7 @@ function verifyIntelCompilerIdentity(build) {
 
 /** @param {string} build @param {ReturnType<typeof windowsLlvmSdkPlan>} plan */
 function verifyCMakeCache(build, plan) {
-  const file = path.join(build, "CMakeCache.txt"), text = readBuildText(file, 2 << 20), values = new Map();
-  for (const line of text.split(/\r?\n/)) {
-    const entry = line.match(/^([^/#][^:]*):[^=]*=(.*)$/);
-    if (entry) {values.set(entry[1], entry[2]);}
-  }
+  const file = path.join(build, "CMakeCache.txt"), values = cmakeCacheValues(readBuildText(file, 2 << 20));
   const expected = {CMAKE_C_COMPILER: plan.compilerTools.CMAKE_C_COMPILER, CMAKE_CXX_COMPILER: plan.compilerTools.CMAKE_CXX_COMPILER,
     CMAKE_LINKER: plan.compilerTools.CMAKE_LINKER, CMAKE_AR: plan.compilerTools.CMAKE_AR, CMAKE_RANLIB: plan.compilerTools.CMAKE_RANLIB,
     CMAKE_MAKE_PROGRAM: plan.tools.ninja, CMAKE_BUILD_TYPE: "MinSizeRel", CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreaded",
@@ -1133,10 +1149,10 @@ function verifyWindowsLlvmAdmission(output, environment = process.env) {
   return {receipt, admission, receiptFile, admissionFile, objectsFile};
 }
 
-module.exports = {archiveSha256, buildPhases, windowsLlvmSdkPlan, llvmSourceSnapshot, verifyArchiveCatalog,
+module.exports = {archiveSha256, buildPhases, cmake, cmakeCacheValues, commandSwitches, windowsLlvmSdkPlan, llvmSourceSnapshot, verifyArchiveCatalog,
   llvmStaticArchiveTargets, verifyBuildPhases, auditCompileCommands, verifyIntelCompilerIdentity, verifyCMakeCache,
   configureWindowsLlvmSdk, buildWindowsLlvmSdk, auditWindowsLlvmAdmission,
-  windowsLlvmSdkInputFiles, windowsLlvmConfiguredInputFiles, windowsLlvmConfiguredFiles,
+  windowsLlvmConfiguredInputFiles, windowsLlvmConfiguredFiles,
   verifyWindowsLlvmCompileCommands, verifyWindowsLlvmAdmission};
 
 if (require.main === module) {

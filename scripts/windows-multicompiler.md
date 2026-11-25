@@ -21,8 +21,9 @@ The safe ordinary default is `GPU_GROUP=intel`. Set
 `GPU_GROUP=intel|arc|nvidia|amd` for a single cold-present vendor; `arc` is an alias for `intel`.
 For provisioning,
 packaging, cleanup, and other work that does not execute GPU code, use
-`GPU_GROUP=none` and the VM's virtio display. `GPU_GROUP=all` remains an explicit
-diagnostic mode rather than the default.
+`GPU_GROUP=none` and the VM's virtio display. `GPU_GROUP=discrete` passes the NVIDIA and AMD
+cards through together for the mixed-vendor `-Suite gpu-multi` release test. `GPU_GROUP=all`
+remains an explicit diagnostic mode rather than the default.
 
 The host helper owns the awkward hardware details: dGPUs live on a private desktop seat, passthrough
 uses `managed=no`, and the all-GPU boot temporarily presents the NVIDIA card with an 8 GiB BAR1 so
@@ -94,11 +95,16 @@ GPU_GROUP=nvidia ~/win/run.sh --release --download build/win-package -- \
 GPU_GROUP=amd ~/win/run.sh --release --download build/win-package -- \
   powershell -NoProfile -ExecutionPolicy Bypass -File \
   scripts/test-release-windows.ps1 -Archive build/win-package/mom-v$VERSION-win.zip -Suite gpu
+GPU_GROUP=discrete ~/win/run.sh --release --download build/win-package -- \
+  env MOM_GPU_BACKEND=nvidia MOM_GPU_TEST_VENDORS=nvidia,amd \
+  powershell -NoProfile -ExecutionPolicy Bypass -File \
+  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v$VERSION-win.zip -Suite gpu-multi
 ```
 
 Run the build and packaging commands in the development VM. The release VM is runtime-only and is
 for testing the resulting archive. Use `-Suite cpu` and `-Suite gpu-portable-cpu` without a passed
-through GPU, then `-Suite gpu` once for each Intel, NVIDIA, and AMD passthrough group. The package
+through GPU, then `-Suite gpu` once for each Intel, NVIDIA, and AMD passthrough group, and
+`-Suite gpu-multi` with the `discrete` group for concurrent NVIDIA and AMD workers. The package
 test checks the archive layout, launcher, bundled dependencies, CPU paths, and selected GPU vectors.
 
 The output is deliberately isolated:

@@ -165,5 +165,5 @@ if (require.main === module) {
   } catch (error) {console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1;}
 }
 
-module.exports = {localCudaImagePaths, localCudaImageRecipe, verifyLocalCudaCompilerInputs,
+module.exports = {localCudaImagePaths, verifyLocalCudaCompilerInputs,
   verifyLocalCudaHeaderRoots, auditLocalCudaImages, runLocalCudaImageChild, buildLocalCudaImages};

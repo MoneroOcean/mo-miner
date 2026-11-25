@@ -494,7 +494,8 @@ object and the second must validate and reuse the same cohort.
   (`scripts/ci/linux-jit.js`), Windows LLVM (`scripts/ci/windows-llvm.js`) and Windows source-JIT
   (`scripts/ci/windows-jit.js`). Chain drivers (`scripts/ci/chain.js`) keep each phase's pinned state
   handoff, fresh-root admission and 55-minute deadline but pass state locally instead of through
-  artifacts. Other producers are short jobs with 55-minute internal deadlines.
+  artifacts. Other producers are 30- or 60-minute jobs whose internal deadline is that
+  `MOM_CI_DEADLINE_EPOCH`, five minutes before the timeout.
 - Heavy producers run under `scripts/run-bounded-native-ci.sh` (a swap-free 12-GiB scope sized for
   four build jobs on a 16 GB runner).
 - Work roots and artifact names carry the fixed suffix `MOM_NATIVE_CI_SUFFIX=ci` instead of a run id,

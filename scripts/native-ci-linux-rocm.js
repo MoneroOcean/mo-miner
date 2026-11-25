@@ -3,8 +3,8 @@
 // Native CI ROCm sources, COMGR/HIP-header and host SDKs, and the ACPP CUDA/HIP SDK.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {createHash} = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
-const {canonicalExecutable, ciBuildJobs, hasExactKeys, runNode} = require("./native-ci-job");
-const {containsBuildPath, fileHash, readBuildJson, readBuildJsonSnapshot, readBuildText, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
+const {canonicalExecutable, ciBuildJobs, runNode} = require("./native-ci-job");
+const {hasExactBuildFields, containsBuildPath, fileHash, readBuildJson, readBuildJsonSnapshot, readBuildText, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {gitSourceComponents} = require("./fetch-native-sdk-sources");
 const {capturePackageCopyright} = require("./prepare-native-gnu-headers");
 const {sdkSourceEnvironment} = require("./build-environment");
@@ -647,18 +647,18 @@ function rocmHostNoticeRows(record) {
   const packageInputs = /** @type {Array<[RocmNoticeKey,string]>} */ ([["drm", "libdrm-dev"], ["drmAmdgpu", "libdrm-dev"],
       ["elf", "libelf-dev"], ["numa", "libnuma-dev"]]), producer = require("./build-native-rocm-host-runtime");
   if (!record || !record.osOrigins || !record.stagedDependencies || !record.sourceArchives || !record.sources?.files ||
-      !hasExactKeys(record.osOrigins, packageInputs.map(([key]) => key)) ||
-      !hasExactKeys(record.stagedDependencies, packageInputs.map(([key]) => key))) {
+      !hasExactBuildFields(record.osOrigins, packageInputs.map(([key]) => key)) ||
+      !hasExactBuildFields(record.stagedDependencies, packageInputs.map(([key]) => key))) {
     throw new Error("ROCm notice sources require the complete admitted static package-origin set");
   }
   /** @type {Map<string,RocmNoticePackageOrigin>} */ const grouped = new Map();
   for (const [key, packageName] of packageInputs) {
     const origin = record.osOrigins[key], staged = record.stagedDependencies[key];
-    if (!origin || !staged || !hasExactKeys(origin, ["path", "sha256", "package", "architecture", "version", "status"]) ||
+    if (!origin || !staged || !hasExactBuildFields(origin, ["path", "sha256", "package", "architecture", "version", "status"]) ||
         origin.package !== producer.packageOwners[key] || origin.architecture !== "amd64" ||
         origin.status !== (origin.package === "libdrm" ? "source" : "sysroot") ||
         !path.isAbsolute(origin.path) || !/^[a-f0-9]{64}$/.test(origin.sha256 || "") || typeof origin.version !== "string" || !origin.version ||
-        !hasExactKeys(staged, ["path", "sha256", "package", "architecture", "version", "status", "staged", "stagedSha256"])) {
+        !hasExactBuildFields(staged, ["path", "sha256", "package", "architecture", "version", "status", "staged", "stagedSha256"])) {
       throw new Error("ROCm static archive origin is not bound to its installed package: " + key);
     }
     const {staged: stagedPath, stagedSha256, ...stagedOrigin} = staged;
@@ -730,7 +730,7 @@ function auditRocmHostNoticeSources(state) {
   const {value: parsedRecord, sha256: receiptHash} = readBuildJsonSnapshot(recordFile),
     record = /** @type {RocmNoticeReceipt} */ (parsedRecord),
     manifest = /** @type {RocmNoticeManifest} */ (readBuildJson(manifestFile)), expectedPackages = rocmHostNoticeRows(record);
-  if (!hasExactKeys(manifest, ["format", "completeNativeNotices", "runtimeReceipt", "packages", "sourceLicense"]) ||
+  if (!hasExactBuildFields(manifest, ["format", "completeNativeNotices", "runtimeReceipt", "packages", "sourceLicense"]) ||
       manifest.format !== "mom-linux-rocm-notice-sources-v1" || manifest.completeNativeNotices !== false ||
       !isDeepStrictEqual(manifest.runtimeReceipt, {file: "runtime/result.json", sha256: receiptHash}) ||
       !Array.isArray(manifest.packages) || manifest.packages.length !== expectedPackages.length) {
@@ -741,7 +741,7 @@ function auditRocmHostNoticeSources(state) {
     if (!expected) {throw new Error("ROCm package copyright body is absent from its package-origin receipt");}
     const file = path.join(state.hostSdkRoot, "licenses", expected.package, "copyright"), stat = fs.lstatSync(file, {throwIfNoEntry: false});
     if (!stat?.isFile() || stat.isSymbolicLink() || fs.realpathSync(file) !== file || stat.size < 1 || stat.size > (2 << 20) ||
-        !hasExactKeys(row, ["package", "version", "architecture", "sourcePath", "archives", "file", "sha256", "bytes"]) ||
+        !hasExactBuildFields(row, ["package", "version", "architecture", "sourcePath", "archives", "file", "sha256", "bytes"]) ||
         row.package !== expected.package || row.version !== expected.version || row.architecture !== expected.architecture ||
         row.sourcePath !== expected.sourcePath || !isDeepStrictEqual(row.archives, expected.archives) ||
         row.file !== "licenses/" + expected.package + "/copyright" || row.bytes !== stat.size ||
@@ -753,7 +753,7 @@ function auditRocmHostNoticeSources(state) {
   });
   const relative = "source/rocr/libhsakmt/LICENSE.md", sourceFile = path.join(state.runtimeOutput, relative), sourceArchive = record.sourceArchives?.["rocr"],
     source = manifest.sourceLicense, sourceSha256 = record.sources?.files?.[relative];
-  if (!hasExactKeys(source, ["component", "file", "sha256", "bytes", "sourceArchive", "revision"]) ||
+  if (!hasExactBuildFields(source, ["component", "file", "sha256", "bytes", "sourceArchive", "revision"]) ||
       source.component !== "hsakmt-staticdrm" || source.file !== "runtime/" + relative || source.sha256 !== sourceSha256 ||
       source.revision !== record.pins?.rocr || !sourceArchive || !isDeepStrictEqual(source.sourceArchive,
     {name: "rocr", sha256: sourceArchive.sha256}) || !/^[a-f0-9]{64}$/.test(sourceSha256 || "") ||
@@ -801,9 +801,9 @@ function buildRocmHostSdk(paths) {
   console.log("[native-ci] ROCm host SDK admitted: " + admitted.sdk.libraries.length + " libraries, CPU-only build-only; no runtime or release qualification.");
 }
 
-module.exports = {acppCudaHipSdkBuildCommand, acppCudaHipSdkStatePaths, admitRocmParserInstallation, applyRocmHipHeadersPatch,
+module.exports = {acppCudaHipSdkBuildCommand, acppCudaHipSdkStatePaths, admitRocmParserInstallation,
   assembleRocmHipHeaders, assertAcppCudaHipSdk, auditAcppCudaHipSdk, auditRocmComgrSdk, auditRocmHostNoticeSources,
   auditRocmHostSdk, buildAcppCudaHipSdk, buildRocmComgrFromInputs, buildRocmComgrSdk, buildRocmHostSdk,
-  captureRocmHostNoticeSources, exportRocmSourceTree, hipHeaderConfigureCommand, installRocmParserSource,
+  hipHeaderConfigureCommand, installRocmParserSource,
   prepareRocmHostAdmission, provisionRocmHostPackages, rocmClrHipamdTreeish, rocmComgrBuildCommands, rocmComgrStatePaths,
   rocmHostBuildConfig, rocmHostBuildTools, rocmHostNoticeRows, rocmHostStatePaths, rocmResourcesConfig, buildLibdrmSdk};

@@ -124,7 +124,7 @@ function runWindowsJitChain(environment = process.env) {
   }
 }
 
-module.exports = {phases, hostSdkDeadline, composeWindowsJitInputs, phaseEnvironment, runWindowsJitChain};
+module.exports = {phases, hostSdkDeadline, phaseEnvironment};
 
 if (require.main === module) {
   try {

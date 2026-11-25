@@ -414,6 +414,6 @@ function buildLocalNativeWindowsSupport(options, dependencies = {}) {
       hermes: managedOutputCandidates(paths.hermes, plan.hermes.output), core: managedCoreCandidates(paths.coreRuns, coreOutput)}, plan};
 }
 
-module.exports = {windowsSupportPaths, validateWindowsSupportTools, windowsSupportPlan, admitWindowsSupportWorkspace,
+module.exports = {samePath, validateWindowsSupportTools, windowsSupportPlan, admitWindowsSupportWorkspace,
   admitIoOutput, admitOpenSslOutput, admitHermesOutput, managedOutputCandidates, managedCoreCandidates, retireManagedOutputs,
   buildLocalNativeWindowsSupport};

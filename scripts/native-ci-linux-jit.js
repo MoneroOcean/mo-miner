@@ -12,7 +12,7 @@ const {dpcppEntries, compilerArchives: jitCompilerArchives} = require("./native-
 const {dpcppComponentInputs} = require("./native-dpcpp-component");
 const {REQUIRED: jitBaseRequired, pinnedCommitDate} = require("./prepare-native-jit-base");
 const {resourceTarget, verifyJitResources} = require("./prepare-native-sycl-jit-resources");
-const {appendWorkflowOutputs, canonicalExecutable, hasExactKeys, runNode} = require("./native-ci-job");
+const {appendWorkflowOutputs, canonicalExecutable, runNode} = require("./native-ci-job");
 const {extractState, listState, packState, safeRelative, temp} = require("./native-ci-tar");
 const {dpcppCudaInputPins, dpcppCudaInputsStatePaths, dpcppSourceArchivePin, gnuHeadersStatePaths, linuxSourceStatePaths,
   provisionOneApi, verifyLinuxSources} = require("./native-ci-linux-sources");
@@ -369,7 +369,7 @@ function linuxJitSdkArtifactPhase(phase) {
 function linuxJitSdkInputManifest(state, resourceRecord, archiveHashes) {
   if (!resourceRecord || typeof resourceRecord !== "object" || Array.isArray(resourceRecord) ||
       !Array.isArray(Reflect.get(resourceRecord, "inputArchives")) ||
-      !hasExactKeys(archiveHashes, state.inputTars.map(row => row.file))) {
+      !hasExactBuildFields(archiveHashes, state.inputTars.map(row => row.file))) {
     throw new Error("Linux source-JIT SDK inputs omit the original same-run archive proof");
   }
   const archives = state.inputTars.map(row => {
@@ -378,7 +378,7 @@ function linuxJitSdkInputManifest(state, resourceRecord, archiveHashes) {
       return {role: row.role, name: path.basename(row.file), root: row.root, sha256};
     }), original = Reflect.get(resourceRecord, "inputArchives");
   if (original.length !== 3 || original.some((/** @type {unknown} */ value, /** @type {number} */ index) =>
-    !hasExactKeys(value, ["role", "name", "root", "sha256"]) || !isDeepStrictEqual(value, archives[index]))) {
+    !hasExactBuildFields(value, ["role", "name", "root", "sha256"]) || !isDeepStrictEqual(value, archives[index]))) {
     throw new Error("JIT resource receipt does not bind the exact three immutable input tars");
   }
   return {version: 1, run: state.resources.linux.sourceName.slice("mom-native-linux-source-prerequisites-".length), archives};
@@ -389,7 +389,7 @@ function linuxJitSdkInputManifest(state, resourceRecord, archiveHashes) {
  * @param {{cmake:string,ninja:string,cc:string,cxx:string}} tools */
 function linuxJitSdkBuildPlan(state, phase, tools) {
   const phases = ["configure", ...jitBuildStages, "static-dpcpp"], index = phases.indexOf(phase);
-  if (index < 0 || !hasExactKeys(tools, ["cc", "cmake", "cxx", "ninja"]) ||
+  if (index < 0 || !hasExactBuildFields(tools, ["cc", "cmake", "cxx", "ninja"]) ||
       Object.values(tools).some(file => typeof file !== "string" || !path.isAbsolute(file) || /[\r\n\0]/.test(file))) {
     throw new Error("Linux source-JIT CI needs an existing producer phase and four explicit tools");
   }
@@ -717,7 +717,7 @@ function buildLinuxJitStaticSdk(paths) {
 }
 
 module.exports = {admitLinuxJitRuntimeProof, assertLinuxJitResourceManifest, auditLinuxJitBootstrapOverlay,
-  auditLinuxJitCompilerState, auditLinuxJitResourceTree, auditLinuxJitSdkConfigureArtifacts, auditLinuxJitSdkState,
+  auditLinuxJitCompilerState, auditLinuxJitResourceTree, auditLinuxJitSdkConfigureArtifacts,
   buildLinuxJitResourceTree, buildLinuxJitResources, buildLinuxJitSdkPhase, buildLinuxJitStaticSdk, extractLinuxJitRuntimeProof,
   linuxJitBootstrapOverlayPlan, linuxJitResourceBuildPlan, linuxJitResourceProfile, linuxJitResourcesStatePaths,
   linuxJitRuntimeProofPaths, linuxJitSdkArtifactPhase, linuxJitSdkBuildPlan, linuxJitSdkInputManifest, linuxJitSdkStatePaths,

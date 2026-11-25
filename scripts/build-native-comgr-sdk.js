@@ -17,7 +17,7 @@ const {requireLinuxSysroot, linuxSysrootRecord} = require("./native-linux-sysroo
  * @param {string} output @param {number} jobs @param {{cc: string, cxx: string}} [selectedHostCompilers] */
 function comgrSdkPlan(source, llvm, lld, device, output, jobs, selectedHostCompilers) {
   if (![source, llvm, lld, device, output].every(absolutePath) || !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {
-    throw new Error("Native COMGR needs absolute source/SDK/output roots and jobs in1..16");
+    throw new Error("Native COMGR needs absolute source/SDK/output roots and jobs in 1..16");
   }
   const hostCompilers = selectHostCompilers(llvm, selectedHostCompilers), repo = path.resolve(__dirname, "..");
   for (const input of [source, llvm, lld, device, repo, ...Object.values(hostCompilers)]) {
@@ -78,7 +78,7 @@ function comgrDependencies(build, entries) {
  * @param {string} output @param {NodeJS.ProcessEnv} [environment] @param {{cc: string, cxx: string}} [selectedHostCompilers] */
 function buildComgrSdk(source, llvm, lld, device, output, environment = process.env, selectedHostCompilers) {
   if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {
-    throw new Error("Native COMGR compilation requires Linuxx64 and MOM_AOT_BUILD_ONLY=1");
+    throw new Error("Native COMGR compilation requires Linux x64 and MOM_AOT_BUILD_ONLY=1");
   }
   if (!absolutePath(output) || fs.existsSync(output)) {throw new Error("Select a new COMGR output; existing SDKs/evidence are never overwritten");}
   // Resolve aliases before the containment check; an output-parent symlink cannot enter an SDK.
@@ -108,7 +108,7 @@ function buildComgrSdk(source, llvm, lld, device, output, environment = process.
   const [selectedSource = "", selectedLlvm = "", selectedLld = "", selectedDevice = ""] = roots;
   if (query("git", ["--no-optional-locks", "-C", selectedSource, "rev-parse", revision + "^{commit}"], "revision") !== revision) {throw new Error("Missing pinned COMGR Git revision");}
   const version = query(path.join(selectedLlvm, "bin/llvm-config"), ["--version"], "llvm-version");
-  if (version !== "21.1.8") {throw new Error("Native COMGR requires the matching reviewed LLVM/Clang21.1.8 SDK");}
+  if (version !== "21.1.8") {throw new Error("Native COMGR requires the matching reviewed LLVM/Clang 21.1.8 SDK");}
   const clangVersion = query(path.join(selectedLlvm, "bin/clang"), ["--version"], "clang-version");
   if (!/\bclang version 21\.1\.8\b/.test(clangVersion)) {throw new Error("COMGR Clang version differs from its selected LLVM SDK");}
   const {inputs: hostCompilerInputs, versions: compilerVersions} = hostCompilerEvidence(plan.hostCompilers, query);

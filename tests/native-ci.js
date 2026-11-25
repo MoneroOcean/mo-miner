@@ -9,11 +9,11 @@ const {createHash} = require("node:crypto");
 const test = require("node:test");
 const vm = require("node:vm");
 const {verifyLinuxCudaImageLinkInputs} = require("../scripts/native-ci-linux-release");
-const {extractState, packState, listState, safeRelative, tarExpandedBytes, linuxNativeSdkDiskPreflight} = require("../scripts/native-ci-tar"),
+const {extractState, packState, listState, restorePinnedState, safeRelative, tarExpandedBytes, linuxNativeSdkDiskPreflight} = require("../scripts/native-ci-tar"),
   {ciPaths, hermesStatePaths, assertHermesFetchProvenance, acppStatePaths, assertAcppFetchProvenance, assertAcppPreparedSource, linuxSourceStatePaths, assertSdkFetchProvenance, assertPreparedSdkPaths, linuxSourceFetchArgs, linuxSourcePreparationPlan, rocmParserSource, assertRocmParserReceipt, verifyRocmParserSource, rocmSourceStatePaths, rocmSourceFetchArgs, dpcppCudaInputsStatePaths, dpcppSourceArchivePin, dpcppCudaInputPins, gnuHeadersStatePaths, buildWindowsGnuHeaders, zstdStatePaths, openmpStatePaths} = require("../scripts/native-ci-linux-sources"),
   {admitLinuxLlvmOutput, linuxLlvmConfigureCommand} = require("../scripts/native-ci-linux-llvm"),
   {ioFinalTar, ioOpenSslBuildCommands, hermesBuildCommand, assertHermesSdkFingerprints, zstdBuildCommand, auditZstdSdk, openmpBuildCommand} = require("../scripts/native-ci-linux-support"),
-  {ioOpenSslChildTimeout, linuxNativeComponentChildTimeout} = require("../scripts/native-ci-job"),
+  {ioOpenSslChildTimeout} = require("../scripts/native-ci-job"), {boundedStepMs} = require("../scripts/ci/job"),
   {rocmComgrStatePaths, rocmHostStatePaths, rocmHostBuildConfig, rocmResourcesConfig, rocmComgrBuildCommands, buildRocmComgrFromInputs, rocmClrHipamdTreeish, assembleRocmHipHeaders, hipHeaderConfigureCommand, provisionRocmHostPackages, admitRocmParserInstallation, rocmHostNoticeRows, auditRocmHostNoticeSources, acppCudaHipSdkStatePaths, acppCudaHipSdkBuildCommand, assertAcppCudaHipSdk, buildAcppCudaHipSdk} = require("../scripts/native-ci-linux-rocm"),
   {copyDpcppBuildInputs, copyCudaBuildInputs, cudaToolkitProbeCMakeLists, cudaToolkitProbeRoot, probeCudaToolkit, preparedDpcppCudaSourceOrigin, dpcppCudaInputsManifest, auditDpcppCudaInputs} = require("../scripts/native-dpcpp-cuda-inputs"),
   {auditGnuHeaders, capturePackageCopyright} = require("../scripts/prepare-native-gnu-headers"),
@@ -77,7 +77,10 @@ test.describe("Native release runtime workflow", () => {
     assert.throws(() => admitCandidate({...environment, NATIVE_PLATFORM: mismatchedPlatform}), /match this Linux\/Windows x64 runner/,
       "the pre-download gate rejects a target that does not match the current runner");
 
-    const output = path.join(temp, "github-output"), cli = spawnSync(process.execPath, ["scripts/ci/runtime-input.js", "candidate"],
+    // The runner creates GITHUB_OUTPUT before every step; the shared writer only appends to it.
+    const output = path.join(temp, "github-output");
+    fs.writeFileSync(output, "");
+    const cli = spawnSync(process.execPath, ["scripts/ci/runtime-input.js", "candidate"],
       {cwd: root, env: {...process.env, ...environment, GITHUB_OUTPUT: output}, encoding: "utf8", timeout: 10000, windowsHide: true});
     assert.equal(cli.status, 0, cli.stderr || cli.stdout);
     assert.equal(fs.readFileSync(output, "utf8"), `artifact_name=native-${artifactPlatform}-executable-ci-123456-2\n` +
@@ -326,7 +329,7 @@ setInterval(() => {}, 1000);
     t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
     const archive = path.join(directory, "sdk.tar"), result = path.join(directory, "result.json"), output = path.join(directory, "github-output"),
       env = {GITHUB_OUTPUT: output};
-    fs.writeFileSync(archive, "Hermes fixture\n"); fs.writeFileSync(result, "{}\n");
+    fs.writeFileSync(archive, "Hermes fixture\n"); fs.writeFileSync(result, "{}\n"); fs.writeFileSync(output, "");
     seal(["bundle_sha256=" + archive, "windows_result_sha256=" + result], env);
     const sealed = "bundle_sha256=" + fileHash(archive) + "\nwindows_result_sha256=" + fileHash(result) + "\n";
     assert.equal(fs.readFileSync(output, "utf8"), sealed);
@@ -391,6 +394,7 @@ setInterval(() => {}, 1000);
     fs.writeFileSync(result, "tiny GNU result\n", {flag: "wx"});
     fs.writeFileSync(copyrights, "tiny notices\n", {flag: "wx"});
     fs.writeFileSync(sealState.sdkTar, "tiny GNU tar fixture\n", {flag: "wx"});
+    fs.writeFileSync(output, "");
     require("../scripts/ci/seal").seal(["windows_bundle_sha256=" + sealState.sdkTar, "windows_result_sha256=" + result,
       "windows_copyrights_sha256=" + copyrights], {GITHUB_OUTPUT: output});
     assert.deepEqual(fs.readFileSync(output, "utf8").trimEnd().split("\n"), [
@@ -1986,6 +1990,20 @@ test.describe("Native prerequisite provenance and transport", () => {
       assert.equal(fs.existsSync(path.join(restored, "state.tar")), false);
     });
 
+    test("restores a pinned state tar only after its pin and expansion bound pass", {skip: linuxOnlySkip}, t => {
+      const base = fs.realpathSync(tempDir(t, "mom-ci-pinned-restore-")), archive = path.join(base, "state.tar"),
+        restored = path.join(base, "restored"), stepMs = (/** @type {number} */ capMs) => capMs;
+      fs.mkdirSync(path.join(base, "state")); fs.mkdirSync(restored);
+      fs.writeFileSync(path.join(base, "state/input.txt"), "pinned input\n");
+      packState(archive, base, ["state"]);
+      const pin = fileHash(archive);
+      assert.throws(() => restorePinnedState(archive, "0".repeat(64), ["state"], restored, 1 << 20, stepMs), /external pin: state\.tar/);
+      assert.throws(() => restorePinnedState(archive, pin, ["state"], restored, 1, stepMs), /extraction bound/);
+      assert.equal(fs.existsSync(path.join(restored, "state")), false);
+      restorePinnedState(archive, pin, ["state"], restored, 1 << 20, stepMs);
+      assert.equal(fs.readFileSync(path.join(restored, "state/input.txt"), "utf8"), "pinned input\n");
+    });
+
     test("rejects selected-input overlap, aliases, traversal and existing outputs before mutation", {skip: linuxOnlySkip}, t => {
       const base = fs.mkdtempSync(path.join(os.tmpdir(), "mom-ci-output-guard-")), source = path.join(base, "state"),
         other = path.join(base, "other"), alias = path.join(base, "alias"), existing = path.join(base, "existing.tar");
@@ -2940,17 +2958,15 @@ test.describe("Linux native component handoffs", () => {
   });
 
   test("shrinks each child timeout against one aggregate component deadline", () => {
-    assert.equal(linuxNativeComponentChildTimeout(10000, 7000, 1000), 7000);
-    assert.equal(linuxNativeComponentChildTimeout(10000, 7000, 6000), 4000);
-    assert.throws(() => linuxNativeComponentChildTimeout(10000, 7000, 9001), /deadline expired/);
-    assert.throws(() => linuxNativeComponentChildTimeout(Number.POSITIVE_INFINITY, 7000, 1000), /deadline is malformed/);
+    const hour = 60 * 60 * 1000, deadline = Date.now() + hour, shrunk = boundedStepMs(deadline, hour, 10 * 60 * 1000, "expired");
+    assert.equal(boundedStepMs(deadline, 7000, 0, "expired"), 7000);
+    assert.ok(shrunk <= 50 * 60 * 1000 && shrunk > 49 * 60 * 1000);
+    assert.throws(() => boundedStepMs(Number.POSITIVE_INFINITY, 7000, 0, "deadline expired"), /deadline expired/);
   });
 
   test("never gives Core or app compiler setup an unbounded zero timeout", () => {
-    const deadline = 60 * 60 * 1000;
     for (const reserve of [10 * 60 * 1000, 20 * 60 * 1000]) {
-      assert.equal(linuxNativeComponentChildTimeout(deadline, 15 * 60 * 1000, deadline - reserve - 1000 + reserve), 1000);
-      assert.throws(() => linuxNativeComponentChildTimeout(deadline, 15 * 60 * 1000, deadline - reserve + 1 + reserve), /deadline expired/);
+      assert.throws(() => boundedStepMs(Date.now() + reserve + 999, 15 * 60 * 1000, reserve, "deadline expired"), /deadline expired/);
     }
   });
 

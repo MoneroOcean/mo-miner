@@ -499,5 +499,5 @@ if (require.main === module) {
 }
 
 module.exports = {localRocmSdkPaths, localRocmSdkContextFromWorkspace, localRocmSdkContext, localRocmBuildState,
-  verifyRocmBuildInputs, auditLocalHipHeaders, auditLocalRocmComgrInputs, auditLocalRocmSdkInputs, localRocmTools,
-  localRocmHostState, localRocmHostInputs, checkRocmHostPrerequisites, runLocalRocmSdkChild, rocmSdkResult, buildLocalLinuxRocmSdk, main};
+  verifyRocmBuildInputs, auditLocalRocmComgrInputs, auditLocalRocmSdkInputs, localRocmTools,
+  localRocmHostState, localRocmHostInputs, runLocalRocmSdkChild, rocmSdkResult, buildLocalLinuxRocmSdk, main};

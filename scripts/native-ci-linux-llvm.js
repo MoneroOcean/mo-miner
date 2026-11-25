@@ -2,7 +2,8 @@
 
 // Native CI Linux LLVM SDK: build or reuse the cached SDK, admission, and the installed-SDK and tool handoffs.
 const fs = require("node:fs"), path = require("node:path");
-const {appendWorkflowOutputs, ciJobChildTimeout, removeTree, runNode} = require("./native-ci-job");
+const {appendWorkflowOutputs, removeTree, runNode} = require("./native-ci-job");
+const {ciDeadline, boundedStepMs} = require("./ci/job");
 const {fileHash} = require("./build-source-inputs");
 const {listState, packState, tarExpandedBytes, temp} = require("./native-ci-tar");
 const {provisionOneApi, restoreSources} = require("./native-ci-linux-sources");
@@ -39,9 +40,11 @@ function buildLinuxLlvmToolsCi(paths) {
   linuxLlvmToolHandoffInputs(bundle, expectation);
   const values = {tools_bundle_sha256: fileHash(archive), tools_handoff_sha256: handoffSha256};
   appendWorkflowOutputs(paths.env, values);
-  fs.appendFileSync(paths.env["GITHUB_STEP_SUMMARY"] || "", "### Selected Linux LLVM host tools\n" +
-    "- The fully admitted source-built SDK supplied only Windows LLVM's public host-tool closure, the locked source archive, and unchanged producer receipts.\n" +
-    "- The consumer verifies this hash-bound same-run subset; it does not re-admit or receive the complete Linux SDK/build tree. No application or runtime qualification is claimed.\n");
+  if (paths.env["GITHUB_STEP_SUMMARY"]) {
+    fs.appendFileSync(paths.env["GITHUB_STEP_SUMMARY"], "### Selected Linux LLVM host tools\n" +
+      "- The fully admitted source-built SDK supplied only Windows LLVM's public host-tool closure, the locked source archive, and unchanged producer receipts.\n" +
+      "- The consumer verifies this hash-bound same-run subset; it does not re-admit or receive the complete Linux SDK/build tree. No application or runtime qualification is claimed.\n");
+  }
   return {...values, bytes: packed.bytes};
 }
 
@@ -92,17 +95,18 @@ function linuxLlvmConfigureCommand(paths) {
 function buildLinuxLlvmCi(paths) {
   const builder = "scripts/build-native-llvm-sdk.js", env = paths.env,
     phases = ["llvm-foundation", "llvm-core-analysis", "llvm-core-optimization", "llvm-core-codegen", "llvm-x86", "llvm-nvptx",
-      "llvm-amdgpu", "clang-base", "clang-sema", "clang-frontend", "lld", "tools"];
-  ciJobChildTimeout(env, 60 * 1000);
+      "llvm-amdgpu", "clang-base", "clang-sema", "clang-frontend", "lld", "tools"],
+    deadlineMs = ciDeadline(env) * 1000,
+    childMs = (/** @type {number} */ capMs) => boundedStepMs(deadlineMs, capMs, 0, "Linux LLVM SDK job deadline leaves no time for the next child");
   restoreSources(paths);
   provisionOneApi(paths);
   if (!reuseCachedLinuxLlvm(paths)) {
     fs.mkdirSync(paths.sdkRoot, {mode: 0o700});
     const command = linuxLlvmConfigureCommand(paths);
-    runNode(command.script, command.args, env, ciJobChildTimeout(env, 50 * 60 * 1000));
-    for (const phase of phases) {runNode(builder, ["build", paths.output, phase], env, ciJobChildTimeout(env, 50 * 60 * 1000));}
-    runNode(builder, ["install", paths.output], env, ciJobChildTimeout(env, 50 * 60 * 1000));
-    runNode(builder, ["audit", paths.output], env, ciJobChildTimeout(env, 15 * 60 * 1000));
+    runNode(command.script, command.args, env, childMs(50 * 60 * 1000));
+    for (const phase of phases) {runNode(builder, ["build", paths.output, phase], env, childMs(50 * 60 * 1000));}
+    runNode(builder, ["install", paths.output], env, childMs(50 * 60 * 1000));
+    runNode(builder, ["audit", paths.output], env, childMs(15 * 60 * 1000));
   }
   packState(path.join(paths.runnerTemp, "native-linux-llvm21-sdk-" + paths.suffix + ".tar"), temp, [paths.sourceName, paths.sdkName]);
 }

@@ -395,7 +395,9 @@ function buildNativeArtifact(configFile, output, packing, environment = process.
   if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor) || descriptor.version !== 1) {throw new Error("Invalid native release SDK descriptor");}
   const selectedNotices = noticeInput(descriptor.notices);
   const windows = Object.hasOwn(descriptor, "windowsSdk");
-  if (windows && !descriptor.application) {throw new Error("Windows native releases require original Core and all GPU source receipts");}
+  // Presence only: the Windows controller (and buildWindowsSources for nativeSources) validates the
+  // application's Core and per-profile GPU inputs. Without it the controller would link no miner graphs.
+  if (windows && !descriptor.application) {throw new Error("Windows native releases require an application descriptor for the Core and all GPU graphs");}
   if (windows && descriptor.outputName !== undefined && descriptor.outputName !== "mom.exe") {throw new Error("Windows native release output must be mom.exe");}
   if (!windows && descriptor.nativeSources !== undefined) {throw new Error("Windows source descriptors cannot select a Linux build");}
   if (windows && descriptor.nativeSources !== undefined) {

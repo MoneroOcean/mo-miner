@@ -38,7 +38,7 @@ function linuxStaticSdkPlan(roots, sdk, cuda, jit, output, tools, jobs) {
   const toolKeys = ["cmake", "ninja"];
   if (!roots || !hasExactBuildFields(roots, ["computeHeaders", "dpcpp", "emhash", "hwloc", "levelZero", "openclHeaders", "openclLoader", "umf"]) ||
       (!hasExactBuildFields(tools, toolKeys) && !hasExactBuildFields(tools, [...toolKeys, "cc", "cxx"])) || ![...Object.values(roots), sdk, cuda, jit, output, ...Object.values(tools)].every(literal) ||
-      !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {throw new Error("Linux static SDK needs all original roots, explicit tools/JIT and jobs in1..16");}
+      !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {throw new Error("Linux static SDK needs all original roots, explicit tools/JIT and jobs in 1..16");}
   for (const input of [...Object.values(roots), sdk, cuda, path.dirname(jit), repo, ...Object.values(tools)]) {
     if (buildPathsOverlap(input, output)) {throw new Error("Linux static SDK output overlaps an input");}
   }
@@ -103,7 +103,7 @@ function linuxSdkDependencies(text, base) {
  * @param {string} sourcesFile @param {string} sdk @param {string} cuda @param {string} jit
  * @param {string} output @param {Tools} tools @param {number} jobs @param {NodeJS.ProcessEnv} [environment] */
 function buildLinuxStaticSdk(sourcesFile, sdk, cuda, jit, output, tools, jobs, environment = process.env) {
-  if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {throw new Error("Linux SDK production requires Linuxx64 and MOM_AOT_BUILD_ONLY=1");}
+  if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {throw new Error("Linux SDK production requires Linux x64 and MOM_AOT_BUILD_ONLY=1");}
   const env = nativeSdkEnvironment(environment), sysroot = requireLinuxSysroot(env);
   const sourceHash = fileHash(sourcesFile), selected = verifyPreparedSdkSources(sourcesFile, "linux");
   const roots = validateSourceRoots(Object.fromEntries(Object.entries(selected.prepared).map(([name, row]) => [name, row.root])), output);

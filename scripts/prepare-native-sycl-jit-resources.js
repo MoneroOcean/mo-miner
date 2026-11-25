@@ -190,7 +190,7 @@ function run(command, args, cwd, label, encoding = "utf8") {
   const result = /** @type {import("node:child_process").SpawnSyncReturns<string | Buffer>} */
     (spawnSync(command, args, {cwd, env, encoding, timeout: 300000, maxBuffer: MAX_SOURCE}));
   if (result.error || result.signal || result.status !== 0) {
-    // Failed staging is removed below; retain bounded compiler diagnostics in the build log.
+    // Failed staging is removed below, so the thrown error carries the bounded compiler diagnostics.
     const diagnostic = result.stderr?.toString().slice(-8192) || result.error?.message || "";
     throw new Error(`Build-only ${label} failed (${result.signal || result.status}): ${diagnostic}`, {cause: result.error});
   }

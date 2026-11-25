@@ -312,4 +312,4 @@ if (require.main === module) {
 
 module.exports = {localAcppSdkPaths, localAcppSdkContextFromWorkspace, localAcppSdkContext,
   localAcppSdkBuildCommand, auditLocalAcppSdkInputs, assertLocalAcppSdkBindings, auditLocalAcppSdk,
-  localAcppSdkTools, prepareLocalAcppSources, admitLocalAcppGpuArtifacts, runLocalAcppSdkChild, buildLocalLinuxAcppSdk, main};
+  prepareLocalAcppSources, admitLocalAcppGpuArtifacts, buildLocalLinuxAcppSdk, main};

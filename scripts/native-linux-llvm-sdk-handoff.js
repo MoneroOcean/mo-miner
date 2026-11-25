@@ -8,11 +8,12 @@ const fs = require("node:fs"), path = require("node:path"), {createHash} = requi
 const {hasExactBuildFields, buildPathsOverlap, containsBuildPath, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {archiveName, archiveSha256} = require("./native-llvm-sdk");
 const llvmBuilder = require("./build-native-llvm-sdk");
+const {availableDiskBytes, canonicalDirectory} = require("./native-ci-tar");
 
 const repo = path.resolve(__dirname, ".."), format = "mom-linux-llvm-sdk-handoff-v1",
   role = "linux-llvm21-installed-sdk", receiptNames = ["result.json", "configured.json", "install.json", "build-complete.json"],
   recipeFiles = ["scripts/native-linux-llvm-sdk-handoff.js", "scripts/build-native-llvm-sdk.js", "scripts/native-llvm-sdk.js",
-    "scripts/native-audit.js", "scripts/build-source-inputs.js"],
+    "scripts/native-audit.js", "scripts/build-source-inputs.js", "scripts/native-ci-tar.js"],
   maxFiles = 10000, maxDepth = 32, maxMemberBytes = 512 << 20, maxSdkBytes = 2 * 1024 ** 3,
   maxReceiptBytes = 8 << 20, maxManifestBytes = 16 << 20, reserveBytes = 2 * 1024 ** 3;
 /** @typedef {{dev:bigint,ino:bigint,nlink:bigint,size:bigint,mtimeNs:bigint,ctimeNs:bigint,mode:bigint}} FsIdentity */
@@ -24,18 +25,6 @@ function hasControl(value) {return [...value].some(character => character.charCo
 function safeRelative(name) {
   return typeof name === "string" && name.length > 0 && name.length <= 2048 && !name.startsWith("/") && !name.includes("\\") &&
     !hasControl(name) && name.split("/").every(part => part && part !== "." && part !== "..");
-}
-
-/** @param {string} directory @param {string} label */
-function canonicalDirectory(directory, label) {
-  if (typeof directory !== "string" || !path.isAbsolute(directory) || path.resolve(directory) !== directory || /[\r\n\0]/.test(directory)) {
-    throw new Error(label + " must be an absolute canonical path");
-  }
-  const stat = fs.lstatSync(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {
-    throw new Error(label + " must be a real directory");
-  }
-  return directory;
 }
 
 /** @param {string} file @param {number} maximum @param {string} label */
@@ -276,7 +265,7 @@ function exportLinuxLlvmSdk(admittedOutput, outputRoot, reader = llvmBuilder.ver
   const receiptTotal = Object.values(receiptPins).reduce((sum, row) => sum + row.bytes, 0),
     totalBytes = inventory.bytes + receiptTotal, requiredBytes = 3 * totalBytes + reserveBytes;
   if (!Number.isSafeInteger(totalBytes) || totalBytes > maxSdkBytes + receiptNames.length * maxReceiptBytes ||
-      !Number.isSafeInteger(requiredBytes) || availableBytes(outputParent) < requiredBytes) {
+      !Number.isSafeInteger(requiredBytes) || availableDiskBytes(outputParent) < requiredBytes) {
     throw new Error("Linux LLVM installed-SDK handoff exceeds its payload or disk-space bound");
   }
   const recipe = sourceInputs(repo, [], recipeFiles);
@@ -524,14 +513,6 @@ function validateDirectoryRows(rows, files) {
     }
   }
   return directories;
-}
-
-/** @param {string} directory */
-function availableBytes(directory) {
-  const stat = fs.statfsSync(directory, {bigint: true});
-  if (stat.bsize <= 0n) {throw new Error("Cannot determine Linux LLVM SDK handoff disk capacity");}
-  const bytes = stat.bavail * stat.bsize;
-  return bytes > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(bytes);
 }
 
 module.exports = {exportLinuxLlvmSdk, linuxLlvmSdkHandoffInputs};

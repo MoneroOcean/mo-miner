@@ -7,11 +7,13 @@ const {gitSourceComponents} = require("./fetch-native-sdk-sources");
 const {sdkSourceFiles} = require("./prepare-native-sdk-sources");
 const {hiprtcHeaders} = require("./build-native-rocm-resources");
 const {validCiSuffix} = require("./native-ci-job");
+const {canonicalDirectory} = require("./native-ci-tar");
 
 const repo = path.resolve(__dirname, ".."), format = "mom-rocm-hip-headers-handoff-v1",
   patchName = "scripts/patches/rocm-hip-headers-only.patch",
   recipeFiles = ["scripts/native-rocm-hip-headers.js", "scripts/fetch-native-sdk-sources.js", "scripts/prepare-native-sdk-sources.js",
-    "scripts/build-native-rocm-resources.js", "scripts/build-native-rocm-host-runtime.js", "scripts/native-comgr-inputs.js", "scripts/build-source-inputs.js", patchName],
+    "scripts/build-native-rocm-resources.js", "scripts/build-native-rocm-host-runtime.js", "scripts/native-comgr-inputs.js", "scripts/build-source-inputs.js",
+    "scripts/native-ci-tar.js", patchName],
   maxManifestBytes = 8 << 20, maxFileBytes = 8 << 20, maxFiles = 4096, maxTotalBytes = 64 * 1024 ** 2,
   maxDirectories = 4096, maxDepth = 16;
 
@@ -23,16 +25,6 @@ function safeRelative(value) {
   return typeof value === "string" && value.length <= 1024 && !value.startsWith("/") && !value.includes("\\") && !/[<>:"|?*]/.test(value) &&
     !Array.from(value).some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127) &&
     value.split("/").every(part => !!part && part !== "." && part !== ".." && !part.endsWith(" ") && !part.endsWith("."));
-}
-
-/** @param {string} value @param {string} label */
-function canonicalDirectory(value, label) {
-  if (typeof value !== "string" || !path.isAbsolute(value) || path.resolve(value) !== value || /[\r\n\0]/.test(value)) {
-    throw new Error(label + " must be an absolute canonical directory");
-  }
-  const stat = fs.lstatSync(value);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(value) !== value) {throw new Error(label + " is redirected or not a directory");}
-  return value;
 }
 
 /** @param {string} file @param {number} maximum @param {string} label */

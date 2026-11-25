@@ -1,7 +1,8 @@
 "use strict";
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), assert = require("node:assert/strict"), test = require("node:test");
 const {windowsAcppStaticHostPlan, verifyAcppCache, auditAcppCompileCommands, buildWindowsAcppStaticHost,
-  verifyIntelCompilerIdentity, verifyWindowsRocmResources, nativeRuntimeInputs, commandSwitches, cleanEnvironment, targets, artifacts, forbiddenOutputs, admitSource, archiveObjectInputs} = require("../scripts/build-native-windows-acpp-sdk");
+  verifyIntelCompilerIdentity, verifyWindowsRocmResources, nativeRuntimeInputs, cleanEnvironment, targets, artifacts, forbiddenOutputs, admitSource, archiveObjectInputs} = require("../scripts/build-native-windows-acpp-sdk");
+const {commandSwitches} = require("../scripts/build-native-windows-llvm-sdk");
 const {windowsIntelRuleOverride} = require("../scripts/prepare-native-jit-toolchain");
 const {fileHash} = require("../scripts/build-source-inputs");
 

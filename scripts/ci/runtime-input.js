@@ -6,8 +6,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const {fileHash} = require("../build-source-inputs");
-const {appendOutputs} = require("./seal");
-const {ciSuffix} = require("../native-ci-job");
+const {appendWorkflowOutputs, ciSuffix} = require("../native-ci-job");
 
 /** Derive the executable artifact name and fresh download directory.
  * @param {NodeJS.ProcessEnv} environment @param {string} platform @param {string} variant */
@@ -63,9 +62,9 @@ function main(args) {
   const [command, ...rest] = args;
   if (rest.length) {throw new Error("Runtime input commands take no further arguments");}
   if (command === "candidate") {
-    appendOutputs(admitCandidate());
+    appendWorkflowOutputs(process.env, admitCandidate());
   } else if (command === "binary") {
-    appendOutputs(admitBinary());
+    appendWorkflowOutputs(process.env, admitBinary());
   } else {
     throw new Error("Usage: runtime-input.js candidate|binary");
   }

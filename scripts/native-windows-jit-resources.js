@@ -444,7 +444,7 @@ function produceWindowsJitResources(input) {
     buildOnly: true, executed: false, publicationQualified: false};
 }
 
-module.exports = {windowsJitResourcePaths, composeWindowsJitResourceProfile, produceWindowsJitResources,
+module.exports = {windowsJitResourcePaths, composeWindowsJitResourceProfile,
   profileFromAdmissions, admitWindowsGnu, admitEmitter, verifyRequiredBaseManifest, validateWindowsJitNativeTools, admitWindowsJitNativeTools};
 
 if (require.main === module) {

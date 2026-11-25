@@ -336,8 +336,8 @@ test.describe("Static CUDA SDK header/runtime ABI admission", () => {
     const f = fixture(t), other = path.join(f.root, "other"); fs.mkdirSync(other); const file = path.join(other, "libculibos.a"); fs.writeFileSync(file, "!<arch>\n");
     assert.throws(() => cudaRuntimeInputs(f.cache.replace(f.libraries[1] || "", file), "clang++", f.run), /one SDK/);
   });
-  test("unreviewed archive bytes cannot pass the source-build pin despite valid macros", t => {const f = fixture(t); assert.throws(() => admitCudaLibraries(f.libraries), /reviewed12.6.77/);});
-  test("a duplicate archive cannot substitute for the runtime/support pair", t => {const f = fixture(t); assert.throws(() => admitCudaLibraries([f.libraries[0] || "", f.libraries[0] || ""]), /reviewed12.6.77/);});
+  test("unreviewed archive bytes cannot pass the source-build pin despite valid macros", t => {const f = fixture(t); assert.throws(() => admitCudaLibraries(f.libraries), /reviewed 12.6.77/);});
+  test("a duplicate archive cannot substitute for the runtime/support pair", t => {const f = fixture(t); assert.throws(() => admitCudaLibraries([f.libraries[0] || "", f.libraries[0] || ""]), /reviewed 12.6.77/);});
 });
 
 test.describe("Static SYCL SDK literal recipe and bounded lifecycle", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {

@@ -16,6 +16,7 @@ const {pins: dpcppPins, sdkIdentity: dpcppSdkIdentity} = require("./native-dpcpp
 const {syclRevision} = require("./native-sycl-inputs");
 const hipHeaderReader = require("./native-rocm-hip-headers");
 const {validCiSuffix} = require("./native-ci-job");
+const {canonicalDirectory} = require("./native-ci-tar");
 
 const dpcppSdkHeaders = Object.freeze([
   "CL/cl.h", "CL/cl_ext.h", "CL/cl_platform.h", "CL/cl_version.h",
@@ -31,16 +32,6 @@ const windowsSdkVirtualIncludeRoots = Object.freeze([
 /** @typedef {{resourceInclude:string,syclInclude:string,dpcppInclude:string,dpcppSyclInclude:string,urInclude:string,windowsSdkIncludeRoots:string[]}} WindowsGpuIncludePlanInput */
 /** @typedef {WindowsGpuIncludePlanInput} WindowsOneapiIncludePlanInput */
 /** @typedef {{root:string,archiveSha256:string,marker:{path:string,sha256:string},clang:{path:string,sha256:string},clangxx:{path:string,sha256:string},clangVersion:string}} DpcppCompilerRecord */
-
-/** @param {unknown} value @param {string} label */
-function canonicalDirectory(value, label) {
-  if (typeof value !== "string" || !path.isAbsolute(value) || path.resolve(value) !== value || /[\r\n\0]/.test(value)) {
-    throw new Error(label + " must be an absolute canonical directory");
-  }
-  const stat = fs.lstatSync(value);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(value) !== value) {throw new Error(label + " is redirected or not a directory");}
-  return value;
-}
 
 /** @param {unknown} value @returns {value is string} */
 function absolutePath(value) {

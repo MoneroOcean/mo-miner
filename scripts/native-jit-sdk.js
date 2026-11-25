@@ -37,7 +37,7 @@ function validJitSdkTools(tools, target) {
 function jitSdkPlan(target, roots, sdk, resources, output, tools, jobs) {
   if (!["linux", "windows"].includes(target) || !hasExactBuildFields(roots, Object.keys(sdkComponents("compiler"))) ||
       !validJitSdkTools(tools, target) || ![...Object.values(roots), sdk, resources, output].every(literal) ||
-      !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {throw new Error("Static JIT SDK needs a supported target, complete original roots, literal tools/resources and jobs in1..16");}
+      !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {throw new Error("Static JIT SDK needs a supported target, complete original roots, literal tools/resources and jobs in 1..16");}
   for (const input of [...Object.values(roots), sdk, resources, repo, tools.cmake, tools.ninja,
     ...(tools.cc && tools.cxx ? [tools.cc, tools.cxx] : []), ...(tools.toolchain ? [tools.toolchain] : [])]) {
     if (buildPathsOverlap(input, output)) {throw new Error("Static JIT SDK output overlaps an input");}

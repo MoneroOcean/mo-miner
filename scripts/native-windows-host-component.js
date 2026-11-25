@@ -384,7 +384,7 @@ function verifyWindowsHostComponentProducers(input, environment = process.env) {
   if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1" || !input ||
       !hasExactBuildFields(input, ["acppResult", "comgrResult", "hiprtcResult", "llvmOutput"]) ||
       !Object.values(input).every(absolute)) {
-    throw new Error("Windows host component export requires Linuxx64, MOM_AOT_BUILD_ONLY=1 and explicit roots");
+    throw new Error("Windows host component export requires Linux x64, MOM_AOT_BUILD_ONLY=1 and explicit roots");
   }
   const llvmOutput = input.llvmOutput, llvm = verifyWindowsLlvmAdmission(llvmOutput, environment);
   if (llvm.admission.archives.length !== llvmArchiveCount || path.basename(llvm.receipt.plan.archive) !== llvmArchiveName ||
@@ -455,7 +455,7 @@ function matchWindowsHostComponent(root, original) {
  * @param {NodeJS.ProcessEnv} [environment] */
 function exportWindowsHostComponent(input, environment = process.env) {
   if (!input || !hasExactBuildFields(input, ["acppResult", "comgrResult", "hiprtcResult", "llvmOutput", "output"]) || !absolute(input.output)) {
-    throw new Error("Windows host component export requires Linuxx64, MOM_AOT_BUILD_ONLY=1 and explicit roots");
+    throw new Error("Windows host component export requires Linux x64, MOM_AOT_BUILD_ONLY=1 and explicit roots");
   }
   const {output, ...producerInput} = input, original = verifyWindowsHostComponentProducers(producerInput, environment),
     {llvm, comgr, acpp, hiprtc, sources, provenance} = original;

@@ -9,6 +9,7 @@ const {isDeepStrictEqual} = require("node:util");
 const {windowsHostSdkEnvironment, windowsHostSdkPaths} = require("../native-ci-windows-llvm");
 const {hasExactBuildFields, fileHash, readCanonicalBuildJson} = require("../build-source-inputs");
 const {applicationBuildFiles, applicationBuildName, ciSuffix, ciBuildJobs} = require("../native-ci-job");
+const {ciDeadline, boundedStepMs} = require("./job");
 
 const repo = path.resolve(__dirname, "../.."), intelRoot = "/opt/intel/oneapi/compiler/2026.2",
   profiles = ["acpp-cuda", "acpp-hip", "dpcpp", "dpcpp-opencl", "oneapi"],
@@ -87,22 +88,10 @@ function admitPins(environment) {
   return {pins, gpuPins: parsed};
 }
 
-/** The workflow exports job start + timeout - 300 s as the one aggregate deadline (Unix seconds).
- * @param {NodeJS.ProcessEnv} environment @param {number} [nowMs] */
-function ciDeadline(environment, nowMs = Date.now()) {
-  const value = environment["MOM_CI_DEADLINE_EPOCH"] || "";
-  if (!/^[0-9]{10}$/.test(value) || Number(value) * 1000 <= nowMs) {
-    throw new Error("MOM_CI_DEADLINE_EPOCH aggregate deadline is invalid or expired");
-  }
-  return Number(value);
-}
-
-/** Bound one child operation by its cap and the aggregate deadline minus a reserve.
+/** Bound one child operation by its cap and the aggregate deadline (Unix seconds) minus a reserve.
  * @param {number} deadline @param {number} capMs @param {number} reserveMs */
 function remainingMs(deadline, capMs, reserveMs) {
-  const milliseconds = Math.min(capMs, deadline * 1000 - Date.now() - reserveMs);
-  if (!Number.isSafeInteger(milliseconds) || milliseconds < 1000) {throw new Error("Windows application aggregate deadline expired");}
-  return milliseconds;
+  return boundedStepMs(deadline * 1000, capMs, reserveMs, "Windows application aggregate deadline expired");
 }
 
 /** Workflow command files must be one ordinary file, never a link to somewhere else. @param {string} file */
@@ -322,7 +311,7 @@ function composeApplication(plan, deps) {
  * @param {number} deadline @param {BuildDependencies} deps */
 function runReleaseBuild(environment, toolRoot, configFile, output, deadline, deps) {
   /** @type {NodeJS.ProcessEnv} */
-  const buildEnvironment = {...environment, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "4",
+  const buildEnvironment = {...environment, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: ciBuildJobs(environment),
     PATH: [path.join(intelRoot, "bin"), toolRoot, environment["PATH"] || "", "/usr/local/bin", "/usr/bin", "/bin"].filter(Boolean).join(":"),
     LD_LIBRARY_PATH: [path.join(intelRoot, "lib"), "/usr/lib/x86_64-linux-gnu"].join(":")};
   for (const key of Object.keys(buildEnvironment)) {
@@ -495,7 +484,7 @@ function runSeal(environment = process.env) {
   ].join("\n") + "\n");
 }
 
-module.exports = {profiles, admitPins, ciDeadline, inputRows, runPins, runBuild, runSeal};
+module.exports = {profiles, inputRows, runPins, runBuild, runSeal};
 
 if (require.main === module) {
   /** @type {Record<string, () => void>} */

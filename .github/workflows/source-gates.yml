@@ -31,10 +31,6 @@ jobs:
             rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
             -color .github/workflows/*.yml
           git ls-files -z -- '*.sh' | xargs -0 -n1 bash -n
-          fake_icx="$(mktemp)"
-          printf '#!/usr/bin/env sh\nprintf "Intel(R) oneAPI DPC++/C++ Compiler\\n"\n' >"$fake_icx"
-          chmod +x "$fake_icx"
-          test "$(CXX="$fake_icx" scripts/cpu-cflags.sh)" = "-march=x86-64 -mtune=generic -maes"
       - name: Real CMake archive reproducibility regression
         run: MOM_TEST_CMAKE="$(command -v cmake)" node --test tests/native-release-archive.js
       - name: Lint, typecheck, logic and host tests

@@ -305,7 +305,7 @@ function main(command) {
   }
 }
 
-module.exports = {packagePlan, resolveCmake, preflightPackage, packageNative};
+module.exports = {packagePlan, preflightPackage, packageNative};
 
 if (require.main === module) {
   try {main(process.argv[2]);} catch (error) {

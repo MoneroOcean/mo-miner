@@ -7,7 +7,7 @@ const path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {createHash, randomBytes} = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, walk, nativeSourceInputs, verifySourceInputs, readBuildJson, readBuildJsonSnapshot, readBuildText} = require("./build-source-inputs");
+const {buildFileInputs, fileHash, walk, nativeSourceInputs, verifySourceInputs, readBuildJson, readBuildJsonSnapshot, readBuildText} = require("./build-source-inputs");
 const {gpuDeclarations} = require("./native-gpu-table");
 
 /** @typedef {{status: number | null, signal: NodeJS.Signals | null, error?: Error | undefined, stdout?: unknown, stderr?: unknown}} ToolResult */
@@ -119,8 +119,6 @@ function libuvHeaderFiles(directory) {
   }
   return files.sort();
 }
-/** @param {string[]} files @returns {Record<string, string>} */
-function hashFiles(files) {return Object.fromEntries([...new Set(files)].sort().map(file => [file, fileHash(file)]));}
 /** @param {string} output */
 function corePaths(output) {
   const source = path.join(output, "source"), build = path.join(source, "build");
@@ -611,7 +609,7 @@ function windowsCorePlan(config, output, root = repo) {
   const audit = {command: selected.dumpbin, args: ["/headers", "/directives", "/symbols", paths.archive]};
   return {config: selected, root, output: destination, paths, msvc, sourceState,
     sourceInventory: [...new Set([...Object.keys(sourceState.files), ...Object.keys(sourceState.graph)])].sort(),
-    recipeHashes: hashFiles(recipeFiles), toolHashes: hashFiles(tools), headerHashes: hashFiles(headers), intelConfigs,
+    recipeHashes: buildFileInputs(recipeFiles), toolHashes: buildFileInputs(tools), headerHashes: buildFileInputs(headers), intelConfigs,
     compiler: selected.compiler ? {command: selected.compiler, args: ["--version"]} : null,
     configure: {command: process.execPath, args: configureArgs}, build: {command: selected.msbuild, args: msbuildArgs}, audit};
 }
@@ -1015,9 +1013,9 @@ function buildNativeWindowsCore(configFile, output, environment = process.env, h
     validateOutput(output, repo);
     if (fileHash(configFile) !== descriptorSha256) {throw new Error("Windows Core descriptor changed while acquiring its cache slot");}
     verifySourceInputs(plan.sourceState, nativeSourceInputs(repo, "cpu"), "Windows Core pre-build");
-    verifyHashes(plan.recipeHashes, hashFiles(Object.keys(plan.recipeHashes)), "Windows Core recipe inputs");
-    verifyHashes(plan.toolHashes, hashFiles(Object.keys(plan.toolHashes)), "Windows Core tool inputs");
-    verifyHashes(plan.headerHashes, hashFiles(libuvHeaderFiles(config.libuvInclude)), "Windows Core header inputs");
+    verifyHashes(plan.recipeHashes, buildFileInputs(Object.keys(plan.recipeHashes)), "Windows Core recipe inputs");
+    verifyHashes(plan.toolHashes, buildFileInputs(Object.keys(plan.toolHashes)), "Windows Core tool inputs");
+    verifyHashes(plan.headerHashes, buildFileInputs(libuvHeaderFiles(config.libuvInclude)), "Windows Core header inputs");
 
     const environmentCopy = sanitizeBuildEnvironment(environment, config.python, Boolean(config.compiler)), environmentSha256 = windowsCoreEnvironmentSha256(environmentCopy);
     const workPlan = windowsCoreWorkPlan(plan, cacheRoot), statePath = path.join(cacheRoot, "core-state.json"), markerPath = path.join(cacheRoot, "build-in-progress.json");
@@ -1064,7 +1062,7 @@ function buildNativeWindowsCore(configFile, output, environment = process.env, h
     fs.copyFileSync(artifact.path, plan.paths.exportedArchive, fs.constants.COPYFILE_EXCL);
     if (fileHash(plan.paths.exportedArchive) !== artifact.sha256) {throw new Error("Exported Windows Core archive differs from audited input");}
     artifact.path = plan.paths.exportedArchive;
-    const toolAfter = hashFiles(Object.keys(plan.toolHashes)), headerAfter = hashFiles(libuvHeaderFiles(plan.config.libuvInclude)), recipeAfter = hashFiles(Object.keys(plan.recipeHashes));
+    const toolAfter = buildFileInputs(Object.keys(plan.toolHashes)), headerAfter = buildFileInputs(libuvHeaderFiles(plan.config.libuvInclude)), recipeAfter = buildFileInputs(Object.keys(plan.recipeHashes));
     verifyHashes(plan.toolHashes, toolAfter, "Windows Core tool inputs"); verifyHashes(plan.headerHashes, headerAfter, "Windows Core header inputs"); verifyHashes(plan.recipeHashes, recipeAfter, "Windows Core recipe inputs");
     if (fileHash(configFile) !== descriptorSha256) {throw new Error("Windows Core descriptor changed during compilation");}
     const includeAfter = windowsCoreIncludeRoots(config, plan.msvc, environmentCopy);
@@ -1118,8 +1116,8 @@ if (require.main === module) {
   } catch (error) {console.error(error instanceof Error ? error.message : "Windows Core build failed"); process.exitCode = 1;}
 }
 
-module.exports = {absolutePath, validateWindowsCoreDescriptor, intelCoreCompilerVersion, validateOutput, validatePortableEnvironment, sanitizeBuildEnvironment, windowsCorePlan,
+module.exports = {absolutePath, validateWindowsCoreDescriptor, intelCoreCompilerVersion, validatePortableEnvironment, sanitizeBuildEnvironment, windowsCorePlan,
   windowsCoreCacheRoot, acquireWindowsCoreCacheLock, windowsCoreIncludeMembership, windowsCoreIncludeRoots, windowsCoreEnvironmentSha256, windowsCoreCacheDecision,
   windowsCoreCurrentCacheAdmission, clearWindowsCoreRelease,
   windowsCoreTrackerRowsScript, windowsCoreTrackerEnvironment, verifyWindowsCoreTrackerInputs,
-  runTool, runToolText, parseDumpbinSymbols, parseDumpbinArchive, inspectCoreProject, inspectCoreArchive, stageSourceTree, cleanupCoreSourceJunctions, buildNativeWindowsCore};
+  runTool, parseDumpbinSymbols, parseDumpbinArchive, inspectCoreProject, stageSourceTree, cleanupCoreSourceJunctions, buildNativeWindowsCore};

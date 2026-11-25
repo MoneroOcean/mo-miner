@@ -3,7 +3,7 @@
 // Native CI Windows controller-support SDKs (I/O/OpenSSL and Hermes) built on Windows runners.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {ciBuildJobs, ciSuffix, hasExactKeys, jsonHash} = require("./native-ci-job");
+const {ciBuildJobs, ciSuffix, jsonHash} = require("./native-ci-job");
 const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot, sourceInputs} = require("./build-source-inputs");
 const {ioPins, ioRecipeFiles, nativeIoInputs} = require("./build-native-io");
 const {nativeOpenSslInputs, opensslPin, opensslBuildRecipe} = require("./build-native-openssl");
@@ -238,12 +238,12 @@ function readWindowsHermesSource(input, originalRoot) {
     fetch = windowsControllerReadJson(fetchFile, 4 << 20, "Hermes source fetch receipt"),
     recipe = sourceRecipe("hermes"), expectedRecipeSha = jsonHash(JSON.stringify(recipe));
   windowsControllerRegularFile(path.join(source, "roots/hermes/config"), "Extracted Hermes bare-source configuration");
-  if (!hasExactKeys(roots, ["hermes"]) || roots.hermes !== expectedOriginalRoot || fetch.version !== 1 || fetch.target !== "hermes" ||
+  if (!hasExactBuildFields(roots, ["hermes"]) || roots.hermes !== expectedOriginalRoot || fetch.version !== 1 || fetch.target !== "hermes" ||
       fetch.status !== "PASS" || fetch.networked !== true || fetch.buildOnly !== true || fetch.compiled !== false || fetch.publicationQualified !== false ||
-      !hasExactKeys(fetch.git, ["path", "sha256"]) || !path.posix.isAbsolute(fetch.git.path) || !/^[a-f0-9]{64}$/.test(fetch.git.sha256 || "") ||
+      !hasExactBuildFields(fetch.git, ["path", "sha256"]) || !path.posix.isAbsolute(fetch.git.path) || !/^[a-f0-9]{64}$/.test(fetch.git.sha256 || "") ||
       fetch.fetcherSha256 !== fileHash(path.join(repo, "scripts/fetch-native-sdk-sources.js")) ||
-      !hasExactKeys(fetch.recipe, ["sha256", "files"]) || fetch.recipe.sha256 !== expectedRecipeSha || !isDeepStrictEqual(fetch.recipe.files, recipe.graph) ||
-      !hasExactKeys(fetch.components, ["hermes"]) || fetch.components.hermes?.origin !== origins.hermes ||
+      !hasExactBuildFields(fetch.recipe, ["sha256", "files"]) || fetch.recipe.sha256 !== expectedRecipeSha || !isDeepStrictEqual(fetch.recipe.files, recipe.graph) ||
+      !hasExactBuildFields(fetch.components, ["hermes"]) || fetch.components.hermes?.origin !== origins.hermes ||
       fetch.components.hermes?.revision !== hermesPins.revision || fetch.components.hermes?.root !== expectedOriginalRoot ||
       fetch.components.hermes?.gitDirectory !== "bare" || fetch.components.hermes?.shallow !== true || fetch.components.hermes?.partialClone !== false) {
     throw new Error("Hermes source receipts do not bind the original pinned bare Git root and current source recipe");

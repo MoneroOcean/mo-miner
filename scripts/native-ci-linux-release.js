@@ -3,7 +3,8 @@
 // Native CI Linux SDK descriptor, native components and application assembly.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {canonicalExecutable, ciBuildJobs, hasExactKeys, jsonHash, linuxNativeComponentChildTimeout, runNode, validCiSuffix} = require("./native-ci-job");
+const {canonicalExecutable, ciBuildJobs, jsonHash, runNode, validCiSuffix} = require("./native-ci-job");
+const {boundedStepMs} = require("./ci/job");
 const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot} = require("./build-source-inputs");
 const {verifyZstdArchive} = require("./fetch-native-sdk-sources");
 const {auditGnuHeaders} = require("./prepare-native-gnu-headers");
@@ -24,6 +25,7 @@ const {linuxJitSdkStatePaths} = require("./native-ci-linux-jit");
 const {acppCudaHipSdkStatePaths, auditAcppCudaHipSdk,
   auditRocmHostNoticeSources, prepareRocmHostAdmission, rocmHostStatePaths} = require("./native-ci-linux-rocm");
 const repo = path.resolve(__dirname, "..");
+const childDeadlineExpired = "Native component deadline expired before the next child stage";
 
 /** Original same-run tars needed to compose (but not build) the public Linux release descriptor.
  * Every producer remains a separate raw artifact; shared /tmp roots are restored only once.
@@ -102,10 +104,10 @@ function auditLinuxNativeSdkDescriptorLineage(state, tools = hermesBuildTools(),
       !incomingStat.isDirectory() || incomingStat.isSymbolicLink() || fs.realpathSync(state.incoming) !== state.incoming ||
       admission.format !== "mom-native-linux-sdk-descriptor-v1" ||
       admission.buildOnly !== true || admission.compiled !== false || admission.executed !== false || admission.publicationQualified !== false ||
-      !hasExactKeys(admission.descriptor, ["path", "sha256"]) || admission.descriptor.path !== state.sdkFile ||
+      !hasExactBuildFields(admission.descriptor, ["path", "sha256"]) || admission.descriptor.path !== state.sdkFile ||
       admission.descriptor.sha256 !== fileHash(state.sdkFile) || !Array.isArray(admission.inputArchives) ||
       admission.inputArchives.length !== state.inputRows.length || !Array.isArray(admission.profiles) ||
-      admission.profiles.slice().sort().join(",") !== "acpp-cuda,acpp-hip,dpcpp,dpcpp-opencl,oneapi") {
+      admission.profiles.slice().sort().join(",") !== linuxNativeGpuProfiles.join(",")) {
     throw new Error("Native application build requires the exact admitted same-run SDK descriptor");
   }
   const expectedNames = state.inputRows.map(row => row.artifact).sort();
@@ -115,7 +117,7 @@ function auditLinuxNativeSdkDescriptorLineage(state, tools = hermesBuildTools(),
   const inputArchives = state.inputRows.map((row, index) => {
     const record = admission.inputArchives[index], stat = fs.lstatSync(row.file);
     const hasMembers = Boolean(row.expectedMembers || row.recordMembers);
-    if (!stat.isFile() || stat.isSymbolicLink() || !hasExactKeys(record,
+    if (!stat.isFile() || stat.isSymbolicLink() || !hasExactBuildFields(record,
       hasMembers ? ["artifact", "bytes", "expandedBytes", "sha256", "roots", "members"] : ["artifact", "bytes", "expandedBytes", "sha256", "roots"]) ||
         record.artifact !== row.artifact || record.bytes !== stat.size || record.sha256 !== fileHash(row.file) ||
         record.expandedBytes < 0 || !Number.isSafeInteger(record.expandedBytes) || !isDeepStrictEqual(record.roots, row.roots) ||
@@ -134,7 +136,7 @@ function auditLinuxNativeSdkDescriptorLineage(state, tools = hermesBuildTools(),
   const expectedConfig = linuxNativeSdkDescriptorConfig(state, tools, linker);
   const selectedLinkInputs = admission.selectedLinkInputs, selectedFiles = selectedLinkInputs?.files,
     selectedPaths = selectedFiles && typeof selectedFiles === "object" && !Array.isArray(selectedFiles) ? Object.keys(selectedFiles) : [];
-  if (!hasExactKeys(selectedLinkInputs, ["files", "sha256"]) || !selectedFiles || typeof selectedFiles !== "object" ||
+  if (!hasExactBuildFields(selectedLinkInputs, ["files", "sha256"]) || !selectedFiles || typeof selectedFiles !== "object" ||
       Array.isArray(selectedFiles) || Object.getPrototypeOf(selectedFiles) !== Object.prototype || selectedPaths.length === 0 ||
       selectedPaths.some(file => file.length > 4096 || !path.isAbsolute(file) || path.resolve(file) !== file) ||
       Object.values(selectedFiles).some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)) ||
@@ -143,7 +145,7 @@ function auditLinuxNativeSdkDescriptorLineage(state, tools = hermesBuildTools(),
       fileHash(linker) !== selectedFiles[linker]) {
     throw new Error("Native application selected linker differs from descriptor admission");
   }
-  if (!isDeepStrictEqual(config, expectedConfig) || !hasExactKeys(admission.diskPreflight,
+  if (!isDeepStrictEqual(config, expectedConfig) || !hasExactBuildFields(admission.diskPreflight,
     ["expandedInputBytes", "buildReserveBytes", "requiredTempBytes", "availableTempBytes", "availableRunnerTempBytes"]) ||
       admission.diskPreflight.expandedInputBytes !== admission.inputArchives.reduce((/** @type {number} */ sum,
         /** @type {{expandedBytes: number}} */ row) => sum + row.expandedBytes, 0) ||
@@ -202,6 +204,7 @@ function linuxNativeApplicationStatePaths(paths) {
   return {name, root, archive, configFile};
 }
 
+// Kept sorted: descriptor admission compares sorted profile lists against it directly.
 const linuxNativeGpuProfiles = Object.freeze(["acpp-cuda", "acpp-hip", "dpcpp", "dpcpp-opencl", "oneapi"]);
 
 const linuxNativeComponentProfiles = Object.freeze(["core", ...linuxNativeGpuProfiles]);
@@ -377,27 +380,27 @@ function restoreLinuxNativeDescriptorHandoff(state, paths, auditedArchives = und
       archives.every((actual, index) => isDeepStrictEqual(actual, admission.inputArchives[index]));
   if (admission.format !== "mom-native-linux-sdk-descriptor-v1" ||
       admission.buildOnly !== true || admission.compiled !== false || admission.executed !== false || admission.publicationQualified !== false ||
-      !hasExactKeys(admission.descriptor, ["path", "sha256"]) || admission.descriptor.path !== state.sdkFile ||
+      !hasExactBuildFields(admission.descriptor, ["path", "sha256"]) || admission.descriptor.path !== state.sdkFile ||
       admission.descriptor.sha256 !== fileHash(state.sdkFile) || !rowsMatch ||
-      !isDeepStrictEqual(admission.profiles, linuxNativeGpuProfiles.slice().sort()) || Object.hasOwn(config, "components")) {
+      !isDeepStrictEqual(admission.profiles, [...linuxNativeGpuProfiles]) || Object.hasOwn(config, "components")) {
     throw new Error("Native component stage requires the exact admitted same-run SDK descriptor and original archives");
   }
   prepareRocmHostAdmission(paths, state.rocm);
-  // Public config admission checks the complete six-profile graph and all shared link inputs;
+  // Public config admission checks the complete five-GPU-profile graph and all shared link inputs;
   // keep the original descriptor intact rather than inventing a weaker per-profile subset.
   const {nativeSdkConfig, nativeSdkLinkInputs} = require("./build-native-release"), selected = nativeSdkConfig(config, repo), linked = nativeSdkLinkInputs(selected.sdk),
     hashes = Object.fromEntries(Object.entries(linked.hashes).sort(([a], [b]) => a.localeCompare(b))),
     gnuNoticeSources = linuxNativeSdkGnuNoticeSources(state, archives),
     rocmNoticeSources = linuxNativeSdkRocmNoticeSources(state, archives);
   verifyLinuxCudaImageLinkInputs(admission.cudaImages, linked.cudaImageInputs);
-  if (selected.keys.slice().sort().join(",") !== linuxNativeGpuProfiles.slice().sort().join(",") ||
-      !hasExactKeys(admission.selectedLinkInputs, ["files", "sha256"]) ||
+  if (selected.keys.slice().sort().join(",") !== linuxNativeGpuProfiles.join(",") ||
+      !hasExactBuildFields(admission.selectedLinkInputs, ["files", "sha256"]) ||
       !isDeepStrictEqual(admission.selectedLinkInputs.files, hashes) ||
       admission.selectedLinkInputs.sha256 !== jsonHash(JSON.stringify(hashes)) ||
       !isDeepStrictEqual(admission.sourceReceipts, linked.sources) ||
       !isDeepStrictEqual(admission.gnuNoticeSources, gnuNoticeSources) ||
       !isDeepStrictEqual(admission.rocmNoticeSources, rocmNoticeSources) ||
-      !hasExactKeys(admission.diskPreflight, ["expandedInputBytes", "buildReserveBytes", "requiredTempBytes", "availableTempBytes", "availableRunnerTempBytes"]) ||
+      !hasExactBuildFields(admission.diskPreflight, ["expandedInputBytes", "buildReserveBytes", "requiredTempBytes", "availableTempBytes", "availableRunnerTempBytes"]) ||
       admission.diskPreflight.expandedInputBytes !== expanded || admission.diskPreflight.buildReserveBytes !== linuxNativeBuildReserveBytes ||
       admission.diskPreflight.requiredTempBytes !== expanded + linuxNativeBuildReserveBytes) {
     throw new Error("Restored component SDK inputs differ from the original descriptor admission");
@@ -421,7 +424,7 @@ function buildLinuxNativeComponent(paths, profile) {
     throw new Error("Native component job deadline is malformed, expired, or lacks build time");
   }
   provisionOneApi(paths, "/var/tmp/mom-dev-native-component-" + paths.suffix,
-    linuxNativeComponentChildTimeout(Number(epoch) * 1000, 15 * 60 * 1000, Date.now() + 10 * 60 * 1000));
+    boundedStepMs(Number(epoch) * 1000, 15 * 60 * 1000, 10 * 60 * 1000, childDeadlineExpired));
   const handoff = restoreLinuxNativeDescriptorHandoff(descriptorState, paths, preflightArchives);
   fs.mkdirSync(component.root, {mode: 0o700}); fs.mkdirSync(path.join(component.root, "logs"));
   const {nativeStage} = require("./build-native-release"), environment = {...paths.env, MOM_BUILD_JOBS: ciBuildJobs(paths.env)},
@@ -430,7 +433,7 @@ function buildLinuxNativeComponent(paths, profile) {
   const buildDeadline = Date.now() + buildTimeout;
   /** @param {number} maximumMs */
   const timedSpawn = maximumMs => /** @type {typeof spawnSync} */ ((command, args, options) => spawnSync(command, args,
-    {...options, timeout: linuxNativeComponentChildTimeout(buildDeadline, maximumMs)}));
+    {...options, timeout: boundedStepMs(buildDeadline, maximumMs, 0, childDeadlineExpired)}));
   let receipt, object;
   if (profile === "core") {
     const core = path.join(component.root, "core");
@@ -480,21 +483,21 @@ function auditLinuxNativeComponentTree(state, descriptorAdmission, inputArchives
   const rootStat = fs.lstatSync(state.root), manifestFile = path.join(state.root, "component.json"), manifestStat = fs.lstatSync(manifestFile),
     manifest = readBuildJson(manifestFile);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || fs.realpathSync(state.root) !== state.root ||
-      !manifestStat.isFile() || manifestStat.isSymbolicLink() || !hasExactKeys(manifest,
+      !manifestStat.isFile() || manifestStat.isSymbolicLink() || !hasExactBuildFields(manifest,
     ["format", "profile", "descriptor", "admission", "inputArchives", "producer", "files", "buildOnly", "publicationQualified"]) ||
       manifest.format !== "mom-native-linux-component-v1" ||
       manifest.profile !== state.profile || manifest.buildOnly !== true || manifest.publicationQualified !== false ||
-      !hasExactKeys(manifest.descriptor, ["sha256"]) || manifest.descriptor.sha256 !== descriptorAdmission.descriptor.sha256 ||
-      !hasExactKeys(manifest.admission, ["sha256"]) || manifest.admission.sha256 !== fileHash(state.admissionFile) ||
+      !hasExactBuildFields(manifest.descriptor, ["sha256"]) || manifest.descriptor.sha256 !== descriptorAdmission.descriptor.sha256 ||
+      !hasExactBuildFields(manifest.admission, ["sha256"]) || manifest.admission.sha256 !== fileHash(state.admissionFile) ||
       !isDeepStrictEqual(manifest.inputArchives, inputArchives) || !Array.isArray(manifest.files) ||
-      !hasExactKeys(manifest.producer, ["receipt", "sha256", "object", "objectSha256"]) ||
+      !hasExactBuildFields(manifest.producer, ["receipt", "sha256", "object", "objectSha256"]) ||
       typeof manifest.producer.receipt !== "string" || !/^[a-f0-9]{64}$/.test(manifest.producer.sha256 || "") ||
       typeof manifest.producer.object !== "string" || !path.isAbsolute(manifest.producer.object) ||
       !/^[a-f0-9]{64}$/.test(manifest.producer.objectSha256 || "")) {
     throw new Error("Native component tree is not bound to this exact SDK descriptor");
   }
   const rows = /** @type {Array<{file:string,bytes:number,sha256:string}>} */ (manifest.files);
-  if (rows.some(row => !hasExactKeys(row, ["file", "bytes", "sha256"]) || !safeRelative(row.file) ||
+  if (rows.some(row => !hasExactBuildFields(row, ["file", "bytes", "sha256"]) || !safeRelative(row.file) ||
       !Number.isSafeInteger(row.bytes) || row.bytes < 0 || !/^[a-f0-9]{64}$/.test(row.sha256)) ||
       rows.map(row => row.file).sort().join("\0") !== rows.map(row => row.file).join("\0") ||
       rows.some(row => row.file === "component.json")) {
@@ -570,7 +573,7 @@ function restoreLinuxNativeComponents(paths, downloads, descriptor, archivePins,
     extractState(row.archive, temp, [row.state.name]);
     const manifestFile = path.join(row.state.root, "component.json"), manifest = readBuildJson(manifestFile),
       lineage = descriptor.archives.map(input => ({artifact: input.artifact, sha256: input.sha256}));
-    if (!hasExactKeys(manifest, ["format", "profile", "descriptor", "admission", "inputArchives", "producer", "files", "buildOnly", "publicationQualified"]) ||
+    if (!hasExactBuildFields(manifest, ["format", "profile", "descriptor", "admission", "inputArchives", "producer", "files", "buildOnly", "publicationQualified"]) ||
         manifest.format !== "mom-native-linux-component-v1" || manifest.profile !== profile ||
         manifest.descriptor?.sha256 !== descriptor.descriptorHash || manifest.admission?.sha256 !== descriptor.admissionHash ||
         !isDeepStrictEqual(manifest.inputArchives, lineage)) {throw new Error("Component archive lineage does not match the same-run SDK descriptor");}
@@ -626,9 +629,9 @@ function auditLinuxNativeApplicationEntrypoint(descriptor, output, expectedConfi
       producer.application.entrypoint !== "mom.js" || producer.application.buildOnly !== true) {
     throw new Error("Native application receipt must bind the unpacked build-only executable and exact descriptor");
   }
-  if (!hasExactKeys(entrypoint, ["version", "target", "configFile", "configHash", "source", "artifact", "recipe", "componentHashes", "producerReceipt", "buildOnly", "publicationQualified"]) ||
+  if (!hasExactBuildFields(entrypoint, ["version", "target", "configFile", "configHash", "source", "artifact", "recipe", "componentHashes", "producerReceipt", "buildOnly", "publicationQualified"]) ||
       !recipe || typeof recipe !== "object" || Array.isArray(recipe) ||
-      !hasExactKeys(components, [producerFile]) || components[producerFile] !== producerHash) {
+      !hasExactBuildFields(components, [producerFile]) || components[producerFile] !== producerHash) {
     throw new Error("Native release entrypoint does not bind the exact unpacked application, descriptor and producer receipt");
   }
   if (fileHash(descriptor.sdkFile) !== descriptorHash || fileHash(producerFile) !== producerHash ||
@@ -668,7 +671,7 @@ function buildLinuxNativeApplication(paths) {
     throw new Error("Native application deadline is malformed, expired, or cannot cover compiler provisioning and assembly");
   }
   provisionOneApi(paths, "/var/tmp/mom-dev-native-assembly-" + paths.suffix,
-    linuxNativeComponentChildTimeout(Number(deadlineEpoch) * 1000, 15 * 60 * 1000, Date.now() + 20 * 60 * 1000));
+    boundedStepMs(Number(deadlineEpoch) * 1000, 15 * 60 * 1000, 20 * 60 * 1000, childDeadlineExpired));
   extractState(descriptor.archive, temp, [descriptor.name]);
   restoreLinuxNativeSdkDescriptorInputs(descriptor);
   prepareRocmHostAdmission(paths, descriptor.rocm);
@@ -759,7 +762,7 @@ function auditLinuxNativeSdkDescriptorCudaImages(state, dpcppInputs) {
     versions = Array.isArray(result.compilerVersions) ? [...result.compilerVersions].sort() : [], images = manifest["images"],
     // cudaImageInputs already validated each complete header-pack record; project its provenance only.
     headerPacks = /** @type {Record<string, {path: string, files: Record<string, string>, manifest: {sha256: string, count: number, bytes: number}}>} */ (manifest["headerPacks"]);
-  if (!Array.isArray(images) || !hasExactKeys(result, ["format", "include", "sidecar", "compilerVersions", "plannedImages", "embeddedBytes", "sourceSha256"]) ||
+  if (!Array.isArray(images) || !hasExactBuildFields(result, ["format", "include", "sidecar", "compilerVersions", "plannedImages", "embeddedBytes", "sourceSha256"]) ||
       result.format !== "mom-cuda-image-build-v1" || result.include !== path.join(state.images.output, "cuda-images.inc") ||
       result.sidecar !== path.join(state.images.output, "cuda-images.inc.json") || versions.join(",") !== "12.6,13.3" ||
       !Number.isSafeInteger(result.plannedImages) || result.plannedImages !== images.length ||
@@ -835,7 +838,7 @@ function buildLinuxNativeSdkDescriptor(paths) {
     {nativeSdkConfig, nativeSdkLinkInputs} = require("./build-native-release"), selected = nativeSdkConfig(config, repo),
     linked = nativeSdkLinkInputs(selected.sdk);
   verifyLinuxCudaImageLinkInputs(cudaImages, linked.cudaImageInputs);
-  if (selected.keys.slice().sort().join(",") !== "acpp-cuda,acpp-hip,dpcpp,dpcpp-opencl,oneapi" ||
+  if (selected.keys.slice().sort().join(",") !== linuxNativeGpuProfiles.join(",") ||
       !isDeepStrictEqual(Object.keys(config.sdkSources).sort(), ["acpp", "cudaImages", "hermes", "openmpSdk", "rocm", "zstd"].sort()) ||
       !linked.sources || !isDeepStrictEqual(Object.keys(linked.sources).sort(), ["acpp", "cudaImages", "hermes", "openmp", "openssl", "rocm", "zstd"].sort()) ||
       !ioOpenSsl.io.libraries.length || !ioOpenSsl.openssl.libraries.length || !component.sdkObjects.length ||
@@ -871,7 +874,7 @@ module.exports = {auditLinuxNativeApplicationEntrypoint, auditLinuxNativeCompone
   verifyLinuxCudaImageLinkInputs,
   auditLinuxNativeSdkDescriptorLineage, buildLinuxNativeApplication, buildLinuxNativeComponent, buildLinuxNativeSdkDescriptor,
   linuxNativeApplicationBuildCommand, linuxNativeApplicationStatePaths, linuxNativeAssemblyComponents, linuxNativeAssemblyConfig,
-  linuxNativeComponentArchivePins, linuxNativeComponentFiles, linuxNativeComponentProfiles, linuxNativeComponentStatePaths,
+  linuxNativeComponentArchivePins, linuxNativeComponentProfiles, linuxNativeComponentStatePaths,
   linuxNativeGpuProfiles, linuxNativeSdkDescriptorStatePaths, linuxNativeSdkGnuNoticeSources, linuxNativeSdkRocmNoticeSources,
-  partitionLinuxNativeDownloads, restoreLinuxNativeComponents, restoreLinuxNativeDescriptorHandoff,
+  partitionLinuxNativeDownloads, restoreLinuxNativeDescriptorHandoff,
   writeLinuxNativeComponentManifest};

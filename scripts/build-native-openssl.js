@@ -360,5 +360,5 @@ if (require.main === module) {
   } catch (error) {console.error(error instanceof Error ? error.message : "Static OpenSSL build failed"); process.exitCode = 1;}
 }
 
-module.exports = {opensslPin, configureOptions, toolNames, opensslSdkPlan, validateArchive, inventory, stagedFiles, opensslBuildRecipe: () => sourceInputs(repo, [], sourceLeaves),
+module.exports = {opensslPin, configureOptions, toolNames, opensslSdkPlan, validateArchive, inventory, opensslBuildRecipe: () => sourceInputs(repo, [], sourceLeaves),
   opensslSdkEnvironment, nativeOpenSslInputs, buildNativeOpenSsl, stageWindowsHeaders};

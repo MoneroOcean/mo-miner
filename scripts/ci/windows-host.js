@@ -12,6 +12,7 @@ const ciJob = require("../native-ci-job"),
   ciWindowsLlvm = require("../native-ci-windows-llvm"),
   dpcppInputs = require("../native-dpcpp-cuda-inputs"), {fileHash, readBuildJson, readBuildJsonSnapshot} = require("../build-source-inputs");
 const {ciSuffix, validCiSuffix} = require("../native-ci-job");
+const {ciDeadline, boundedStepMs, runBoundedNode} = require("./job");
 
 const repo = path.resolve(__dirname, "../.."), digest = /^[a-f0-9]{64}$/, epochPattern = /^\d{10}$/,
   intelBin = "/opt/intel/oneapi/compiler/2026.2/bin", sourceGit = "/usr/bin/git",
@@ -75,18 +76,11 @@ function incoming(env, name) {
   return path.join(runnerTemp, "incoming", name);
 }
 
-/** The workflow's job deadline (job start + timeout - 300 s). @param {NodeJS.ProcessEnv} env @param {number} nowSeconds */
-function ciDeadline(env, nowSeconds) {
-  const value = env["MOM_CI_DEADLINE_EPOCH"] || "";
-  if (!epochPattern.test(value) || Number(value) <= nowSeconds) {throw new Error("Invalid or expired MOM_CI_DEADLINE_EPOCH");}
-  return Number(value);
-}
-
 /** Bound the job by both the workflow deadline and the original Windows LLVM run deadline recorded in
  * its admitted state manifest; the state transport rejects any other run deadline.
  * @param {NodeJS.ProcessEnv} env @param {unknown} runDeadlineEpoch @param {number} nowSeconds */
 function jobDeadlines(env, runDeadlineEpoch, nowSeconds) {
-  const jobLimit = ciDeadline(env, nowSeconds);
+  const jobLimit = ciDeadline(env, nowSeconds * 1000);
   if (typeof runDeadlineEpoch !== "string" || !epochPattern.test(runDeadlineEpoch)) {
     throw new Error("Invalid original Windows LLVM run deadline");
   }
@@ -113,7 +107,7 @@ function jobEnvironment(runnerTemp, suffix, deadlines) {
 function validatePins(env, nowSeconds = Math.floor(Date.now() / 1000)) {
   const suffix = ciSuffix(env), output = env["GITHUB_OUTPUT"] || "";
   externalPins(env);
-  const remaining = ciDeadline(env, nowSeconds) - nowSeconds;
+  const remaining = ciDeadline(env, nowSeconds * 1000) - nowSeconds;
   if (remaining > maxRunSeconds) {throw new Error("MOM_CI_DEADLINE_EPOCH exceeds eight hours");}
   if (remaining < minJobSeconds) {throw new Error("Insufficient budget remains for a bounded host-component job");}
   if (!path.isAbsolute(output)) {throw new Error("Windows host-component pins need an absolute GITHUB_OUTPUT");}
@@ -174,7 +168,7 @@ function pinnedManifest(file, expectedSha256, maxBytes = 1 << 20) {
 function admitHostJob(env, nowMs = Date.now()) {
   const suffix = ciSuffix(env), pins = externalPins(env), names = artifactNames(suffix),
     runnerTemp = env["RUNNER_TEMP"] || "", nowSeconds = Math.floor(nowMs / 1000);
-  ciDeadline(env, nowSeconds);
+  ciDeadline(env, nowSeconds * 1000);
   const manifestPin = pinnedManifest(incoming(env, names.windows_state_manifest), pins.WINDOWS_STATE_MANIFEST),
     manifest = /** @type {unknown} */ (JSON.parse(manifestPin.bytes.toString("utf8"))),
     runDeadline = manifest && typeof manifest === "object" ? /** @type {Record<string, unknown>} */ (manifest)["runDeadlineEpoch"] : undefined,
@@ -183,38 +177,16 @@ function admitHostJob(env, nowMs = Date.now()) {
     environment: jobEnvironment(runnerTemp, suffix, deadlines)};
 }
 
-/** Remaining job time minus a reserve for final reporting. @param {number} deadlineMs @param {number} [reserveMs] */
-function remaining(deadlineMs, reserveMs = minute) {
-  const ms = deadlineMs - Date.now();
-  if (!Number.isSafeInteger(ms) || ms <= reserveMs) {throw new Error("Windows host-component job deadline exhausted");}
-  return ms - reserveMs;
-}
-
-/** Cap one phase by its own limit and by the job deadline. @param {number} deadlineMs @param {number} capMs @param {number} [reserveMs] */
+/** Cap one phase by its own limit and by the job deadline minus a reserve for final reporting.
+ * @param {number} deadlineMs @param {number} capMs @param {number} [reserveMs] */
 function boundedTimeout(deadlineMs, capMs, reserveMs = minute) {
-  const ms = Math.min(capMs, remaining(deadlineMs, reserveMs));
-  if (!Number.isSafeInteger(ms) || ms < 2_000) {throw new Error("Insufficient deadline for the next bounded host-component phase");}
-  return ms;
+  return boundedStepMs(deadlineMs, capMs, reserveMs, "Windows host-component job deadline exhausted");
 }
 
-/** Run one repository Node script inside the memory-scoped, signal-bounded CI wrapper.
+/** Run one repository Node script within its cap and the job deadline.
  * @param {number} deadlineMs @param {string} script @param {string[]} args @param {number} capMs */
 function runBounded(deadlineMs, script, args, capMs) {
-  const timeoutMs = boundedTimeout(deadlineMs, capMs), seconds = Math.floor(timeoutMs / 1000),
-    memoryScope = path.join(repo, "scripts/run-bounded-native-ci.sh"),
-    result = spawnSync(memoryScope, ["/usr/bin/timeout", "--signal=TERM", "--kill-after=5s", seconds + "s", process.execPath,
-      path.join(repo, script), ...args], {cwd: repo, env: process.env, stdio: "inherit", timeout: timeoutMs + 7_000});
-  if (result.error || result.signal || result.status !== 0) {
-    throw new Error("Bounded native host-component phase failed: " + script + (result.signal ? " (" + result.signal + ")" : ""), {cause: result.error});
-  }
-}
-
-/** Free bytes for unprivileged writers on the filesystem holding a directory. @param {string} directory */
-function availableBytes(directory) {
-  const stat = fs.statfsSync(directory, {bigint: true});
-  if (stat.bsize <= 0n) {throw new Error("Cannot determine host-component input filesystem capacity");}
-  const bytes = stat.bavail * stat.bsize;
-  return bytes > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(bytes);
+  runBoundedNode(script, args, boundedTimeout(deadlineMs, capMs), "Bounded native host-component phase failed");
 }
 
 /** Restore exact roots from a pinned same-run tar, re-admitting the archive around every tar pass.
@@ -227,7 +199,7 @@ function restore(context, file, expectedSha256, roots, base, maxExpandedBytes, t
     expandedBytes = ciTar.tarExpandedBytes(file, members.length, boundedTimeout(context.deadlineMs, 15 * minute));
   if (expandedBytes > maxExpandedBytes) {throw new Error("Same-run input archive exceeds its expanded-size bound: " + path.basename(file));}
   if (roots.includes(context.sdkName)) {
-    ciTar.linuxNativeSdkDiskPreflight(expandedBytes, availableBytes(base), availableBytes(context.runnerTemp));
+    ciTar.linuxNativeSdkDiskPreflight(expandedBytes, ciTar.availableDiskBytes(base), ciTar.availableDiskBytes(context.runnerTemp));
   }
   pinnedFile(file, expectedSha256);
   if (createBase) {
@@ -524,8 +496,8 @@ function sealFromEnvironment(env) {
     outputFile: env["GITHUB_OUTPUT"] || ""});
 }
 
-module.exports = {inputPins, externalPins, artifactNames, jobDeadlines, jobEnvironment, validatePins,
-  pinnedFile, pinnedManifest, admitHostJob, restore, checkoutPinnedSource, buildHostComponent, sealHostComponent, sealFromEnvironment};
+module.exports = {inputPins, artifactNames, jobDeadlines, jobEnvironment, validatePins, pinnedFile, pinnedManifest,
+  admitHostJob, restore, checkoutPinnedSource, buildHostComponent, sealHostComponent};
 
 if (require.main === module) {
   try {

@@ -230,7 +230,7 @@ function main() {
   console.log(combined);
 }
 
-module.exports = {admitCpuCache, cpuCompileCommands, cpuIncludeRoots, compileCpuBatch, selectCpuArchiver, pinCpuArchiver, verifyCpuArchiver};
+module.exports = {admitCpuCache, cpuCompileCommands, cpuIncludeRoots, compileCpuBatch, selectCpuArchiver, verifyCpuArchiver};
 if (require.main === module) {
   try {main();} catch (error) {console.error(error); process.exitCode = 1;}
 }

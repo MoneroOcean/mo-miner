@@ -1008,5 +1008,5 @@ if (require.main === module) {
 module.exports = {fetchSdkSources, fetchArchiveCohort, fetchIoArchives, fetchBuildArchives, fetchWindowsOpenSslArchives, fetchNvrtcArchives, fetchWindowsHostSdkArchives,
   verifyBuildArchives, verifyWindowsOpenSslArchives, verifyIoArchives, verifyNvrtcArchives, verifyWindowsHostSdkArchives,
   ioArchiveUrls, buildArchiveUrls, nvrtcArchiveCatalog, zstdArchiveCatalog, origins, runGit, gitSourceComponents, sourceRecipe, ioSourceRecipe, buildSourceRecipe,
-  nvrtcSourceRecipe, zstdSourceRecipe, fetchZstdArchive, verifyZstdArchive, windowsHostSdkCatalog, windowsHostSdkArchiveCatalog, windowsHostSdkSourceRecipe,
-  fetchSysrootPackages, verifySysrootPackages, sysrootArchiveCatalog, sysrootSourceRecipe, fetchLibdrmArchive, verifyLibdrmArchive, libdrmArchiveCatalog};
+  nvrtcSourceRecipe, zstdSourceRecipe, fetchZstdArchive, verifyZstdArchive, windowsHostSdkCatalog, windowsHostSdkArchiveCatalog,
+  verifySysrootPackages, sysrootArchiveCatalog, libdrmArchiveCatalog};

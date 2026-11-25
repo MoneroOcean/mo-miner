@@ -5,8 +5,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {parseArgs} = require("node:util");
 const compilerPolicy = require("../compiler-policy");
+const {isObject} = require("../helper/validate");
 const {
-  appendOutputTail, isRecord, maxCapturedOutput, reportedRates,
+  appendOutputTail, maxCapturedOutput, reportedRates,
 } = require("./readme-performance");
 
 /** @typedef {{value: number, unit: string, value_per_second: number}} BenchmarkSample */
@@ -86,7 +87,7 @@ function discoverGpuJobs(timeoutMs) {
   const json = match[1];
   if (!json) {throw new Error(`algorithms did not return MOM_ALGORITHMS:\n${text}`);}
   const params = JSON.parse(json);
-  if (!isRecord(params)) {
+  if (!isObject(params)) {
     throw new Error("algorithms returned an invalid MOM_ALGORITHMS object");
   }
   // The algorithms output includes a human-readable backend annotation. Feed only the underlying device

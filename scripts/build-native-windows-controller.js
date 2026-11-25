@@ -16,7 +16,7 @@ const {controllerBundleOptions, controllerAotCommand, verifyBundle, nativeApplic
 const {controllerEntry, nativeApplicationBuildInputs} = require("./build-native-application");
 const nativeResources = require("./native-resources");
 const {nativeJitCacheHeader} = require("./native-jit-cache-tag");
-const {buildDependencies, compilerIncludePaths, containsBuildPath, isBuildIncludeDirectory, fileHash, readBuildJson, readBuildJsonSnapshot, readBuildText} = require("./build-source-inputs");
+const {buildDependencies, buildFileInputs, compilerIncludePaths, containsBuildPath, isBuildIncludeDirectory, fileHash, readBuildJson, readBuildJsonSnapshot, readBuildText} = require("./build-source-inputs");
 const {validateWindowsApplication, windowsApplicationInputs, verifyWindowsApplicationFiles, rejectStaticNvrtcArchives, windowsResponseFile, auditWindowsLinkMap} = require("./native-windows-application");
 const {gpuTable, gpuForwards} = require("./native-gpu-table");
 const {isolateCoffCompilerArchives} = require("./native-coff-archive");
@@ -260,11 +260,6 @@ function windowsSdkLibraryCandidates(libraryRoots) {
   return candidates;
 }
 
-/** @param {string[]} files */
-function hashFiles(files) {
-  return Object.fromEntries([...new Set(files)].sort().map(file => [file, fileHash(file)]));
-}
-
 /** @param {Record<string, string>} before @param {Record<string, string>} after */
 function assertStableInputHashes(before, after) {
   if (!isDeepStrictEqual(before, after)) {
@@ -301,7 +296,7 @@ function dependencyHashes(depfiles, overlay, output, startedAt) {
       }
     }
   }
-  return hashFiles([...files]);
+  return buildFileInputs([...files]);
 }
 
 /** @param {string} text @param {string} root @param {Map<string, string>} virtual */
@@ -635,7 +630,7 @@ function buildNativeWindowsController(configFile, output, environment = process.
   validateInputDirectories(config);
   const explicitInputs = explicitInputFiles(config);
   validateInputFiles(explicitInputs, "Windows controller SDK input");
-  const inputHashes = hashFiles(explicitInputs);
+  const inputHashes = buildFileInputs(explicitInputs);
   verifyWindowsApplicationFiles(componentState);
   const application = config.application ? windowsApplicationInputs(config.application, repo) : null;
   for (const file of [path.join(repo, "mom.js"), ...runtimeSources.map(name => path.join(repo, "runtime", name + ".cpp"))]) {
@@ -816,10 +811,10 @@ function buildNativeWindowsController(configFile, output, environment = process.
     if (!isDeepStrictEqual(application, windowsApplicationInputs(config.application, repo))) {throw new Error("Windows application components changed during link");}
   }
   if (fileHash(configFile) !== configHash) {throw new Error("Windows SDK descriptor changed during compilation");}
-  const finalExplicitHashes = hashFiles(explicitInputFiles(config));
+  const finalExplicitHashes = buildFileInputs(explicitInputFiles(config));
   assertStableInputHashes(inputHashes, finalExplicitHashes);
   if (plan.generated.manifest && fileHash(plan.generated.manifest) !== windowsLongPathManifestSha256) {throw new Error("Generated Windows manifest resource changed during link");}
-  const finalInputs = {...finalExplicitHashes, ...hashFiles(objectFiles),
+  const finalInputs = {...finalExplicitHashes, ...buildFileInputs(objectFiles),
     ...(plan.generated.manifest ? {[plan.generated.manifest]: generatedInputs[plan.generated.manifest]} : {})};
   const dependenciesAfter = dependencyHashes(dependencyFiles, config.windowsSdk.overlay, output, startedAt);
   if (!isDeepStrictEqual(dependencies, dependenciesAfter)) {
@@ -855,8 +850,8 @@ if (require.main === module) {
 
 module.exports = {
   windowsSystemImports,
-  absolutePath, validateWindowsControllerConfig, validateWindowsSdkInputs, validateWindowsLlvmSdkConfig,
-  explicitInputFiles, hashFiles, assertStableInputHashes, sourceSnapshot, dependencyHashes,
+  absolutePath, validateWindowsControllerConfig, validateWindowsLlvmSdkConfig,
+  explicitInputFiles, assertStableInputHashes, dependencyHashes,
   compileCommand, linkCommand, parseImports, validatePeHeaders, verifyCanonicalBundle, runTool, windowsToolEnvironment, windowsControllerPlan, vfsFiles,
   windowsLongPathManifest, windowsLongPathResource, buildNativeWindowsController,
 };

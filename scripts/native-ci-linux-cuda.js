@@ -3,13 +3,13 @@
 // Native CI NVRTC verification and Linux CUDA image bundles with their bounded license sources.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {hasExactBuildFields, fileHash, readBuildJson} = require("./build-source-inputs");
 const {verifyNvrtcArchives} = require("./fetch-native-sdk-sources");
 const {nvrtcSdkInputs} = require("./prepare-native-nvrtc-sdk");
 const {nvrtcCohortInfo} = require("./probe-static-nvrtc");
 const {cudaHeaderInputs} = require("./native-jit-headers");
 const {cudaImageInputs} = require("./native-cuda-images");
-const {canonicalExecutable, hasExactKeys, runNode} = require("./native-ci-job");
+const {canonicalExecutable, runNode} = require("./native-ci-job");
 const {extractState, listState, packState, safeRelative, temp} = require("./native-ci-tar");
 const {dpcppCudaInputPins, dpcppCudaInputsStatePaths, dpcppSourceArchivePin, provisionOneApi} = require("./native-ci-linux-sources");
 const {auditCudaPackageCopyrights, auditDpcppCudaInputs, cudaPackageNames} = require("./native-dpcpp-cuda-inputs");
@@ -247,7 +247,7 @@ function auditCudaNoticeSources(state, dpcpp, imageManifest, expected) {
       !manifest || typeof manifest !== "object" || Array.isArray(manifest) || manifest.format !== "mom-cuda-notice-sources-v1" ||
       manifest.scope !== "CUDA/NVRTC/CUTLASS source license bodies only" || manifest.completeNativeNotices !== false ||
       !Array.isArray(manifest.sources) || manifest.sources.length !== 7 ||
-      !hasExactKeys(manifest.sourceArchive, ["version", "url", "sha256", "member", "installer", "archiveMarker"])) {
+      !hasExactBuildFields(manifest.sourceArchive, ["version", "url", "sha256", "member", "installer", "archiveMarker"])) {
     throw new Error("CUDA notice-source artifact is missing or has an invalid/incomplete manifest");
   }
   const specs = [
@@ -269,7 +269,7 @@ function auditCudaNoticeSources(state, dpcpp, imageManifest, expected) {
       sourceReceipt: {path: cutlassMarker, sha256: inputHash(compiler126.inputs, cutlassMarker)}, compilers: [compiler126, compiler133]},
   ];
   const rawSources = manifest.sources;
-  if (!hasExactKeys(manifest, ["format", "scope", "completeNativeNotices", "sourceArchive", "sources"]) ||
+  if (!hasExactBuildFields(manifest, ["format", "scope", "completeNativeNotices", "sourceArchive", "sources"]) ||
       !isDeepStrictEqual(manifest.sourceArchive, {version: cutlassVersion.slice(1),
         url: `https://github.com/NVIDIA/cutlass/archive/refs/tags/${cutlassVersion}.tar.gz`, sha256: cutlassArchiveSha256,
         member: `cutlass-${cutlassVersion.slice(1)}/LICENSE.txt`, installer: {path: installer, sha256: installerSha256},
@@ -539,4 +539,4 @@ function verifyNvrtcTarget(paths, platform) {
 
 module.exports = {auditCudaNoticeFiles, auditCudaNoticeSources, buildLinuxCudaImageTree, buildLinuxCudaImages, cudaCopyrightName,
   cudaImageWorkerRecipe, cudaImagesStatePaths, cudaNoticeSourcePlan, nvrtcStatePaths, packNvrtcVerification,
-  retainCudaNoticeSources, staticNvrtcLlvmConfig, verifyNvrtcTarget};
+  retainCudaNoticeSources, verifyNvrtcTarget};

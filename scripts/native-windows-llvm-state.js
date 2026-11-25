@@ -31,14 +31,6 @@ function pinnedFile(file, label, maximum) {
   return {sha256, bytes: Number(after.size)};
 }
 
-/** @param {string} directory */
-function availableBytes(directory) {
-  const stat = fs.statfsSync(directory, {bigint: true});
-  if (stat.bsize <= 0n) {throw new Error("Cannot determine Windows LLVM state filesystem capacity");}
-  const bytes = stat.bavail * stat.bsize;
-  return bytes > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(bytes);
-}
-
 /** Bound the exact state root before creating a potentially multi-gigabyte tar. @param {string} root @param {number} deadline */
 function stateTreeSize(root, deadline) {
   if (fs.realpathSync(root) !== root) {throw new Error("Windows LLVM state root is not canonical");}
@@ -178,11 +170,11 @@ function packWindowsNativeLlvmState(archive, environment = process.env, nowMs = 
   if (archiveTarget === state.root || archiveTarget.startsWith(state.root + path.sep)) {
     throw new Error("Windows LLVM state archive must be outside the preserved CI work-root root");
   }
-  ciTar.linuxNativeSdkDiskPreflight(0, availableBytes("/tmp"), availableBytes(state.runnerTemp));
+  ciTar.linuxNativeSdkDiskPreflight(0, ciTar.availableDiskBytes("/tmp"), ciTar.availableDiskBytes(state.runnerTemp));
   const sourceSize = stateTreeSize(state.root, Date.now() + operationTimeout(state, 30 * 60 * 1000)),
     archiveParent = path.dirname(archive), neededArchiveSpace = sourceSize.archiveUpperBound + 4 * 1024 ** 3;
   if (!path.isAbsolute(archive) || /[\r\n\0]/.test(archive) || fs.realpathSync(archiveParent) !== archiveParent ||
-      availableBytes(archiveParent) < neededArchiveSpace) {
+      ciTar.availableDiskBytes(archiveParent) < neededArchiveSpace) {
     throw new Error("Insufficient canonical runner-temp space for the bounded Windows LLVM state archive and reserve");
   }
   const packed = ciTar.packState(archive, "/tmp", [rootName], operationTimeout(state, 30 * 60 * 1000)),
@@ -194,7 +186,7 @@ function packWindowsNativeLlvmState(archive, environment = process.env, nowMs = 
       !sameBindings(before, stateBindings(state))) {
     throw new Error("Windows LLVM state changed or exceeded bounds while it was packed");
   }
-  ciTar.linuxNativeSdkDiskPreflight(0, availableBytes("/tmp"), availableBytes(state.runnerTemp));
+  ciTar.linuxNativeSdkDiskPreflight(0, ciTar.availableDiskBytes("/tmp"), ciTar.availableDiskBytes(state.runnerTemp));
   ciWindowsLlvm.windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "outputs", Date.now(), state.runDeadlineEpoch);
   const manifest = {version: 1, producerJob: state.jobId,
     producerDeadlineEpoch: state.deadlineEpoch, runDeadlineEpoch: state.runDeadlineEpoch,
@@ -202,7 +194,9 @@ function packWindowsNativeLlvmState(archive, environment = process.env, nowMs = 
   return {manifest, manifestSha256: manifestDigest(manifest)};
 }
 
-/** @param {ReturnType<typeof stateBindings>} left @param {ReturnType<typeof stateBindings>} right */
+/** stateBindings fixes the key order and the manifest digest pins the restored copy's JSON text, so
+ * text equality compares every binding, including each job deadline record.
+ * @param {ReturnType<typeof stateBindings>} left @param {ReturnType<typeof stateBindings>} right */
 function sameBindings(left, right) {return JSON.stringify(left) === JSON.stringify(right);}
 
 /** Restore only the fresh canonical same-run root; the public builder remains the checkpoint authority.
@@ -223,7 +217,7 @@ function restoreWindowsNativeLlvmState(archive, archiveSha256, manifest, manifes
   if (members.length !== pin.archive.members || expandedBytes !== pin.archive.expandedBytes || expandedBytes > maxExpandedBytes) {
     throw new Error("Windows LLVM incoming archive differs from its admitted member or expanded-size bounds");
   }
-  ciTar.linuxNativeSdkDiskPreflight(expandedBytes, availableBytes("/tmp"), availableBytes(state.runnerTemp));
+  ciTar.linuxNativeSdkDiskPreflight(expandedBytes, ciTar.availableDiskBytes("/tmp"), ciTar.availableDiskBytes(state.runnerTemp));
   if (fs.existsSync(state.root)) {throw new Error("Windows LLVM state restore requires a fresh canonical CI work-root destination");}
   ciTar.extractState(archive, "/tmp", [rootName], [rootName], operationTimeout(state, 30 * 60 * 1000));
   const sourceEnvironment = {...environment, GITHUB_JOB: pin.producerJob,
@@ -231,9 +225,7 @@ function restoreWindowsNativeLlvmState(archive, archiveSha256, manifest, manifes
     sourceState = ciWindowsLlvm.windowsNativeLlvmCiStatePaths(sourceEnvironment, "linux", "x64");
   ciWindowsLlvm.windowsNativeLlvmCiDeadlineRecord(sourceState);
   const restored = stateBindings(sourceState);
-  if (sourceState.suffix !== state.suffix || pin.producerJob !== sourceState.jobId || pin.bindings.descriptorSha256 !== restored.descriptorSha256 ||
-      pin.bindings.configureReceiptSha256 !== restored.configureReceiptSha256 || pin.bindings.checkpointSha256 !== restored.checkpointSha256 ||
-      pin.bindings.runDeadlineSha256 !== restored.runDeadlineSha256 || !sameBindings(pin.bindings, restored)) {
+  if (sourceState.suffix !== state.suffix || pin.producerJob !== sourceState.jobId || !sameBindings(pin.bindings, restored)) {
     throw new Error("Windows LLVM restored configure, checkpoint or deadline records differ from their external bindings");
   }
   ciWindowsLlvm.windowsNativeLlvmCiDeadlineRecord(state, true);

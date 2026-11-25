@@ -3,8 +3,8 @@
 // Native CI Linux work roots, pinned source fetches and their re-admission, DPC++/CUDA inputs and target GNU headers.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {appendWorkflowOutputs, canonicalExecutable, ciSuffix, hasExactKeys, ioOpenSslChildTimeout, jsonHash, runNode} = require("./native-ci-job");
-const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {appendWorkflowOutputs, canonicalExecutable, ciSuffix, ioOpenSslChildTimeout, jsonHash, runNode} = require("./native-ci-job");
+const {hasExactBuildFields, fileHash, readBuildJson} = require("./build-source-inputs");
 const {verifyIoArchives, gitSourceComponents, sourceRecipe, origins, verifyZstdArchive} = require("./fetch-native-sdk-sources");
 const {hermesPins} = require("./build-native-hermes");
 const {auditGnuHeaders} = require("./prepare-native-gnu-headers");
@@ -264,9 +264,9 @@ function fetchRocmParserSource(state, env) {
  * helper edits must not force a refetch of identical source bytes.
  * @param {any} receipt @param {string} pythonArchive @param {string} producerSha256 */
 function assertRocmParserReceipt(receipt, pythonArchive, producerSha256) {
-  if (!hasExactKeys(receipt, ["version", "target", "url", "archive", "helperSha256", "producerSha256"]) || receipt.version !== 1 ||
+  if (!hasExactBuildFields(receipt, ["version", "target", "url", "archive", "helperSha256", "producerSha256"]) || receipt.version !== 1 ||
       receipt.target !== "rocm-parser-source" || receipt.url !== rocmParserSource.url ||
-      !hasExactKeys(receipt.archive, ["path", "bytes", "sha256"]) || receipt.archive.path !== pythonArchive ||
+      !hasExactBuildFields(receipt.archive, ["path", "bytes", "sha256"]) || receipt.archive.path !== pythonArchive ||
       receipt.archive.bytes !== rocmParserSource.bytes || receipt.archive.sha256 !== rocmParserSource.sha256 ||
       typeof receipt.helperSha256 !== "string" || !/^[a-f0-9]{64}$/.test(receipt.helperSha256) ||
       receipt.producerSha256 !== producerSha256) {
@@ -291,18 +291,18 @@ function verifyRocmParserSource(state) {
 function assertGitFetchProvenance(receipt, roots, target, source, git, gitSha256, fetcherSha256) {
   const root = path.join(source, "roots", target), recipe = sourceRecipe(target), origin = origins[target],
     revision = target === "hermes" ? hermesPins.revision : syclRevision;
-  if (!hasExactKeys(receipt, ["version", "target", "status", "networked", "buildOnly", "compiled", "publicationQualified", "git", "fetcherSha256", "recipe", "components"]) ||
+  if (!hasExactBuildFields(receipt, ["version", "target", "status", "networked", "buildOnly", "compiled", "publicationQualified", "git", "fetcherSha256", "recipe", "components"]) ||
       receipt.version !== 1 || receipt.target !== target || receipt.status !== "PASS" || receipt.networked !== true ||
       receipt.buildOnly !== true || receipt.compiled !== false || receipt.publicationQualified !== false ||
-      !hasExactKeys(receipt.git, ["path", "sha256"]) || receipt.git.path !== git || receipt.git.sha256 !== gitSha256 ||
-      receipt.fetcherSha256 !== fetcherSha256 || !hasExactKeys(receipt.recipe, ["sha256", "files"]) ||
+      !hasExactBuildFields(receipt.git, ["path", "sha256"]) || receipt.git.path !== git || receipt.git.sha256 !== gitSha256 ||
+      receipt.fetcherSha256 !== fetcherSha256 || !hasExactBuildFields(receipt.recipe, ["sha256", "files"]) ||
       receipt.recipe.sha256 !== jsonHash(JSON.stringify(recipe)) || !isDeepStrictEqual(receipt.recipe.files, recipe.graph) ||
-      !origin || !hasExactKeys(receipt.components, [target]) ||
-      !hasExactKeys(receipt.components[target], ["origin", "revision", "root", "gitDirectory", "shallow", "partialClone"]) ||
+      !origin || !hasExactBuildFields(receipt.components, [target]) ||
+      !hasExactBuildFields(receipt.components[target], ["origin", "revision", "root", "gitDirectory", "shallow", "partialClone"]) ||
       receipt.components[target].origin !== origin || receipt.components[target].revision !== revision ||
       receipt.components[target].root !== root || receipt.components[target].gitDirectory !== "bare" ||
       receipt.components[target].shallow !== true || receipt.components[target].partialClone !== false ||
-      !hasExactKeys(roots, [target]) || roots[target] !== root) {
+      !hasExactBuildFields(roots, [target]) || roots[target] !== root) {
     throw new Error(`Native ${target} fetch receipt does not bind this run's original pinned source and producer inputs`);
   }
 }
@@ -329,23 +329,23 @@ function assertAcppFetchProvenance(receipt, roots, source, git, gitSha256, fetch
 function assertSdkFetchProvenance(receipt, roots, target, source, expectedFetcherSha256, producerGit) {
   const selected = gitSourceComponents(target), names = /** @type {(keyof typeof origins)[]} */ (Object.keys(selected).sort()),
     recipe = sourceRecipe(target);
-  if (!hasExactKeys(receipt, ["version", "target", "status", "networked", "buildOnly", "compiled", "publicationQualified", "git", "fetcherSha256", "recipe", "components"]) ||
+  if (!hasExactBuildFields(receipt, ["version", "target", "status", "networked", "buildOnly", "compiled", "publicationQualified", "git", "fetcherSha256", "recipe", "components"]) ||
       receipt.version !== 1 || receipt.target !== target || receipt.status !== "PASS" || receipt.networked !== true ||
       receipt.buildOnly !== true || receipt.compiled !== false || receipt.publicationQualified !== false ||
-      !hasExactKeys(receipt.git, ["path", "sha256"]) || typeof receipt.git.path !== "string" ||
+      !hasExactBuildFields(receipt.git, ["path", "sha256"]) || typeof receipt.git.path !== "string" ||
       !path.posix.isAbsolute(receipt.git.path) || path.posix.normalize(receipt.git.path) !== receipt.git.path ||
       /[\r\n\0]/.test(receipt.git.path) || typeof receipt.git.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(receipt.git.sha256) ||
       producerGit && (receipt.git.path !== producerGit.path || receipt.git.sha256 !== producerGit.sha256) ||
       typeof receipt.fetcherSha256 !== "string" || !/^[a-f0-9]{64}$/.test(receipt.fetcherSha256) ||
       expectedFetcherSha256 !== undefined && (!/^[a-f0-9]{64}$/.test(expectedFetcherSha256) || receipt.fetcherSha256 !== expectedFetcherSha256) ||
-      !hasExactKeys(receipt.recipe, ["sha256", "files"]) ||
+      !hasExactBuildFields(receipt.recipe, ["sha256", "files"]) ||
       receipt.recipe.sha256 !== jsonHash(JSON.stringify(recipe)) || !isDeepStrictEqual(receipt.recipe.files, recipe.graph) ||
-      !hasExactKeys(roots, names) || !hasExactKeys(receipt.components, names)) {
+      !hasExactBuildFields(roots, names) || !hasExactBuildFields(receipt.components, names)) {
     throw new Error(`Native ${target} source fetch receipt does not bind this run's complete pinned source cohort`);
   }
   for (const name of names) {
     const root = path.join(source, "roots", name), component = receipt.components[name], selectedComponent = selected[name];
-    if (!selectedComponent || !hasExactKeys(component, ["origin", "revision", "root", "gitDirectory", "shallow", "partialClone"]) ||
+    if (!selectedComponent || !hasExactBuildFields(component, ["origin", "revision", "root", "gitDirectory", "shallow", "partialClone"]) ||
         component.origin !== origins[name] || component.revision !== selectedComponent.revision || component.root !== root ||
         component.gitDirectory !== "bare" || component.shallow !== true || component.partialClone !== false || roots[name] !== root) {
       throw new Error(`Native ${target} source fetch receipt changed its pinned component: ` + name);
@@ -359,7 +359,7 @@ function assertSdkFetchProvenance(receipt, roots, target, source, expectedFetche
 function assertPreparedSdkPaths(receipt, target, output) {
   const selected = sdkComponents(target), names = /** @type {(keyof typeof selected)[]} */ (Object.keys(selected).sort());
   if (receipt?.version !== 2 || receipt.target !== target || receipt.status !== "PASS" || receipt.compiled !== false ||
-      receipt.buildOnly !== true || receipt.publicationQualified !== false || !hasExactKeys(receipt.prepared, names)) {
+      receipt.buildOnly !== true || receipt.publicationQualified !== false || !hasExactBuildFields(receipt.prepared, names)) {
     throw new Error(`Prepared ${target} source receipt does not bind the pinned source cohort`);
   }
   for (const name of names) {
@@ -466,7 +466,7 @@ function verifyLinuxSources(paths, state, git) {
 function linuxSourcePreparationPlan(state, roots) {
   const compilerComponents = sdkComponents("compiler"), compilerNames = Object.keys(compilerComponents).sort(),
     linuxComponents = sdkComponents("linux"), linuxNames = Object.keys(linuxComponents).sort();
-  if (!hasExactKeys(roots, compilerNames) || compilerNames.some(name => roots[name] !== path.join(state.source, "roots", name))) {
+  if (!hasExactBuildFields(roots, compilerNames) || compilerNames.some(name => roots[name] !== path.join(state.source, "roots", name))) {
     throw new Error("Native Linux source handoff needs the exact ten compiler-target bare roots");
   }
   const linuxRoots = Object.fromEntries(linuxNames.map(name => [name, roots[name]]));

@@ -8,13 +8,13 @@ const path = require("node:path");
 const esbuild = require("esbuild");
 const {spawnSync} = require("node:child_process");
 const {
-  validateWindowsControllerConfig, windowsControllerPlan, explicitInputFiles, hashFiles, assertStableInputHashes,
+  validateWindowsControllerConfig, windowsControllerPlan, explicitInputFiles, assertStableInputHashes,
   buildNativeWindowsController, runTool, validatePeHeaders, verifyCanonicalBundle, windowsToolEnvironment, dependencyHashes, windowsLongPathManifest, windowsLongPathResource,
   windowsSystemImports,
 } = require("../scripts/build-native-windows-controller");
 const nativeBundle = require("../scripts/native-bundle");
 const hostComponentReader = require("../scripts/native-windows-host-component");
-const {fileHash} = require("../scripts/build-source-inputs");
+const {buildFileInputs, fileHash} = require("../scripts/build-source-inputs");
 const {compileNativeObjects} = require("../scripts/native-object-cache");
 
 const repo = path.resolve(__dirname, "..");
@@ -96,7 +96,7 @@ test.describe("Windows SDK library-root input snapshots", () => {
   test("unlisted top-level archives are hashed while non-library and nested files are ignored", t => {
     const fixture = libraryRootFixture(t), paths = explicitInputFiles(fixture.config);
     assert.ok(paths.includes(fixture.comsupp), "implicit comsuppw.lib is part of the bounded candidate set");
-    const hashes = hashFiles(paths);
+    const hashes = buildFileInputs(paths);
     assert.ok(paths.includes(fixture.uppercase), "the .lib suffix is case-insensitive");
     assert.equal(fixture.config.windowsSdk.msvcLibraries.includes(fixture.comsupp), false,
       "the fixture proves discovery beyond explicitly listed archives");
@@ -109,20 +109,20 @@ test.describe("Windows SDK library-root input snapshots", () => {
   });
 
   test("content changes and added or removed candidates fail exact input-map stability", t => {
-    const fixture = libraryRootFixture(t), before = hashFiles(explicitInputFiles(fixture.config)),
+    const fixture = libraryRootFixture(t), before = buildFileInputs(explicitInputFiles(fixture.config)),
       original = fs.readFileSync(fixture.comsupp), added = path.join(fixture.roots[0] || "", "later-default.lib");
     fs.appendFileSync(fixture.comsupp, "mutated\n");
-    assert.throws(() => assertStableInputHashes(before, hashFiles(explicitInputFiles(fixture.config))), /input set or contents changed/);
+    assert.throws(() => assertStableInputHashes(before, buildFileInputs(explicitInputFiles(fixture.config))), /input set or contents changed/);
     fs.writeFileSync(fixture.comsupp, original);
 
     fs.writeFileSync(added, "new candidate\n");
-    const withAdded = hashFiles(explicitInputFiles(fixture.config));
+    const withAdded = buildFileInputs(explicitInputFiles(fixture.config));
     assert.throws(() => assertStableInputHashes(before, withAdded), /input set or contents changed/);
     fs.rmSync(added);
-    assert.throws(() => assertStableInputHashes(withAdded, hashFiles(explicitInputFiles(fixture.config))), /input set or contents changed/);
+    assert.throws(() => assertStableInputHashes(withAdded, buildFileInputs(explicitInputFiles(fixture.config))), /input set or contents changed/);
 
-    const beforeRemoval = hashFiles(explicitInputFiles(fixture.config)); fs.rmSync(fixture.comsupp);
-    assert.throws(() => assertStableInputHashes(beforeRemoval, hashFiles(explicitInputFiles(fixture.config))), /input set or contents changed/);
+    const beforeRemoval = buildFileInputs(explicitInputFiles(fixture.config)); fs.rmSync(fixture.comsupp);
+    assert.throws(() => assertStableInputHashes(beforeRemoval, buildFileInputs(explicitInputFiles(fixture.config))), /input set or contents changed/);
   });
 
   test("non-regular and symlink archive candidates are rejected", t => {
@@ -426,7 +426,7 @@ fs.writeFileSync(object,JSON.stringify(args));fs.writeFileSync(depfile,object+':
       ircmt = path.join(fixture.roots[0] || "", "LIBIRCMT.LIB"), mmt = path.join(fixture.roots[0] || "", "LiBmMt.LiB");
     fs.writeFileSync(ircmt, "pinned Intel archive input\n"); fs.writeFileSync(mmt, "pinned Intel archive input\n");
     selected.windowsSdk.msvcLibraries.push(ircmt, mmt);
-    const hashes = hashFiles(explicitInputFiles(selected)), plan = windowsControllerPlan(selected, path.join(fixture.root, "planned"), repo);
+    const hashes = buildFileInputs(explicitInputFiles(selected)), plan = windowsControllerPlan(selected, path.join(fixture.root, "planned"), repo);
     for (const archive of [ircmt, mmt]) {
       assert.ok(Object.hasOwn(hashes, archive), "unused Intel runtime inputs remain hash-bound");
       assert.equal(plan.link.args.includes(archive), false, "the Intel host archive is not an explicit link input");

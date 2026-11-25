@@ -181,8 +181,10 @@ if (-not (Test-Path (Join-Path $packageDir "GPU-CONFIG.md"))) {
 if (-not (Test-Path (Join-Path $packageDir "gpu-tuning.js"))) {
   throw "Extracted release package is missing gpu-tuning.js."
 }
-if (-not (Test-Path (Join-Path $packageDir "helper/hash.js"))) {
-  throw "Extracted release package is missing helper/hash.js."
+foreach ($helper in @('hash','validate')) {
+  if (-not (Test-Path (Join-Path $packageDir "helper/$helper.js"))) {
+    throw "Extracted release package is missing helper/$helper.js."
+  }
 }
 if (Test-Path (Join-Path $packageDir "DEVELOPMENT.md")) {
   throw "Extracted release package unexpectedly contains DEVELOPMENT.md."

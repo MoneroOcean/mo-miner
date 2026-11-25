@@ -2,7 +2,8 @@
 "use strict";
 
 const fs = require("node:fs");
-const {isRecord, parseRate} = require("../../scripts/readme-performance");
+const {isObject} = require("../../helper/validate");
+const {parseRate} = require("../../scripts/readme-performance");
 /** @typedef {{algo: string, status: string, samples: unknown[]}} ReportResult */
 /** @typedef {{label: string, results: ReportResult[]}} Report */
 /** @typedef {{value: number, unit: string, normalized: number}} SampleValue */
@@ -27,7 +28,7 @@ const sampleValue = (result) => {
   if (!Array.isArray(samples) || !samples.length) {return null;}
   const normalizedSamples = [];
   for (const sample of samples) {
-    if (!isRecord(sample)) {return null;}
+    if (!isObject(sample)) {return null;}
     const reportedValue = sample["value_per_second"];
     let normalized = typeof reportedValue === "number" ? reportedValue : NaN;
     if (!Number.isFinite(normalized) || normalized <= 0) {
@@ -45,7 +46,7 @@ const sampleValue = (result) => {
   // Render in the last steady sample's prefix while comparing in prefix-independent units. This
   // also reads older reports that predate value_per_second.
   const lastSample = samples.at(-1);
-  if (!isRecord(lastSample) || typeof lastSample["unit"] !== "string") {return null;}
+  if (!isObject(lastSample) || typeof lastSample["unit"] !== "string") {return null;}
   const unit = lastSample["unit"];
   const unitValue = parseRate(`1 ${unit}`)?.value;
   return unitValue ? {value: normalized / unitValue, unit, normalized} : null;
@@ -53,7 +54,7 @@ const sampleValue = (result) => {
 
 /** @param {unknown} report @returns {Report} */
 function validateReport(report) {
-  if (!isRecord(report)) {throw new Error("report must be a non-array object");}
+  if (!isObject(report)) {throw new Error("report must be a non-array object");}
   const label = report["label"];
   if (typeof label !== "string" || !label.trim()) {
     throw new Error("report label must be a nonempty string");
@@ -66,7 +67,7 @@ function validateReport(report) {
   /** @type {ReportResult[]} */
   const results = [];
   for (const result of rawResults) {
-    if (!isRecord(result)) {throw new Error("every result must be a non-array object");}
+    if (!isObject(result)) {throw new Error("every result must be a non-array object");}
     const algo = result["algo"];
     if (typeof algo !== "string" || !algo.trim()) {
       throw new Error("every result algo must be a nonempty string");

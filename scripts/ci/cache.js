@@ -6,8 +6,7 @@
 // release never sees which way the root was obtained.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto");
 const {fileHash, sourceInputs} = require("../build-source-inputs");
-const {ciSuffix, ciBuildJobs} = require("../native-ci-job");
-const {appendOutputs} = require("./seal");
+const {appendWorkflowOutputs, ciSuffix, ciBuildJobs} = require("../native-ci-job");
 
 const repo = path.resolve(__dirname, "../..");
 
@@ -37,7 +36,7 @@ module.exports = {cacheKey};
 if (require.main === module) {
   try {
     if (process.argv.length !== 3) {throw new Error("Usage: cache.js <name>");}
-    appendOutputs(cacheKey(process.argv[2] || ""));
+    appendWorkflowOutputs(process.env, cacheKey(process.argv[2] || ""));
   } catch (error) {
     console.error("[native-ci] " + (error instanceof Error ? error.message : String(error)));
     process.exitCode = 1;

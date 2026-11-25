@@ -14,7 +14,8 @@ const ciJit = require("../native-ci-linux-jit"),
   dpcppInputs = require("../native-dpcpp-cuda-inputs"),
   {auditGnuHeaders} = require("../prepare-native-gnu-headers");
 const {fileHash, readBuildJson, readCanonicalBuildJson} = require("../build-source-inputs");
-const {canonicalFile, appendOutputs} = require("./seal");
+const {canonicalFile} = require("./seal");
+const {appendWorkflowOutputs} = require("../native-ci-job");
 
 const repo = path.resolve(__dirname, "../..");
 const windowsTarget = "x86_64-w64-windows-gnu";
@@ -208,20 +209,19 @@ function main(args) {
   if (command === "cuda-images-sources") {
     restoreCudaImageSources(ciSources.ciPaths());
   } else if (command === "rocm-hip-headers") {
-    appendOutputs(exportRocmHipHeadersCi(ciSources.ciPaths()));
+    appendWorkflowOutputs(process.env, exportRocmHipHeadersCi(ciSources.ciPaths()));
   } else if (command === "acpp-frontend") {
-    appendOutputs(exportAcppFrontendCi(ciSources.ciPaths()));
+    appendWorkflowOutputs(process.env, exportAcppFrontendCi(ciSources.ciPaths()));
   } else if (command === "linux-jit-resources-seal") {
-    appendOutputs(sealLinuxJitResources(ciSources.ciPaths()));
+    appendWorkflowOutputs(process.env, sealLinuxJitResources(ciSources.ciPaths()));
   } else if (command === "windows-jit-resources") {
-    appendOutputs(produceWindowsJitResourcesCi(ciSources.ciPaths()));
+    appendWorkflowOutputs(process.env, produceWindowsJitResourcesCi(ciSources.ciPaths()));
   } else {
     throw new Error("Usage: linux-sdk.js cuda-images-sources|rocm-hip-headers|acpp-frontend|linux-jit-resources-seal|windows-jit-resources");
   }
 }
 
-module.exports = {restoreCudaImageSources, exportRocmHipHeadersCi, exportAcppFrontendCi, assertLinuxJitResourceResult,
-  sealLinuxJitResources, windowsJitInputPins, produceWindowsJitResourcesCi, main};
+module.exports = {assertLinuxJitResourceResult, sealLinuxJitResources, windowsJitInputPins, main};
 
 if (require.main === module) {
   try {

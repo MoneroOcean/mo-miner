@@ -5,7 +5,7 @@
 // and artifact names as the first attempt. Hosted runners start empty; a root left by an earlier job
 // on the same machine is rejected when the next job starts.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {createHash} = require("node:crypto");
-const {hasExactBuildFields, fileHash} = require("./build-source-inputs");
+const {fileHash} = require("./build-source-inputs");
 
 /** The work-root suffix the workflow exports (`ci`); test fixtures pass a unique value to stay isolated.
  * @param {NodeJS.ProcessEnv} [environment] */
@@ -104,23 +104,17 @@ function runNode(file, args, env, timeout = 50 * 60 * 1000) {
 /** @param {string} value */
 function jsonHash(value) {return createHash("sha256").update(value).digest("hex");}
 
-/** Shrink each synchronous child timeout against the one shared component deadline.
- * @param {number} deadlineMs @param {number} maximumMs @param {number} [nowMs] */
-function linuxNativeComponentChildTimeout(deadlineMs, maximumMs, nowMs = Date.now()) {
-  if (!Number.isSafeInteger(deadlineMs) || !Number.isSafeInteger(maximumMs) || maximumMs < 1 ||
-      !Number.isSafeInteger(nowMs) || nowMs < 0) {throw new Error("Native component child deadline is malformed");}
-  const timeout = Math.min(maximumMs, deadlineMs - nowMs);
-  if (!Number.isSafeInteger(timeout) || timeout < 1000) {throw new Error("Native component deadline expired before the next child stage");}
-  return timeout;
-}
-
-/** @param {NodeJS.ProcessEnv} environment @param {Record<string, string>} values */
+/** Append step outputs for every native CI job and scripts/ci step in one write. GITHUB_OUTPUT is
+ * line-based `key=value`, so a value with a line break could forge another output; reject it
+ * instead of using heredoc syntax. The runner creates the file before each step, so a missing,
+ * relative or redirected path is a misconfigured caller, never a file to create.
+ * @param {NodeJS.ProcessEnv} environment @param {Record<string, string>} values */
 function appendWorkflowOutputs(environment, values) {
   const output = environment["GITHUB_OUTPUT"], stat = output && path.isAbsolute(output) ? fs.lstatSync(output, {throwIfNoEntry: false}) : undefined,
     lines = Object.entries(values);
-  if (!output || !stat?.isFile() || stat.isSymbolicLink() || lines.some(([key, value]) =>
+  if (!output || !stat?.isFile() || stat.isSymbolicLink() || !lines.length || lines.some(([key, value]) =>
     !/^[a-z][a-z0-9_]*$/.test(key) || /[\r\n]/.test(value))) {
-    throw new Error("Linux source-JIT runtime handoff requires a regular GitHub output file and bounded fields");
+    throw new Error("Native CI workflow outputs require an existing regular GITHUB_OUTPUT file and one or more plain keys with single-line values");
   }
   fs.appendFileSync(output, lines.map(([key, value]) => key + "=" + value).join("\n") + "\n", {encoding: "utf8"});
 }
@@ -135,18 +129,20 @@ function canonicalExecutable(file) {
 }
 
 /** Convert the explicit job-start epoch to a bounded child timeout, optionally reserving
- * time for the remaining audit/package stages before the hosted job limit.
+ * time for the remaining audit/package stages before the hosted job limit. This is
+ * ci/job.js boundedStepMs plus the 60-minute bound and an injectable clock; it cannot
+ * import that helper because ci/job.js depends on this module.
  * @param {string} deadlineEpoch @param {number} maximumMs @param {number} [nowMs] @param {number} [reserveMs] */
 function ioOpenSslChildTimeout(deadlineEpoch, maximumMs, nowMs = Date.now(), reserveMs = 0) {
   if (!/^\d{10}$/.test(deadlineEpoch) || !Number.isSafeInteger(nowMs) || nowMs < 0 ||
       !Number.isSafeInteger(reserveMs) || reserveMs < 0) {
     throw new Error("Native I/O/OpenSSL CI needs a valid bounded job-start deadline");
   }
-  const deadlineMs = Number(deadlineEpoch) * 1000, remainingMs = deadlineMs - nowMs;
-  if (!Number.isSafeInteger(remainingMs) || remainingMs > 60 * 60 * 1000) {
-    throw new Error("Native I/O/OpenSSL deadline exceeds the 60-minute job bound");
-  }
-  return linuxNativeComponentChildTimeout(deadlineMs - reserveMs, maximumMs, nowMs);
+  const remainingMs = Number(deadlineEpoch) * 1000 - nowMs;
+  if (remainingMs > 60 * 60 * 1000) {throw new Error("Native I/O/OpenSSL deadline exceeds the 60-minute job bound");}
+  const timeout = Math.min(maximumMs, remainingMs - reserveMs);
+  if (!Number.isSafeInteger(timeout) || timeout < 1000) {throw new Error("Native I/O/OpenSSL deadline expired before the next child stage");}
+  return timeout;
 }
 
 /** Run an SDK producer in its own process group so a bounded timeout also contains compiler children.
@@ -170,16 +166,6 @@ function runNodeProcessGroup(script, args, environment, timeoutMs) {
   return {timeoutPath: timeoutReal, timeoutSha256};
 }
 
-/** Bound one child by both its own cap and the merged job's deadline (job start + timeout - margin).
- * @param {NodeJS.ProcessEnv} environment @param {number} maximumMs */
-function ciJobChildTimeout(environment, maximumMs) {
-  const epoch = environment["MOM_CI_DEADLINE_EPOCH"] || "", timeoutMs = Math.min(maximumMs, Number(epoch) * 1000 - Date.now());
-  if (!/^\d{10}$/.test(epoch) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 60 * 1000) {
-    throw new Error("Native CI job deadline is malformed or leaves no time for the next child");
-  }
-  return timeoutMs;
-}
-
-module.exports = {ciSuffix, validCiSuffix, ciBuildJobs, ciScopedEntries, removeTree, runNode, runNodeProcessGroup, jsonHash, hasExactKeys: hasExactBuildFields,
-  linuxNativeComponentChildTimeout, appendWorkflowOutputs, canonicalExecutable, ioOpenSslChildTimeout, ciJobChildTimeout,
+module.exports = {ciSuffix, validCiSuffix, ciBuildJobs, ciScopedEntries, removeTree, runNode, runNodeProcessGroup, jsonHash,
+  appendWorkflowOutputs, canonicalExecutable, ioOpenSslChildTimeout,
   applicationBuildFiles, applicationBuildName, releaseArtifactNames, sha256Pin, runnerPath, admitReleaseFile};

@@ -2,6 +2,9 @@
 # OpenCL ICDs come from their respective display drivers. The release bundles Node.js and isolated
 # oneAPI, DPC++, AdaptiveCpp CUDA/HIP runtimes. On NVIDIA, this script automatically installs missing
 # CUDA/C++ pieces used by the ProgPoW and PearlHash source-JIT paths.
+# package-windows.ps1 ships this file with only install.bat and install-cutlass.ps1, so it cannot
+# dot-source windows-install-helpers.ps1. Keep its NVRTC, OpenCL CPU and 7-Zip pins in step with
+# install-dev.ps1, which installs the same runtimes on development hosts.
 
 param(
   [string]$CudaToolkitUrl = "",

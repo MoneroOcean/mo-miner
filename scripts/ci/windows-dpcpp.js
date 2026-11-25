@@ -3,12 +3,12 @@
 // producer chain, and the relocatable component seal. Run from the repository checkout on a Linux x64 runner.
 const fs = require("node:fs");
 const path = require("node:path");
-const {spawnSync} = require("node:child_process");
 const ciSources = require("../native-ci-linux-sources"),
   ciTar = require("../native-ci-tar"),
   ciWindowsLlvm = require("../native-ci-windows-llvm"),
   dpcppInputs = require("../native-dpcpp-cuda-inputs");
 const {ciSuffix} = require("../native-ci-job");
+const {ciDeadline, boundedStepMs, runBoundedNode} = require("./job");
 const {hasExactBuildFields, fileHash, readBuildJson, readBuildJsonSnapshot} = require("../build-source-inputs");
 const {sdkComponents} = require("../prepare-native-sdk-sources");
 const {linuxLlvmToolHandoffInputs} = require("../native-linux-llvm-tools");
@@ -18,7 +18,6 @@ const {composeWindowsApplicationConfig} = require("../native-windows-application
 const {windowsDpcppComponentInputs} = require("../native-windows-dpcpp-component");
 const {windowsGpuHostSdkPins, windowsGpuDpcppManifest} = require("../run-native-windows-gpu-ci");
 
-const repo = path.resolve(__dirname, "../..");
 const pinPrefix = "MOM_NATIVE_WINDOWS_DPCPP_STATIC_";
 const pinNames = /** @type {const} */ ({
   source: "SOURCE_BUNDLE_SHA256",
@@ -62,10 +61,7 @@ function readPins(environment) {
  * deadline that the in-process host-SDK producer reads from its environment.
  * @param {NodeJS.ProcessEnv} environment @param {number} [nowSeconds] */
 function jobEnvironment(environment, nowSeconds = Math.floor(Date.now() / 1000)) {
-  const epoch = environment["MOM_CI_DEADLINE_EPOCH"] || "";
-  if (!/^[0-9]{10}$/.test(epoch)) {throw new Error("Malformed MOM_CI_DEADLINE_EPOCH job deadline");}
-  const deadline = Number(epoch);
-  if (deadline <= nowSeconds) {throw new Error("The Windows DPC++ job deadline is expired");}
+  const deadline = ciDeadline(environment, nowSeconds * 1000);
   const pins = readPins(environment);
   if (deadline - nowSeconds < 120) {throw new Error("Insufficient time remains before the job deadline");}
   const hostSdk = ciWindowsLlvm.windowsHostSdkEnvironment(
@@ -73,49 +69,23 @@ function jobEnvironment(environment, nowSeconds = Math.floor(Date.now() / 1000))
   return {deadline, pins, hostSdk};
 }
 
-/** Milliseconds a phase may use: its cap, shortened so the reserve still fits before the deadline.
- * @param {number} deadline Unix seconds @param {number} capMs @param {number} [reserveMs] */
-function remainingMs(deadline, capMs, reserveMs = 60000) {
-  const ms = Math.min(capMs, deadline * 1000 - Date.now() - reserveMs);
-  if (!Number.isSafeInteger(ms) || ms < 1000) {throw new Error("Job deadline expired before Windows DPC++ preparation");}
-  return ms;
+/** Milliseconds a phase may use: its cap, keeping a one-minute reserve before the deadline.
+ * @param {number} deadline Unix seconds @param {number} capMs */
+function remainingMs(deadline, capMs) {
+  return boundedStepMs(deadline * 1000, capMs, 60000, "Job deadline expired before Windows DPC++ preparation");
 }
 
 /** Run a repository Node producer under GNU timeout inside the bounded-memory scope.
  * @param {number} deadline @param {string} script @param {string[]} args @param {number} capMs */
 function runNode(deadline, script, args, capMs) {
-  const timeoutMs = remainingMs(deadline, capMs), seconds = Math.floor(timeoutMs / 1000), timeout = fs.realpathSync("/usr/bin/timeout");
-  const memoryScope = path.join(repo, "scripts/run-bounded-native-ci.sh");
-  const result = spawnSync(memoryScope, [timeout, "--signal=TERM", "--kill-after=5s", `${seconds}s`, process.execPath,
-    path.join(repo, script), ...args], {cwd: repo, env: process.env, stdio: "inherit", timeout: timeoutMs + 10000});
-  if (result.error || result.signal || result.status !== 0) {
-    throw new Error(`Bounded Windows DPC++ child failed: ${script}${result.status === 124 ? " (deadline)" : ""}`, {cause: result.error});
-  }
+  runBoundedNode(script, args, remainingMs(deadline, capMs), "Bounded Windows DPC++ child failed");
 }
 
-/** Require a single-link, canonical, bounded regular file whose bytes match its external pin.
- * @param {string} file @param {string} sha256 @param {number} [maximum] */
-function pinArchive(file, sha256, maximum = 16 * 1024 ** 3) {
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size < 1 || stat.size > maximum ||
-      fs.realpathSync(file) !== file || !/^[a-f0-9]{64}$/.test(sha256) || fileHash(file) !== sha256) {
-    throw new Error("Windows DPC++ input archive differs from its external SHA-256 pin: " + path.basename(file));
-  }
-}
-
-/** Extract a pinned state tar under base after member, expanded-size and four-GiB disk-reserve checks.
+/** Extract a pinned state tar under base within the job deadline (see restorePinnedState).
  * @param {number} deadline @param {string} archive @param {string} sha256 @param {string[]} roots
  * @param {string} base @param {number} maximumExpandedBytes */
 function restore(deadline, archive, sha256, roots, base, maximumExpandedBytes) {
-  pinArchive(archive, sha256);
-  const members = ciTar.listState(archive, roots, remainingMs(deadline, 5 * 60 * 1000)),
-    expanded = ciTar.tarExpandedBytes(archive, members.length, remainingMs(deadline, 5 * 60 * 1000)),
-    disk = fs.statfsSync(base, {bigint: true});
-  if (expanded > maximumExpandedBytes || BigInt(expanded) + 4n * 1024n ** 3n > disk.bavail * disk.bsize) {
-    throw new Error("Pinned Windows DPC++ input exceeds its extraction bound or four-GiB disk reserve");
-  }
-  ciTar.extractState(archive, base, roots, roots, remainingMs(deadline, 10 * 60 * 1000));
-  return members;
+  ciTar.restorePinnedState(archive, sha256, roots, base, maximumExpandedBytes, capMs => remainingMs(deadline, capMs));
 }
 
 /** Re-admit every same-run input, reacquire the local Windows host SDK, and run the original source-JIT
@@ -205,10 +175,7 @@ function buildComponent() {
   runNode(deadline, "scripts/native-windows-dpcpp-component.js", [path.join(adaptersRoot, "result.json"), dpcpp.cudaRoot, componentRoot], 5 * 60 * 1000);
   windowsDpcppComponentInputs(componentRoot);
   for (const file of [sourceTar, dpcppTar, jitTar, toolsTar, ioTar, windowsHermesTar, linuxHermesTar]) {fs.unlinkSync(file);}
-  fs.appendFileSync(requiredEnv(env, "GITHUB_ENV"), [
-    `MOM_NATIVE_WINDOWS_DPCPP_STATIC_DESCRIPTOR_FILE=${descriptorFile}`,
-    `MOM_NATIVE_WINDOWS_DPCPP_STATIC_COMPONENT_ROOT=${componentRoot}`,
-  ].join("\n") + "\n", "utf8");
+  fs.appendFileSync(requiredEnv(env, "GITHUB_ENV"), `MOM_NATIVE_WINDOWS_DPCPP_STATIC_COMPONENT_ROOT=${componentRoot}\n`, "utf8");
 }
 
 /** Revalidate the fresh same-run component, pack exactly its manifest-listed members into
@@ -258,4 +225,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = {jobEnvironment, readPins, pinArchive, buildComponent, sealComponent};
+module.exports = {jobEnvironment, sealComponent};

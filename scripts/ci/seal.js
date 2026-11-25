@@ -6,6 +6,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const {fileHash} = require("../build-source-inputs");
+const {appendWorkflowOutputs} = require("../native-ci-job");
 
 // The shared same-run handoff bound; it matches the producer and consumer tar admission limits.
 const maxHandoffBytes = 16 * 1024 ** 3;
@@ -20,17 +21,6 @@ function canonicalFile(file, label, maxBytes = maxHandoffBytes) {
     throw new Error(label + " is not a bounded canonical singly-linked regular file: " + file);
   }
   return stat;
-}
-
-/** Append `key=value` lines to the GitHub step output file in one write.
- * @param {Record<string, string | number>} values @param {NodeJS.ProcessEnv} [environment] */
-function appendOutputs(values, environment = process.env) {
-  const output = environment["GITHUB_OUTPUT"] || "", entries = Object.entries(values);
-  if (!path.isAbsolute(output)) {throw new Error("GITHUB_OUTPUT must be an absolute path");}
-  if (!entries.length || entries.some(([key, value]) => !/^[a-z][a-z0-9_]*$/.test(key) || /[\r\n]/.test(String(value)))) {
-    throw new Error("GitHub outputs must be single-line values with lower-case keys");
-  }
-  fs.appendFileSync(output, entries.map(([key, value]) => key + "=" + value).join("\n") + "\n");
 }
 
 /** Parse `<output_key>=<file>` arguments; keys are unique so no output can be silently overwritten.
@@ -54,11 +44,11 @@ function seal(args, environment = process.env) {
     canonicalFile(file, "Sealed handoff " + key);
     return [key, fileHash(file)];
   }));
-  appendOutputs(values, environment);
+  appendWorkflowOutputs(environment, values);
   return values;
 }
 
-module.exports = {maxHandoffBytes, canonicalFile, appendOutputs, parseSealArguments, seal};
+module.exports = {maxHandoffBytes, canonicalFile, seal};
 
 if (require.main === module) {
   try {

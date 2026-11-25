@@ -118,7 +118,7 @@ function localJitSdkPhasePrefix(output) {
   let missing = false, latest = null;
   const allowed = new Set(["build", "before.json", "configured-tools.json", "commands.log", "commands.stderr.log"]);
   for (const phase of phases) {
-    const file = path.join(output, phase === "configure" ? "stage-configure.json" : "stage-" + phase + ".json"),
+    const file = path.join(output, "stage-" + phase + ".json"),
       stageStat = fs.lstatSync(file, {throwIfNoEntry: false}), log = path.join(output, phase + ".log"),
       logStat = fs.lstatSync(log, {throwIfNoEntry: false}), dependencyLog = path.join(output, "dependencies-" + phase + ".log"),
       dependencyStat = phase === "configure" ? null : fs.lstatSync(dependencyLog, {throwIfNoEntry: false});
@@ -140,7 +140,6 @@ function localJitSdkPhasePrefix(output) {
   regularFile(path.join(output, "commands.log"), "Original JIT command graph");
   regularFile(path.join(output, "commands.stderr.log"), "Original JIT command graph diagnostics");
   canonicalBuildDirectory(path.join(output, "build"), "Local JIT build tree");
-  allowed.add("before.json");
   for (const name of fs.readdirSync(output)) {
     if (!allowed.has(name) && name !== "result.json") {throw new Error("Unrecognized local JIT output entry; preserve the output: " + name);}
   }
@@ -373,6 +372,4 @@ if (require.main === module) {
 }
 
 module.exports = {localJitSdkPaths, localJitSdkContextFromWorkspace, localJitSdkContext, localJitSdkConfig, verifyPreparedRoots,
-  auditLocalJitSdkInputs, localJitSdkPhasePrefix, auditLocalCompilerIsolation, verifyLocalStaticSdkRecipe, verifyLocalStaticDependencies,
-  auditLocalStaticDpcpp, runLocalJitSdkChild,
-  buildLocalLinuxJitSdk, main, phases};
+  localJitSdkPhasePrefix, verifyLocalStaticSdkRecipe, verifyLocalStaticDependencies, runLocalJitSdkChild, buildLocalLinuxJitSdk, main};

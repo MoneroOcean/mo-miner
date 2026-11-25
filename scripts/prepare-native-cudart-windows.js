@@ -119,12 +119,11 @@ function capture(tool, args, label, maximum) {
   return result.stdout;
 }
 
-/** This is a build-time system utility. Receipts record its provenance; consumers never execute it. */
+/** This is a build-time system utility. Receipts record its provenance; consumers never execute it.
+ * trustedUnzipSnapshot already bounds the size and rejects aliases. */
 function findUnzip() {
-  const file = "/usr/bin/unzip", stat = trustedUnzipSnapshot();
-  if (stat.size > 128n * 1024n * 1024n) {
-    throw new Error("Windows CUDA Runtime preparation requires canonical /usr/bin/unzip");
-  }
+  const file = "/usr/bin/unzip";
+  trustedUnzipSnapshot();
   fs.accessSync(file, fs.constants.X_OK); return file;
 }
 

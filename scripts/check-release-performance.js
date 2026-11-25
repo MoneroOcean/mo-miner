@@ -8,8 +8,9 @@ const {parseArgs} = require("node:util");
 
 const compilerPolicy = require("../compiler-policy");
 const gpuTuning = require("../gpu-tuning");
+const {isObject} = require("../helper/validate");
 const {
-  appendOutputTail, isRecord, maxCapturedOutput, readPerformanceFile, platformColumns, reportedRates,
+  appendOutputTail, maxCapturedOutput, readPerformanceFile, platformColumns, reportedRates,
 } = require("./readme-performance");
 const {parseLoopStats} = require("./benchmark-gpu-algos");
 const {windowsCmdArgs} = require("./windows-command");
@@ -621,7 +622,7 @@ async function main(options, onSummary = null) {
     .find((line) => line.startsWith("MOM_ALGORITHMS "));
   if (!marker) {throw new Error("Release device discovery omitted MOM_ALGORITHMS");}
   const algoParams = JSON.parse(marker.slice("MOM_ALGORITHMS ".length));
-  if (!isRecord(algoParams)) {
+  if (!isObject(algoParams)) {
     throw new Error("Release device discovery returned invalid MOM_ALGORITHMS");
   }
 

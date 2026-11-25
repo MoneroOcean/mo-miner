@@ -230,7 +230,7 @@ function stageVerified(source, destination, sha256) {
  * @param {Parameters<typeof windowsHiprtcPlan>[0]} input @param {NodeJS.ProcessEnv} [environment] */
 function buildNativeWindowsHiprtcSdk(input, environment = process.env) {
   if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {
-    throw new Error("Windows HIPRTC source production requires Linuxx64 and MOM_AOT_BUILD_ONLY=1");
+    throw new Error("Windows HIPRTC source production requires Linux x64 and MOM_AOT_BUILD_ONLY=1");
   }
   const plan = windowsHiprtcPlan(input), sourceState = sourceInputs(input.source, ["hipamd", "rocclr"], []);
   verifyPinnedClrSource(input.source);

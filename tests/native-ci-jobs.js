@@ -92,7 +92,7 @@ describe("Chained CI phases", {skip: process.platform !== "linux"}, () => {
     assert.equal(chain.requiredOutput(result.outputs, "bundle_sha256"), "b".repeat(64));
     assert.throws(() => chain.requiredOutput(result.outputs, "manifest_sha256"), /did not report/);
     assert.throws(() => chain.runPhaseCommand(context, "fails", [process.execPath, "-e", "process.exit(3)"], process.env), /phase failed: fails/);
-    assert.throws(() => chain.chainContext({...environment, MOM_CI_DEADLINE_EPOCH: "1000000000"}), /future MOM_CI_DEADLINE_EPOCH/);
+    assert.throws(() => chain.chainContext({...environment, MOM_CI_DEADLINE_EPOCH: "1000000000"}), /MOM_CI_DEADLINE_EPOCH aggregate deadline is invalid or expired/);
   });
 });
 

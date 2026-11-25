@@ -54,7 +54,7 @@ function hiprtcHeaders(text, headers) {
  * @param {Config} c @param {string} output @param {number} jobs */
 function resourcePlan(c, output, jobs) {
   validateConfig(c);
-  if (!literal(output) || !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {throw new Error("Select a literal output and jobs in1..16");}
+  if (!literal(output) || !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {throw new Error("Select a literal output and jobs in 1..16");}
   const source = path.join(output, "source"), build = path.join(output, "build"), install = path.join(output, "install");
   const clang = path.join(c.llvm, "bin/clang"), target = c.target === "win32" ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
   // prepare-builtins is a host executable linked to the selected LLVM archives. Its

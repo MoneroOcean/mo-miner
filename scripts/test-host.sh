@@ -53,6 +53,36 @@ extract_cpp() {
   node "$root/tests/common/cpp-source.js" "$root/$file" "$@" > "$out/$name"
 }
 
+# Print the one #if..#endif group of a file that matches an awk regex. Production values selected
+# by the preprocessor must be copied with their whole conditional; zero or several matches fail.
+extract_conditional() {
+  local pattern=$1 file=$2
+  awk -v pattern="$pattern" '
+    /^#if/ { group = ""; grouping = 1 }
+    grouping { group = group $0 "\n" }
+    /^#endif/ && grouping {
+      grouping = 0
+      if (group ~ pattern) { printf "%s", group; found++ }
+    }
+    END { if (found != 1) exit 1 }
+  ' "$root/$file"
+}
+
+# Set profile_flags to the host-visible macros of one SYCL backend build profile.
+profile_flags=()
+set_profile_flags() {
+  case "$1" in
+    native) profile_flags=() ;;
+    acpp) profile_flags=(-DMOM_SYCL_ADAPTIVECPP) ;;
+    portable) profile_flags=(-DMOM_SYCL_PORTABLE_OPENCL) ;;
+    cuda) profile_flags=(-DMOM_SYCL_HAS_CUDA) ;;
+    hip) profile_flags=(-DMOM_SYCL_HAS_HIP) ;;
+    acpp-cuda) profile_flags=(-DMOM_SYCL_ADAPTIVECPP -DMOM_SYCL_ADAPTIVECPP_CUDA) ;;
+    *) echo "unknown SYCL profile: $1" >&2; return 1 ;;
+  esac
+}
+sycl_profiles=(native acpp portable cuda hip acpp-cuda)
+
 # Compile the production flush loops without importing SYCL or duplicating ownership.
 extract_cpp beam_compact_flush.inc sycl/beamhash3/compact-solver.inc \
   '          for (unsigned r = subgroup; r < lsz; r += subgroups) {'
@@ -101,8 +131,68 @@ build_run pearlhash-seed "$root/tests/reference/pearlhash-seed.cpp"
 build_run pearlhash-jackpot "$root/tests/native/pearlhash-jackpot.cpp"
 build_run pearlhash-plain-proof "$root/tests/native/pearlhash-plain-proof.cpp"
 
-bash "$root/scripts/test-intel-geometry.sh"
-bash "$root/scripts/test-zelhash-layout.sh"
+# Intel geometry, large-GRF and exchange policy under every backend profile. Its own include
+# directory keeps the test-only SYCL property-header stub away from the other fixtures.
+geometry=intel-geometry
+mkdir -p "$out/$geometry/sycl/ext/intel/experimental"
+printf '%s\n' '// Test-only property-header presence; no SYCL API implementation.' > \
+  "$out/$geometry/sycl/ext/intel/experimental/grf_size_properties.hpp"
+extract_cpp "$geometry/intel_geometry_helper.inc" sycl/lib-internal.h \
+  'inline unsigned mom_intel_eu_simd_width('
+# Keep the actual large-GRF build guard and complete wrapper; the fixture mocks only submission.
+extract_conditional '#define MOM_ZELHASH_INTEL_LARGE_GRF' sycl/zelhash/zelhash.cpp \
+  > "$out/$geometry/zelhash_generator_guard.inc"
+extract_cpp "$geometry/zelhash_generator_dispatch.inc" sycl/zelhash/generation.inc \
+  'static sycl::event submit_gen_fill('
+extract_cpp "$geometry/c30_device_memory.inc" sycl/c30/c30.cpp 'struct DeviceMemory {'
+printf ';\n' >> "$out/$geometry/c30_device_memory.inc"
+extract_cpp "$geometry/kawpow_exchange_policy.inc" sycl/kawpow/state.inc \
+  'static bool kawpow_default_subgroup_exchange('
+for profile in "${sycl_profiles[@]}"; do
+  set_profile_flags "$profile"
+  printf '%s %s: ' "$geometry" "$profile"
+  build_run "$geometry-$profile" "${profile_flags[@]}" -I "$out/$geometry" \
+    "$root/tests/native/intel-geometry.cpp"
+done
+
+# Zelhash production geometry and scalar record arithmetic: layout.inc through its leaf decoder.
+# The vector stores after it use clang-only types and are covered by full SYCL compilation instead.
+zelhash=zelhash-layout
+mkdir -p "$out/$zelhash"
+node -e '
+  const fs = require("node:fs"), {extractCppBlock} = require(process.argv[1]);
+  const source = fs.readFileSync(process.argv[2], "utf8");
+  const block = extractCppBlock(source, process.argv[3]);
+  process.stdout.write(source.slice(0, source.indexOf(block) + block.length));
+' "$root/tests/common/cpp-source.js" "$root/sycl/zelhash/layout.inc" \
+  'inline uint32_t dense_l0_load_index(' > "$out/$zelhash/zelhash_layout_math.inc"
+extract_cpp "$zelhash/zelhash_compact_store.inc" sycl/zelhash/layout.inc \
+  'inline void dense_l0_store_compact('
+extract_cpp "$zelhash/zelhash_recovery_follower.inc" sycl/zelhash/recovery.inc \
+  'inline uint32_t recovery_follower('
+extract_cpp "$zelhash/zelhash_recovery_leaf.inc" sycl/zelhash/recovery.inc \
+  '          if (lid < PROOF && valid[0]) {'
+extract_cpp "$zelhash/zelhash_state.inc" sycl/zelhash/state.inc 'unsigned zelhash_slot_capacity(' \
+  'static unsigned zelhash_configured_slots(' 'class State {'
+printf ';\n' >> "$out/$zelhash/zelhash_state.inc"
+extract_cpp "$zelhash/zelhash_entry_guard.inc" sycl/zelhash/zelhash.cpp \
+  '  if (!input || !solution_out'
+extract_cpp "$zelhash/usm_ptr.inc" sycl/lib-internal.h 'class UsmPtr {'
+printf ';\n' >> "$out/$zelhash/usm_ptr.inc"
+extract_cpp "$zelhash/usm_alloc.inc" sycl/lib-internal.h 'UsmPtr<T> mom_usm_alloc(' \
+  'inline uint64_t mom_now_ms(' 'class MomSyclRateWindow {'
+printf ';\n' >> "$out/$zelhash/usm_alloc.inc"
+cat "$out/$zelhash/usm_alloc.inc" >> "$out/$zelhash/usm_ptr.inc"
+extract_cpp "$zelhash/ulong_parser.inc" sycl/lib-internal.h 'inline bool mom_parse_env_ulong('
+for profile in "${sycl_profiles[@]}"; do
+  set_profile_flags "$profile"
+  printf '%s %s: ' "$zelhash" "$profile"
+  build_run "$zelhash-$profile" -std=c++20 "${profile_flags[@]}" -I "$out/$zelhash" \
+    "$root/tests/native/zelhash-layout.cpp"
+  printf '%s %s-state: ' "$zelhash" "$profile"
+  build_run "$zelhash-$profile-state" -std=c++20 "${profile_flags[@]}" -I "$out/$zelhash" \
+    "$root/tests/native/zelhash-state.cpp"
+done
 
 build_run zhash-core "$root/tests/native/zhash-core.cpp"
 build_run zhash-core-hip -DMOM_SYCL_HAS_HIP "$root/tests/native/zhash-core.cpp"
@@ -113,16 +203,8 @@ build_run zhash-session-intel -D__INTEL_LLVM_COMPILER -DMOM_ZHASH_INTEL_LATE_BUC
 extract_cpp local_memory_fits.inc sycl/lib-internal.h 'inline bool sycl_local_memory_fits('
 extract_cpp equihash192-7-layout.inc sycl/equihash192-7/layout.h 'struct BucketLayout {'
 printf ';\n' >> "$out/equihash192-7-layout.inc"
-# The production slot count is a preprocessor-selected constant, so copy its whole conditional.
-awk '
-  /^#if/ { group = ""; grouping = 1 }
-  grouping { group = group $0 "\n" }
-  /^#endif/ && grouping {
-    grouping = 0
-    if (group ~ /constexpr unsigned ProductionSlotsPerBucket =/) { printf "%s", group; found++ }
-  }
-  END { if (found != 1) exit 1 }
-' "$root/sycl/equihash192-7/layout.h" >> "$out/equihash192-7-layout.inc"
+extract_conditional 'constexpr unsigned ProductionSlotsPerBucket =' sycl/equihash192-7/layout.h \
+  >> "$out/equihash192-7-layout.inc"
 extract_cpp equihash192-7-admission.inc sycl/equihash192-7/equihash192-7.cpp \
   'unsigned equihash192_7_intensity('
 extract_cpp zhash_admission.inc sycl/zhash/zhash.cpp 'unsigned zhash_intensity('

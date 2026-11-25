@@ -396,5 +396,5 @@ function main() {
 }
 
 module.exports = {buildInputs, oneapiCompilerPath, admitOneapiCompiler, oneapiCompilerInputs, verifyOneapiCompiler, sourceCompiler, deviceLinkArgs,
-  cudaDeviceLinkSetup, dpcppCompileCommands, deviceRegistrationArgs, deviceRegistrationImports, isolateGpuGraph};
+  cudaDeviceLinkSetup, dpcppCompileCommands, deviceRegistrationArgs, deviceRegistrationImports};
 if (require.main === module) {try {main();} catch (error) {console.error(error); process.exitCode = 1;}}

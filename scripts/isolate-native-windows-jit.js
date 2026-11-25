@@ -9,11 +9,10 @@ const {isolateCoffCompilerArchives} = require("./native-coff-archive");
 const {jitBuildStages} = require("./native-jit-stages");
 const {isStaticArchive} = require("./native-audit");
 const {nativeSdkEnvironment} = require("./build-environment");
+const {isObject: record} = require("../helper/validate");
 const repo = path.resolve(__dirname, "..");
 const hashPattern = /^[a-f0-9]{64}$/;
 
-/** @param {unknown} value @returns {value is Record<string, unknown>} */
-function record(value) {return value !== null && typeof value === "object" && !Array.isArray(value);}
 /** @param {unknown} value */
 function absolutePath(value) {return typeof value === "string" && value.length <= 4096 && path.isAbsolute(value) && path.resolve(value) === value && !/[\r\n\0]/.test(value);}
 /** @typedef {{version?:unknown, kind?:unknown, target?:unknown, compiled?:unknown, buildOnly?:unknown, executed?:unknown,

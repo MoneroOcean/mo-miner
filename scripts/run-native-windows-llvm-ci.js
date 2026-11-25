@@ -10,6 +10,7 @@ const ciJob = require("./native-ci-job"),
   ciWindowsLlvm = require("./native-ci-windows-llvm"), {fileHash} = require("./build-source-inputs");
 const stateTransport = require("./native-windows-llvm-state");
 const {ciSuffix} = require("./native-ci-job");
+const {boundedStepMs} = require("./ci/job");
 const {archiveName, archiveSha256} = require("./native-llvm-sdk");
 const {linuxLlvmToolHandoffInputs} = require("./native-linux-llvm-tools");
 const {windowsControllerHandoffInputs} = require("./native-windows-controller-handoff");
@@ -200,11 +201,8 @@ function windowsLlvmDescriptorProducerPins(generated, descriptorPath, provenance
  * @param {string} stage @param {NodeJS.ProcessEnv} [environment] */
 function runWindowsLlvmCiJob(stage, environment = process.env) {
   const plan = windowsLlvmCiJobPreflight(stage, environment), env = plan.environment, suffix = plan.suffix;
-  const remaining = (/** @type {number} */ capMs, reserveMs = 60 * 1000) => {
-    const end = Math.min(Number(plan.jobDeadlineEpoch) * 1000, Number(plan.runDeadlineEpoch) * 1000), ms = Math.min(capMs, end - Date.now() - reserveMs);
-    if (!Number.isSafeInteger(ms) || ms < 1000) {throw new Error("Windows LLVM shared job/run budget expired before " + stage);}
-    return ms;
-  };
+  const remaining = (/** @type {number} */ capMs, reserveMs = 60 * 1000) => boundedStepMs(
+    Math.min(Number(plan.jobDeadlineEpoch), Number(plan.runDeadlineEpoch)) * 1000, capMs, reserveMs, "Windows LLVM shared job/run budget expired before " + stage);
   if (stage === "configure" && !environment["MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH"]) {
     if (!environment["GITHUB_ENV"] || !path.isAbsolute(environment["GITHUB_ENV"])) {
       throw new Error("Windows LLVM configure needs a workflow environment file for its immutable run deadline");

@@ -10,7 +10,7 @@ const {windowsIntelRuleOverride} = require("./prepare-native-jit-toolchain");
 const {jitBuildOutputs} = require("./native-jit-stages");
 const {isStaticArchive} = require("./native-audit");
 const {nativeRuntimeLibraries} = require("./native-sdk-runtime");
-const {verifyWindowsLlvmAdmission} = require("./build-native-windows-llvm-sdk");
+const {cmake, cmakeCacheValues, commandSwitches, verifyWindowsLlvmAdmission} = require("./build-native-windows-llvm-sdk");
 
 const repo = path.resolve(__dirname, "..");
 const revision = "27682a16360e33e37c4f3cc6adf9a620733f8fe1";
@@ -35,22 +35,6 @@ const requiredDeviceLibraries = Object.freeze(["asanrtl.bc", "hip.bc", "ockl.bc"
 function literal(value) {
   return typeof value === "string" && value.length <= 4096 && path.isAbsolute(value) && path.normalize(value) === value &&
     !/[;"$`\\]/.test(value) && !Array.from(value).some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
-}
-
-/** @param {string} command */
-function commandSwitches(command) {
-  return [...command.matchAll(/(?:^|[\s"])(\/(?:[A-Za-z][A-Za-z0-9_:+.=-]*)|-[A-Za-z][A-Za-z0-9_:+.=-]*)(?=[\s"]|$)/g)]
-    .map(match => (match[1] || "").toUpperCase());
-}
-
-/** @param {string} value */
-function cmake(value) {
-  if (typeof value !== "string" || value.length > 65536 || /[\r\n\0]/.test(value)) {throw new Error("Invalid literal COMGR CMake value");}
-  let equals = "==";
-  for (const match of value.matchAll(/\](=*)\]/g)) {
-    if (match[1] !== undefined && match[1].length >= equals.length) {equals = "=".repeat(match[1].length + 1);}
-  }
-  return "[" + equals + "[" + value + "]" + equals + "]";
 }
 
 /** @param {string} file @param {string} label */
@@ -389,8 +373,7 @@ function auditBc2hCompileCommands(file, compiler, build, generated, object) {
 
 /** @param {string} file @param {ReturnType<typeof windowsComgrSdkPlan>} plan */
 function verifyComgrCache(file, plan) {
-  const text = readBuildText(file, 8 << 20), values = new Map();
-  for (const line of text.split(/\r?\n/)) {const entry = line.match(/^([^/#][^:]*):[^=]*=(.*)$/); if (entry) {values.set(entry[1], entry[2]);}}
+  const values = cmakeCacheValues(readBuildText(file, 8 << 20));
   const expected = {CMAKE_SYSTEM_NAME: "Windows", CMAKE_C_COMPILER: plan.compilerTools.CMAKE_C_COMPILER,
     CMAKE_CXX_COMPILER: plan.compilerTools.CMAKE_CXX_COMPILER, CMAKE_C_COMPILER_TARGET: plan.targetTriple,
     CMAKE_CXX_COMPILER_TARGET: plan.targetTriple, CMAKE_LINKER: plan.compilerTools.CMAKE_LINKER,
@@ -502,7 +485,7 @@ function writeReceipt(output, value, replace = false) {
  * @param {NodeJS.ProcessEnv} [environment] */
 function configureWindowsComgrSdk(input, environment = process.env) {
   if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {
-    throw new Error("Windows COMGR cross-build requires Linuxx64 and MOM_AOT_BUILD_ONLY=1");
+    throw new Error("Windows COMGR cross-build requires Linux x64 and MOM_AOT_BUILD_ONLY=1");
   }
   const descriptor = validateWindowsLlvmSdkConfig(readBuildJson(input.descriptorFile));
   const llvm = verifyWindowsLlvmAdmission(input.targetLlvm), llvmTools = {cmake: llvm.receipt.plan.tools.cmake, ninja: llvm.receipt.plan.tools.ninja};
@@ -687,7 +670,7 @@ function verifySession(output) {
  * @param {string} output @param {NodeJS.ProcessEnv} [environment] */
 function buildWindowsComgrSdk(output, environment = process.env) {
   if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {
-    throw new Error("Windows COMGR build requires Linuxx64 and MOM_AOT_BUILD_ONLY=1");
+    throw new Error("Windows COMGR build requires Linux x64 and MOM_AOT_BUILD_ONLY=1");
   }
   const {receipt, plan, llvm, device} = verifySession(output);
   const env = cleanEnvironment(environment, plan, path.dirname(plan.hostHelper));

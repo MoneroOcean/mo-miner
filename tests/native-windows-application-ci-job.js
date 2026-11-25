@@ -219,7 +219,7 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
     fs.writeFileSync(githubOutput, "", {flag: "wx"});
     /** @type {NodeJS.ProcessEnv} */
     const environment = {PATH: process.env["PATH"], RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: "ci-" + runId + "-1",
-      GITHUB_OUTPUT: githubOutput, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "4", MOM_CI_DEADLINE_EPOCH: deadline, ...pins};
+      GITHUB_OUTPUT: githubOutput, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2", MOM_CI_DEADLINE_EPOCH: deadline, ...pins};
     const {deps, restoreCalls, observed} = fakeBuildDependencies(suffix, temp, manifests);
     job.runBuild(environment, deps);
 
@@ -247,7 +247,7 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
     assert.deepEqual(Object.keys(buildEnvironment).filter(key => key.startsWith("MOM_NATIVE_WINDOWS_APPLICATION_") || key === "MOM_CI_DEADLINE_EPOCH"),
       [], "admitted transport pins and changing deadlines must not invalidate compiler caches");
     assert.equal(buildEnvironment.MOM_AOT_BUILD_ONLY, "1");
-    assert.equal(buildEnvironment.MOM_BUILD_JOBS, "4");
+    assert.equal(buildEnvironment.MOM_BUILD_JOBS, "2", "the release build keeps the workflow's admitted job count");
     assert.equal(buildArgs.command, path.join(repo, "scripts/run-bounded-native-ci.sh"), "the final link runs inside the host memory scope");
     assert.equal(buildArgs.args[0], fs.realpathSync("/usr/bin/timeout"), "the aggregate child deadline remains inside that scope");
     assert.deepEqual(buildArgs.args.slice(buildArgs.args.indexOf("--native") - 4), ["npm", "run", "build:release", "--", "--native", configFile, output]);

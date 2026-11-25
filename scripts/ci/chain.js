@@ -6,6 +6,7 @@
 // unchanged phase scripts therefore keep their fresh-root, pinned-archive and receipt admission.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {ciSuffix, ciScopedEntries, removeTree} = require("../native-ci-job");
+const {ciDeadline} = require("./job");
 
 const repo = path.resolve(__dirname, "../.."), phaseBudgetSeconds = 55 * 60, minimumPhaseSeconds = 2 * 60,
   maxReportBytes = 1 << 20;
@@ -16,16 +17,14 @@ const repo = path.resolve(__dirname, "../.."), phaseBudgetSeconds = 55 * 60, min
 /** Validate the job suffix and deadline once and record pre-existing work-root entries.
  * @param {NodeJS.ProcessEnv} [environment] @returns {ChainContext} */
 function chainContext(environment = process.env) {
-  const runnerTemp = environment["RUNNER_TEMP"] || "", deadline = environment["MOM_CI_DEADLINE_EPOCH"] || "";
-  if (!path.isAbsolute(runnerTemp) || fs.realpathSync(runnerTemp) !== runnerTemp || !/^[0-9]{10}$/.test(deadline) ||
-      Number(deadline) * 1000 <= Date.now()) {
-    throw new Error("Chained CI job needs a canonical RUNNER_TEMP and a future MOM_CI_DEADLINE_EPOCH");
-  }
+  const runnerTemp = environment["RUNNER_TEMP"] || "";
+  if (!path.isAbsolute(runnerTemp) || fs.realpathSync(runnerTemp) !== runnerTemp) {throw new Error("Chained CI job needs a canonical RUNNER_TEMP");}
+  const deadlineEpoch = ciDeadline(environment);
   const suffix = ciSuffix(environment), incoming = path.join(runnerTemp, "incoming"), reports = path.join(runnerTemp, "chain-reports");
   fs.mkdirSync(incoming, {recursive: true, mode: 0o700});
   fs.mkdirSync(reports, {mode: 0o700});
   // Downstream jobs re-admit the final state against this run deadline, so it outlives the job (8 h bound).
-  return {suffix, runnerTemp, incoming, reports, deadlineEpoch: Number(deadline), runDeadlineEpoch: Math.floor(Date.now() / 1000) + 8 * 60 * 60,
+  return {suffix, runnerTemp, incoming, reports, deadlineEpoch, runDeadlineEpoch: Math.floor(Date.now() / 1000) + 8 * 60 * 60,
     baseline: ciScopedEntries(["/tmp", runnerTemp], suffix), environment, step: 0};
 }
 
@@ -117,5 +116,5 @@ function requiredOutput(values, key) {
   return value;
 }
 
-module.exports = {chainContext, phaseDeadline, readWorkflowFile, runPhaseCommand, handOff, retire, resetWorkRoots,
-  writeWorkflowOutputs, nodeScript, requiredOutput};
+module.exports = {chainContext, phaseDeadline, runPhaseCommand, handOff, retire, resetWorkRoots, writeWorkflowOutputs,
+  nodeScript, requiredOutput};

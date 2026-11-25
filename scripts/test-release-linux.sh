@@ -179,7 +179,9 @@ done
 [ ! -d "$package_dir/tests" ] || die "Extracted release package unexpectedly contains tests/."
 [ -f "$package_dir/GPU-CONFIG.md" ] || die "Release is missing GPU-CONFIG.md."
 [ -f "$package_dir/gpu-tuning.js" ] || die "Release is missing gpu-tuning.js."
-[ -f "$package_dir/helper/hash.js" ] || die "Release is missing helper/hash.js."
+for helper in hash validate; do
+  [ -f "$package_dir/helper/$helper.js" ] || die "Release is missing helper/$helper.js."
+done
 [ ! -e "$package_dir/DEVELOPMENT.md" ] || die "Release unexpectedly contains DEVELOPMENT.md."
 [ -f "$libs_dir/mom.node" ] || die "Extracted release package is missing libs/mom.node."
 for compiler in oneapi dpcpp dpcpp-opencl acpp-cuda acpp-hip; do

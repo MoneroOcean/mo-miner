@@ -182,4 +182,4 @@ async function buildLocalNativeWindowsDpcppSdk(input, dependencies = {}) {
     jobs, buildOnly: true, compiled: true, executed: false, publicationQualified: false, reused: existing};
 }
 
-module.exports = {localWindowsDpcppSdkPaths, checkManagedRoot, admitControllerSupport, buildLocalNativeWindowsDpcppSdk};
+module.exports = {localWindowsDpcppSdkPaths, admitControllerSupport, buildLocalNativeWindowsDpcppSdk};

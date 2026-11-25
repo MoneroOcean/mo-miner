@@ -37,8 +37,10 @@ try {
       readmeSha256 = (Get-FileHash -LiteralPath (Join-Path $root 'README.md') -Algorithm SHA256).Hash
       gateSha256 = (Get-FileHash -LiteralPath (Join-Path $root 'scripts\check-release-performance.js') -Algorithm SHA256).Hash
       helperSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash
-      zelhashProfilerPresent = (Test-Path Env:MOM_ZELHASH_PROF)
-      zelhashPerfLoggerPresent = (Test-Path Env:MOM_ZELHASH_PERF)
+      # Same on/off rule as mom_env_flag (sycl/lib-internal.h): unset, empty and the exact-case
+      # values 0, false and off leave the switch off; any other value turns it on.
+      zelhashProfilerEnabled = ([bool]$env:MOM_ZELHASH_PROF -and $env:MOM_ZELHASH_PROF -cnotin @('0', 'false', 'off'))
+      zelhashPerfLoggerEnabled = ([bool]$env:MOM_ZELHASH_PERF -and $env:MOM_ZELHASH_PERF -cnotin @('0', 'false', 'off'))
       zelhashSlots = $(if ($env:MOM_ZELHASH_SLOTS -match '^[0-9]{1,10}$') { $env:MOM_ZELHASH_SLOTS } else { $null })
       nativeOverridePresent = (Test-Path Env:MOM_NATIVE_PATH)
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $debugDir 'context.json') -Encoding UTF8
