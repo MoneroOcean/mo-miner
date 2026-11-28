@@ -76,7 +76,7 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | 9060 XT | 13.09 MH/s (100%)   | 11.58 MH/s (100%)   | SRBMiner                       |
 | `beamhash3` / BEAM      | B580    | 23.02 Sol/s (56%*)  | 23.78 Sol/s (58%*)  | best peer*                     |
 |                         | A770    | 26.77 Sol/s (116%*) | -                   | lolMiner*                      |
-|                         | 5060 Ti | 32.42 Sol/s (78%)   | 32.99 Sol/s (80%)   | miniZ                          |
+|                         | 5060 Ti | 31.60 Sol/s (76%)   | 32.99 Sol/s (80%)   | miniZ                          |
 |                         | 9060 XT | 22.49 Sol/s (115%)  | 21.81 Sol/s (110%)  | lolMiner                       |
 | `zelhash` / CS          | B580    | 47.12 Sol/s (153%)  | 45.59 Sol/s (148%)  | lolMiner                       |
 |                         | A770    | 44.40 Sol/s (118%*) | -                   | lolMiner*                      |

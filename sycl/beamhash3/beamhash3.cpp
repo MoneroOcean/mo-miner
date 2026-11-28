@@ -70,6 +70,7 @@
 #include "../blake2b.h"
 #include "../equihash-pow.h"
 #include "../lib-internal.h"
+#include "../nvidia-features.h"
 #include "../../native/consts.h"
 
 namespace mom_beamhash3 {

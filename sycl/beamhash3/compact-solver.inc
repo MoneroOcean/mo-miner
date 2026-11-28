@@ -274,14 +274,22 @@ static sycl::event submit_compact_seed(sycl::queue& q, const uint64_t* d_prePow,
   });
 }
 
-template <unsigned R, bool PairPartitions = false> class BeamCompactRoundKernel;
-template <unsigned R, bool PairPartitions = false>
+template <unsigned R, bool PairPartitions = false, bool Grouped = false> class BeamCompactRoundKernel;
+template <unsigned R, bool PairPartitions = false, bool Grouped = false>
 // Join compact collisions, carrying packed trees through level three and thin parents at level four.
 static sycl::event submit_compact_round(sycl::queue& q, const BeamCompactRow* d_in,
                                         const uint32_t* d_in_ns,
                                         BeamCompactRow* d_out, uint32_t* d_out_ns,
                                         BeamCandidate* d_cand, uint32_t* d_cand_count,
                                         uint32_t cand_cap, unsigned wg) {
+#if defined(__linux__) && defined(MOM_SYCL_HAS_CUDA) && !defined(MOM_SYCL_ADAPTIVECPP)
+  // On Linux SM 12.0, one reservation per subgroup reduces local atomic contention.
+  if constexpr (!Grouped && !PairPartitions) {
+    if (mom::nvidia::compute_capability(q.get_device()) == 120)
+      return submit_compact_round<R, false, true>(q, d_in, d_in_ns, d_out, d_out_ns, d_cand,
+                                                  d_cand_count, cand_cap, wg);
+  }
+#endif
   static_assert(R >= 1 && R <= NUM_ROUNDS);
   static_assert(!PairPartitions || R <= 4);
   constexpr unsigned L = R - 1;
@@ -310,7 +318,7 @@ static sycl::event submit_compact_round(sycl::queue& q, const BeamCompactRow* d_
     sycl::local_accessor<local_index_t, 1> bin_next(sycl::range<1>(LOCAL_CAP), h);
     sycl::local_accessor<local_index_t, 1> slot_index(sycl::range<1>(LOCAL_CAP), h);
     sycl::local_accessor<uint32_t, 1> local_count(sycl::range<1>(1), h);
-    h.parallel_for<BeamCompactRoundKernel<R, PairPartitions>>(
+    h.parallel_for<BeamCompactRoundKernel<R, PairPartitions, Grouped>>(
         sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(wg)),
         [=](sycl::nd_item<1> it) MOM_REQD_SG_16 MOM_SYCL_KERNEL_ARGS_RESTRICT {
           const unsigned lid = (unsigned)it.get_local_id(0);
@@ -328,14 +336,32 @@ static sycl::event submit_compact_round(sycl::queue& q, const BeamCompactRow* d_
           if (count > IN_NSLOTS)
             count = IN_NSLOTS;
           const BeamCompactRow* input = d_in + (size_t)bucket * IN_NSLOTS;
-          for (unsigned s = lid; s < count; s += lsz) {
-            const uint32_t collision =
-                (uint32_t)input[s].word[0] & ((1u << COLLISION_BIT_SIZE) - 1u);
+          // All lanes must participate in a grouped reservation, including the final partial tile.
+          const unsigned end = Grouped ? (count + lsz - 1) / lsz * lsz : count;
+          for (unsigned s = lid; s < end; s += lsz) {
+            const uint32_t collision = s < count
+                ? (uint32_t)input[s].word[0] & ((1u << COLLISION_BIT_SIZE) - 1u) : 0;
             const uint32_t input_subgroup =
                 (collision >> IN_BUCKET_BITS) & (IN_SUBGROUPS - 1u);
-            if ((input_subgroup >> MERGED_SUBGROUP_BITS) != subgroup)
-              continue;
-            const uint32_t pos = slm_atomic_u32(local_count[0]).fetch_add(1u);
+            const bool selected = s < count && (input_subgroup >> MERGED_SUBGROUP_BITS) == subgroup;
+            uint32_t pos;
+            if constexpr (Grouped) {
+              const auto sg = it.get_sub_group();
+              const unsigned active =
+                  sycl::reduce_over_group(sg, unsigned(selected), sycl::plus<unsigned>());
+              const unsigned prefix =
+                  sycl::exclusive_scan_over_group(sg, unsigned(selected), sycl::plus<unsigned>());
+              uint32_t base = 0;
+              if (sg.leader() && active)
+                base = slm_atomic_u32(local_count[0]).fetch_add(active);
+              pos = sycl::group_broadcast(sg, base) + prefix;
+              if (!selected)
+                continue;
+            } else {
+              if (!selected)
+                continue;
+              pos = slm_atomic_u32(local_count[0]).fetch_add(1u);
+            }
             if (pos >= LOCAL_CAP)
               continue;
             const uint32_t original_rest = collision >> (IN_BUCKET_BITS + IN_SUBGROUP_BITS);
