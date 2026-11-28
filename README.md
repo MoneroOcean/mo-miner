@@ -105,7 +105,7 @@ the GPUs on adjacent rows; the last column names the comparison source.
 | `hoohash` / HTN         | B580    | 3.08 MH/s (177%*)   | 2.99 MH/s (180%*)   | best peer*                     |
 |                         | A770    | Unsupported         | -                   | No FP64                        |
 |                         | 5060 Ti | 1.39 MH/s (80%)     | 1.37 MH/s (78%*)    | hoo_gpu (Linux)                |
-|                         | 9060 XT | 1.71 MH/s (115%)    | 1.66 MH/s (111%*)   | hoo_gpu_amd (Linux)            |
+|                         | 9060 XT | 1.71 MH/s (115%)    | 1.75 MH/s (117%*)   | hoo_gpu_amd (Linux)            |
 | `octopus` / CFX         | B580    | 31.27 MH/s (61%*)   | 31.24 MH/s (61%*)   | best peer*                     |
 |                         | A770    | 16.60 MH/s (32%*)   | -                   | best peer*                     |
 |                         | 5060 Ti | 45.62 MH/s (88%)    | 45.44 MH/s (89%)    | lolMiner                       |

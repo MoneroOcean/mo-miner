@@ -1908,7 +1908,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const intensity = fs.readFileSync(path.join(__dirname, "../sycl/intensity.inc"), "utf8");
-      const capacityProbe = extractCppBlock(intensity, "  if (pearlhash_amd_native_int8(dev)) {");
+      const capacityProbe = extractCppBlock(intensity, "  if (amd_gfx12_int8_wmma_supported(dev)) {");
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-capacity-probe-"));
       const source = path.join(fixture, "capacity_probe.cpp");
       const executable = path.join(fixture, "capacity_probe");
@@ -1916,7 +1916,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
         "#include <cstdio>",
         "struct Device {};",
         "struct Profile { unsigned m; };",
-        "static bool pearlhash_amd_native_int8(const Device&) { return true; }",
+        "static bool amd_gfx12_int8_wmma_supported(const Device&) { return true; }",
         "static Profile pow_device_profile(const Device&) { throw 7; }",
         "static Profile pearlhash_amd_native_profile_for(const Profile&, bool) { return {524288}; }",
         "int main() {",

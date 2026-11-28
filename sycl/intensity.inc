@@ -141,7 +141,7 @@ static unsigned autolykos2_intensity(const sycl::device& dev) {
 
 // Discovery probes the same native architecture boundary as the worker. This optional probe is
 // deliberately fail-closed: a queue/interop/property failure leaves the ordinary profile usable.
-static bool pearlhash_amd_native_int8(const sycl::device& dev) {
+static bool amd_gfx12_int8_wmma_supported(const sycl::device& dev) {
 #if defined(MOM_SYCL_ADAPTIVECPP) && defined(MOM_SYCL_HAS_HIP)
   try {
     if (!mom_is_hip(dev))
@@ -192,7 +192,7 @@ static pearlhash_profile_t pearlhash_profile(const sycl::device& dev) {
       // Keep the conservative K2048/rank128 profile on incomplete device metadata.
     }
   }
-  if (pearlhash_amd_native_int8(dev)) {
+  if (amd_gfx12_int8_wmma_supported(dev)) {
     try {
       profile = pearlhash_amd_native_profile_for(pow_device_profile(dev), true);
     } catch (...) {
@@ -249,7 +249,7 @@ static unsigned fishhash_intensity(const sycl::device& dev) {
                         {fallback_workgroup, 131072, 40}});
 }
 
-// Bound HooHash dispatch latency, with a larger measured WDDM/CUDA batch to amortize submission.
+// Bound HooHash dispatch latency while amortizing Windows submission overhead.
 static unsigned hoohash_intensity(const sycl::device& dev) {
   if (!dev.has(sycl::aspect::fp64) || !mom_has_usm_device(dev))
     return 0;
@@ -262,6 +262,9 @@ static unsigned hoohash_intensity(const sycl::device& dev) {
   // job-switch latency, so keep the smaller point on the throughput plateau.
   if (mom_is_cuda(dev))
     return 114688;
+  // RX 9060 XT reaches 1.75 MH/s here. Doubling the batch adds 1.1% and doubles dispatch time.
+  if (amd_gfx12_int8_wmma_supported(dev))
+    return 262144;
 #endif
   return 65536;
 }
