@@ -677,6 +677,14 @@ public:
 
 sycl::device get_dev(const std::string& dev_str);
 
+#if defined(MOM_SYCL_ADAPTIVECPP) && defined(MOM_SYCL_HAS_HIP)
+// HIP tables of 4 GiB and more: see hip-split-table.inc. The margin keeps a request that the
+// runtime rounds up from reaching the slow single-allocation size.
+constexpr size_t MOM_HIP_SPLIT_MIN_BYTES = (size_t{4} << 30) - (size_t{64} << 20);
+void* mom_hip_alloc_split(sycl::queue& queue, size_t bytes);
+bool mom_hip_free_split(void* pointer) noexcept;
+#endif
+
 // Own one USM allocation and free it on the queue that made it. The owner must keep that queue
 // alive for longer (declare UsmPtr members after the queue) and retire kernels using the storage
 // first. Teardown never throws: a failed free is reported only under MOM_SYCL_CLEANUP_DEBUG.
@@ -707,6 +715,10 @@ public:
     if (!pointer_)
       return;
     T* const pointer = std::exchange(pointer_, nullptr);
+#if defined(MOM_SYCL_ADAPTIVECPP) && defined(MOM_SYCL_HAS_HIP)
+    if (mom_hip_free_split(pointer))
+      return;
+#endif
     sycl_cleanup_noexcept("USM free", [&] { sycl::free(pointer, *queue_); });
   }
 
@@ -719,8 +731,14 @@ public:
 template <typename T>
 UsmPtr<T> mom_usm_alloc(sycl::queue& queue, const size_t count, const bool shared,
                         const char* const failure) {
-  T* const pointer =
-      shared ? sycl::malloc_shared<T>(count, queue) : sycl::malloc_device<T>(count, queue);
+  T* pointer = nullptr;
+#if defined(MOM_SYCL_ADAPTIVECPP) && defined(MOM_SYCL_HAS_HIP)
+  if (!shared && count >= MOM_HIP_SPLIT_MIN_BYTES / sizeof(T) &&
+      count <= std::numeric_limits<size_t>::max() / sizeof(T))
+    pointer = static_cast<T*>(mom_hip_alloc_split(queue, count * sizeof(T)));
+#endif
+  if (!pointer)
+    pointer = shared ? sycl::malloc_shared<T>(count, queue) : sycl::malloc_device<T>(count, queue);
   if (!pointer)
     throw std::string(failure);
   return UsmPtr<T>(pointer, queue);

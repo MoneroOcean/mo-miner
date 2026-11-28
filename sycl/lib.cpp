@@ -15,6 +15,7 @@
 // themselves live in their named .cpp files; these fragments share this registry's lifetime.
 #include "runtime.inc"
 #include "intensity.inc"
+#include "hip-split-table.inc"
 using mom::cpu::add_result_dev;
 using mom::cpu::cpu_algo_devs;
 using mom::cpu::CpuTopology;
