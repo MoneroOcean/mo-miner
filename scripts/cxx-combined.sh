@@ -93,8 +93,17 @@ if [ "$is_link" = 1 ]; then
     # libsycl.so, where two static copies would break unwinding.
     intel_libs=(-Wl,-Bstatic -limf -lsvml -lirng -lirc -Wl,-Bdynamic -lintlc)
   fi
+  # The device-code link emits one image per kernel and target and, by default, compiles them one after
+  # another. That step, not the changed translation unit, dominates an incremental rebuild: 780 s for one
+  # touched SYCL file with the default three targets, 344 s with sixteen jobs. MOM_SYCL_LINK_JOBS=1 keeps
+  # the serial link.
+  link_jobs=${MOM_SYCL_LINK_JOBS:-${JOBS:-1}}
+  parallel_link=()
+  if [[ $link_jobs =~ ^[1-9][0-9]*$ ]] && [ "$link_jobs" -gt 1 ]; then
+    parallel_link=(-fsycl-max-parallel-link-jobs="$link_jobs")
+  fi
   exec "$CLANGXX" -fsycl -fsycl-targets="$TARGETS" "${spirv_translator_args[@]}" \
-    "${intel_aot_args[@]}" \
+    "${intel_aot_args[@]}" "${parallel_link[@]}" \
     "${rpaths[@]}" "$@" "${intel_libs[@]}"
 fi
 

@@ -94,7 +94,12 @@ MOM_GPU_BACKEND=nvidia npm run dev -- algos
 Backend names select the compiler/factory configuration; they do not prove the hardware is
 available. See [GPU-CONFIG.md](GPU-CONFIG.md) for the routing matrix and runtime requirements.
 On Linux, `MOM_LINUX_BUILD_COMPILER` (`all`, `oneapi`, `dpcpp`, `dpcpp-opencl`, `acpp-cuda`,
-`acpp-hip`) narrows the compiler family and must be compatible with the backend.
+`acpp-hip`) narrows the compiler family and must be compatible with the backend. Rebuilding only the
+worker under test is the fastest way to iterate on one kernel: after one touched SYCL file the
+AdaptiveCpp workers relink in about 20 s, while the combined DPC++ worker recompiles every device
+image at link time. That link runs its per-image compiles in parallel (`MOM_BUILD_JOBS`;
+`MOM_SYCL_LINK_JOBS=1` forces the serial link), and `MOM_COMBINED_TARGETS=nvidia_gpu_sm_80` drops the
+Intel images from a CUDA-only experiment.
 `MOM_REUSE_BUILT_WORKER=1` is a Docker-worker shortcut and is rejected by native development.
 
 ### Incremental outputs and caches
