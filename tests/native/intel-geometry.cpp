@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <utility>
 
 #include "zelhash_generator_guard.inc"
 
@@ -84,6 +85,9 @@ struct uint2 {
 template <typename T> T* malloc_device(std::size_t count, queue&) {
   return static_cast<T*>(std::calloc(count, sizeof(T)));
 }
+template <typename T> T* malloc_shared(std::size_t count, queue& q) {
+  return malloc_device<T>(count, q);
+}
 template <typename T> void free(T* pointer, queue&) {
   std::free(pointer);
 }
@@ -146,8 +150,11 @@ struct C30PackedEdge {
 static bool mom_has_usm_device(const sycl::device&) {
   return true;
 }
-// Production c30 DeviceMemory: layout selection, fit checks and partial-allocation cleanup.
+// Production c30 DeviceMemory: layout selection, fit checks and partial-allocation cleanup, on the
+// production USM owner and allocator.
 #include "env_flag.inc"
+#include "usm_owner.inc"
+#include "usm_alloc.inc"
 #include "c30_device_memory.inc"
 
 // Construct the production arena on a device reporting the given memory limits.

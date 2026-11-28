@@ -252,8 +252,8 @@ sycl::device get_dev(const std::string& dev_str) {
   return device->second;
 }
 
-// Arc A770 (Alchemist, Linux): ZHash runs faster with the 256-entry register file
-// (63.9 -> 66.4 Sol/s in alternating runs). A
+// Arc A770 (Alchemist, Linux): C30 and ZHash run faster with the 256-entry register file
+// (1.42 -> 1.64 g/s and 63.9 -> 66.4 Sol/s in alternating runs). A
 // worker process serves one algorithm and none of these algorithms' images carries build options
 // of its own, so the process-wide program option acts as a per-kernel property would. Etchash
 // showed no gain beyond that card's run-to-run spread; Octopus, FishHash and NexaPoW lose 5-15%

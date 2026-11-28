@@ -145,6 +145,10 @@ extract_conditional '#define MOM_ZELHASH_INTEL_LARGE_GRF' sycl/zelhash/zelhash.c
 extract_cpp "$geometry/zelhash_generator_dispatch.inc" sycl/zelhash/generation.inc \
   'static sycl::event submit_gen_fill('
 extract_cpp "$geometry/env_flag.inc" sycl/lib-internal.h 'inline std::optional<bool> mom_env_flag('
+extract_cpp "$geometry/usm_owner.inc" sycl/lib-internal.h \
+  'inline void sycl_log_cleanup_exception(' 'inline void sycl_cleanup_noexcept(' 'class UsmPtr {'
+printf ';\n' >> "$out/$geometry/usm_owner.inc"
+extract_cpp "$geometry/usm_alloc.inc" sycl/lib-internal.h 'UsmPtr<T> mom_usm_alloc('
 extract_cpp "$geometry/c30_device_memory.inc" sycl/c30/c30.cpp 'struct DeviceMemory {'
 printf ';\n' >> "$out/$geometry/c30_device_memory.inc"
 extract_cpp "$geometry/kawpow_exchange_policy.inc" sycl/kawpow/state.inc \

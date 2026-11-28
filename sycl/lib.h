@@ -237,7 +237,7 @@ inline constexpr SyclCompileOptions sycl_compile_options_for(std::string_view al
   if (algo == "autolykos2") return SyclCompileOptions::autolykos2;
   if (algo == "cn/gpu") return SyclCompileOptions::cnGpu;
   if (algo == "nexapow") return SyclCompileOptions::nexapow;
-  if (algo == "zhash") return SyclCompileOptions::alchemistLargeGrf;
+  if (algo == "c30" || algo == "zhash") return SyclCompileOptions::alchemistLargeGrf;
   return SyclCompileOptions::none;
 }
 

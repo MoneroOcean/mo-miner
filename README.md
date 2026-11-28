@@ -47,9 +47,9 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | 5060 Ti | 9.15 g/s (119%)     | 9.07 g/s (146%)     | BZMiner                        |
 |                         | 9060 XT | 7.52 g/s (107%)     | 7.39 g/s (112%)     | BZMiner                        |
 | `c30` / CTXC            | B580    | 1.54 g/s (135%*)    | 1.49 g/s (135%*)    | MoM 12-GiB-limited peer*       |
-|                         | A770    | 1.41 g/s (124%*)    | -                   | MoM 12-GiB-limited peer*       |
+|                         | A770    | 1.63 g/s (143%*)    | -                   | MoM 12-GiB-limited peer*       |
 |                         | 5060 Ti | 2.89 g/s (89%*)     | 2.83 g/s (87%*)     | Hashrate.no/cross-GPU*         |
-|                         | 9060 XT | 1.59 g/s (100%*)    | 1.35 g/s (84%*)     | Hashrate.no/cross-GPU*         |
+|                         | 9060 XT | 1.59 g/s (100%*)    | 1.44 g/s (90%*)     | Hashrate.no/cross-GPU*         |
 | `kawpow` / RVN / MO     | B580    | 20.97 MH/s (110%)   | 20.93 MH/s (110%)   | SRBMiner                       |
 |                         | A770    | 13.96 MH/s (148%*)  | -                   | WildRig*                       |
 |                         | 5060 Ti | 25.16 MH/s (97%)    | 25.12 MH/s (95%)    | Rigel                          |

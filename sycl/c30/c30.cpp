@@ -86,9 +86,11 @@ std::uint32_t count_edges(const std::vector<std::uint32_t>& counts) {
 
 struct DeviceMemory {
   sycl::queue& queue;
-  std::array<sycl::uint2*, 2> edges{nullptr, nullptr};
+  // The graph arenas are 3 to 8 GiB each. mom_usm_alloc() backs the ones of 4 GiB and more with
+  // smaller allocations where a single one is slower (Windows HIP, see hip-split-table.inc).
+  std::array<UsmPtr<sycl::uint2>, 2> edges;
   std::array<std::uint64_t, 2> edge_capacity{0, 0};
-  std::array<C30PackedEdge*, 2> packed_edges{nullptr, nullptr};
+  std::array<UsmPtr<C30PackedEdge>, 2> packed_edges;
   std::array<std::uint64_t, 2> packed_capacity{0, 0};
   std::array<std::uint32_t*, 2> bucket_counts{nullptr, nullptr};
   std::uint32_t* cursors = nullptr;
@@ -148,57 +150,34 @@ struct DeviceMemory {
   void allocate_edges(const unsigned index, const std::uint64_t count) {
     if (edge_capacity[index] >= count)
       return;
-    if (edges[index])
-      sycl::free(edges[index], queue);
-    edges[index] = nullptr;
+    edges[index].reset();
     edge_capacity[index] = 0;
-    try {
-      edges[index] = sycl::malloc_device<sycl::uint2>(count, queue);
-      if (!edges[index])
-        throw std::bad_alloc();
-      edge_capacity[index] = count;
-    } catch (...) {
-      if (edges[index])
-        sycl::free(edges[index], queue);
-      edges[index] = nullptr;
-      throw;
-    }
+    edges[index] =
+        mom_usm_alloc<sycl::uint2>(queue, count, false, "c30 graph arena allocation failed");
+    edge_capacity[index] = count;
   }
 
   // Grow the packed graph arena, clearing its old capacity before allocation can fail.
   void allocate_packed(const unsigned index, const std::uint64_t count) {
     if (packed_capacity[index] >= count)
       return;
-    if (packed_edges[index])
-      sycl::free(packed_edges[index], queue);
-    packed_edges[index] = nullptr;
+    packed_edges[index].reset();
     packed_capacity[index] = 0;
-    packed_edges[index] = sycl::malloc_device<C30PackedEdge>(count, queue);
-    if (!packed_edges[index])
-      throw std::bad_alloc();
+    packed_edges[index] =
+        mom_usm_alloc<C30PackedEdge>(queue, count, false, "c30 graph arena allocation failed");
     packed_capacity[index] = count;
   }
 
   // Drop one packed arena during a completed-stage handoff; teardown must remain noexcept.
   void release_packed(const unsigned index) noexcept {
-    if (packed_edges[index])
-      try {
-        sycl::free(packed_edges[index], queue);
-      } catch (...) {
-      }
-    packed_edges[index] = nullptr;
+    packed_edges[index].reset();
     packed_capacity[index] = 0;
   }
 
   // Release all owned allocations, including partially constructed arenas, without throwing.
   void release() noexcept {
     for (unsigned i = 0; i < edges.size(); ++i) {
-      if (edges[i])
-        try {
-          sycl::free(edges[i], queue);
-        } catch (...) {
-        }
-      edges[i] = nullptr;
+      edges[i].reset();
       edge_capacity[i] = 0;
     }
     for (unsigned i = 0; i < packed_edges.size(); ++i)
