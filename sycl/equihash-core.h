@@ -108,6 +108,14 @@ template <typename Spec, unsigned Round>
 using CollisionRoundRecord = PackedCollisionRecord<Spec, Spec::rounds - Round>;
 
 // Select collision-record alignment without changing its bit layout or parent-reference width.
+// The compact ZHash arenas retain bucket-relative parents in three 32-bit words.
+#if defined(MOM_SYCL_HAS_HIP) || \
+    (defined(__linux__) && defined(MOM_ZHASH_INTEL_LATE_BUCKETS) && !defined(MOM_SYCL_HAS_CUDA))
+constexpr bool compact_zhash_records = true;
+#else
+constexpr bool compact_zhash_records = false;
+#endif
+
 // The Intel profile is explicit: upstream DPC++ does not necessarily define the branded
 // compiler macro. Host and device must select the same layout, never a per-device-pass ABI.
 constexpr unsigned packed_bucket_collision_alignment(const unsigned n,
@@ -117,9 +125,7 @@ constexpr unsigned packed_bucket_collision_alignment(const unsigned n,
 #else
   constexpr unsigned wide_fields = 6;
 #endif
-#if defined(MOM_SYCL_HAS_HIP)
-  if (n == 144 && (field_count == 2 || field_count == 3)) return 4;
-#endif
+  if (compact_zhash_records && n == 144 && (field_count == 2 || field_count == 3)) return 4;
   if (n == 192) {
 #if defined(__INTEL_LLVM_COMPILER) || defined(MOM_SYCL_INTEL_LAYOUT)
     if (field_count == 7) return 4;
@@ -189,16 +195,12 @@ struct alignas(packed_bucket_collision_alignment(Spec::n, FieldCount))
   static constexpr unsigned full_bit_count =
       LocalBits + (FieldCount - 1) * Spec::collision_bits + ParentBucketBits +
       2 * parent_slot_bits;
-#if defined(MOM_SYCL_HAS_HIP)
   // A ZHash round-three record needs only enough of its trailing field to find candidates. The
   // complete proof is rehashed before submission, so fitting the record into 12 bytes can add
   // false candidates but cannot lose or accept an invalid solution.
   static constexpr bool compact_trailing_field =
-      Spec::n == 144 && Spec::k == 5 && FieldCount == 3 && full_bit_count >= 96 &&
-      full_bit_count < 120;
-#else
-  static constexpr bool compact_trailing_field = false;
-#endif
+      compact_zhash_records && Spec::n == 144 && Spec::k == 5 && FieldCount == 3 &&
+      full_bit_count >= 96 && full_bit_count < 120;
   static constexpr unsigned trailing_bits_omitted =
       compact_trailing_field ? full_bit_count - 96 : 0;
   static_assert(!compact_trailing_field ||

@@ -156,11 +156,7 @@ int test_round3_record(const std::uint32_t bucket) {
   if (mom_equihash::load_bucket_collision_parent(record, false) != bucket * ParentSlots + left ||
       mom_equihash::load_bucket_collision_parent(record, true) != bucket * ParentSlots + right)
     return 3;
-#if defined(MOM_SYCL_HAS_HIP)
-  static_assert(sizeof(Record) == 12);
-#else
-  static_assert(sizeof(Record) == 16);
-#endif
+  static_assert(sizeof(Record) == (mom_equihash::compact_zhash_records ? 12 : 16));
   return 0;
 }
 

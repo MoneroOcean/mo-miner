@@ -166,8 +166,7 @@ function dpcppGpuFlags(gyp, profile = "dpcpp", combined) {
     throw new Error("Incomplete or unresolved maintained DPC++ compiler flags");
   }
   if (profile !== "dpcpp") {return /** @type {string[]} */ (flags);}
-  // GPU-CONFIG also selects dpcpp for Intel ZHash. The ordinary combined wrapper supplies
-  // its extra SPIR-V target outside gyp's CUDA condition; preserve that policy here too.
+  // The combined wrapper supplies its Intel SPIR-V targets outside the CUDA condition in gyp.
   const targets = combinedGpuTargets(combined ?? fs.readFileSync(path.join(__dirname, "combined-build.sh"), "utf8"));
   if (!targets.split(",").includes(architectures[0]?.[1] || "") ||
       flags.filter(flag => flag.startsWith("-fsycl-targets=")).length !== 1) {

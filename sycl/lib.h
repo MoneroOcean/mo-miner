@@ -225,7 +225,9 @@ MOM_SYCL_API uint64_t pearlhash_attempt_hashes(
 // on the loop thread before the worker's compute thread starts: it may write the environment.
 MOM_SYCL_API void sycl_set_compile_options(const std::string& algo, const std::string& dev_str);
 
-enum class SyclCompileOptions { none, etchash, progpow, autolykos2, cnGpu, nexapow };
+enum class SyclCompileOptions {
+  none, etchash, progpow, autolykos2, cnGpu, nexapow, alchemistLargeGrf
+};
 
 // Keep the route available to Core before the call can delay-load the optional Windows SYCL DLL.
 inline constexpr SyclCompileOptions sycl_compile_options_for(std::string_view algo) {
@@ -235,6 +237,7 @@ inline constexpr SyclCompileOptions sycl_compile_options_for(std::string_view al
   if (algo == "autolykos2") return SyclCompileOptions::autolykos2;
   if (algo == "cn/gpu") return SyclCompileOptions::cnGpu;
   if (algo == "nexapow") return SyclCompileOptions::nexapow;
+  if (algo == "zhash") return SyclCompileOptions::alchemistLargeGrf;
   return SyclCompileOptions::none;
 }
 

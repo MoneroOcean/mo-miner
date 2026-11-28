@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 #include "../equihash-core.h"
 
@@ -52,15 +53,10 @@ struct ZHashArenaLayout : ZHashBucketLayout<InitialBucketBits, SlotsPerBucket> {
   using Round3Record = mom_equihash::PackedBucketCollisionRecord<
       ZHashSpec, 3, LaterLayout::local_bits, LaterLayout::bucket_bits,
       LaterLayout::bucket_slot_capacity>;
-#ifdef MOM_SYCL_HAS_HIP
-  // Keep bucket-relative provenance for one more round on HIP so this bandwidth-bound arena uses
-  // three words per record. The generic path retains its established full-offset representation.
-  using Round4Record = mom_equihash::PackedBucketCollisionRecord<
-      ZHashSpec, 2, LaterLayout::local_bits, LaterLayout::bucket_bits,
-      LaterLayout::bucket_slot_capacity>;
-#else
-  using Round4Record = mom_equihash::CollisionRoundRecord<ZHashSpec, 4>;
-#endif
+  using Round4Record = std::conditional_t<mom_equihash::compact_zhash_records,
+      mom_equihash::PackedBucketCollisionRecord<ZHashSpec, 2, LaterLayout::local_bits,
+          LaterLayout::bucket_bits, LaterLayout::bucket_slot_capacity>,
+      mom_equihash::CollisionRoundRecord<ZHashSpec, 4>>;
   using RootRecord = mom_equihash::EquihashRootRecord<ZHashSpec>;
 
   static constexpr std::size_t level0_bytes = InitialLayout::slot_count * sizeof(Level0Record);
@@ -109,17 +105,8 @@ struct ZHashArenaLayout : ZHashBucketLayout<InitialBucketBits, SlotsPerBucket> {
   static_assert(sizeof(Level0Record) == 20 && sizeof(Round1Record) <= 20 &&
                     sizeof(Round2Record) == 16,
                 "ZHash packed record ABI changed; update the footprint contract");
-#if defined(MOM_SYCL_HAS_HIP)
-  static_assert(sizeof(Round3Record) == 12,
-#else
-  static_assert(sizeof(Round3Record) == 16,
-#endif
-                "ZHash round-three record ABI changed; update the footprint contract");
-#ifdef MOM_SYCL_HAS_HIP
-  static_assert(sizeof(Round4Record) == 12,
-#else
-  static_assert(sizeof(Round4Record) == 16,
-#endif
+  static_assert(sizeof(Round3Record) == (mom_equihash::compact_zhash_records ? 12 : 16) &&
+                    sizeof(Round4Record) == sizeof(Round3Record),
                 "ZHash packed record ABI changed; update the footprint contract");
 };
 
@@ -127,7 +114,12 @@ struct ZHashArenaLayout : ZHashBucketLayout<InitialBucketBits, SlotsPerBucket> {
 // overflow with the larger default layout, which also raises level-zero capacity while keeping the
 // peak allocation below the documented 4 GiB device minimum.
 #ifdef MOM_ZHASH_INTEL_LATE_BUCKETS
+#ifdef __linux__
+// The shorter strides stagger adjacent bucket heads on Alchemist.
+using FastZHashArenaLayout = ZHashArenaLayout<4472, 5624, 13, 13>;
+#else
 using FastZHashArenaLayout = ZHashArenaLayout<4480, 5632, 13, 13>;
+#endif
 using DefaultZHashArenaLayout = ZHashArenaLayout<4672, 5632, 13, 13>;
 #elif defined(MOM_SYCL_HAS_HIP)
 // Offset adjacent bucket heads within a page instead of repeating a strongly aligned stride.

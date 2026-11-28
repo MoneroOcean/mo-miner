@@ -38,7 +38,6 @@
 | walahash      | Linux   | Intel  | —         | sycl-native |
 | xelishashv3   | Linux   | Intel  | —         | sycl-native |
 | zelhash       | Linux   | Intel  | —         | sycl-native |
-| zhash         | Linux   | Intel  | dpcpp     | —           |
 | pearlhash     | Linux   | Intel  | —         | sycl-native |
 | beamhash3     | Linux   | Intel  | —         | sycl-native |
 | cn/gpu        | Windows | Intel  | —         | sycl-opencl |

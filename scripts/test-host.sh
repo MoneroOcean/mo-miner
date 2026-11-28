@@ -199,6 +199,8 @@ build_run zhash-core "$root/tests/native/zhash-core.cpp"
 build_run zhash-core-hip -DMOM_SYCL_HAS_HIP "$root/tests/native/zhash-core.cpp"
 build_run zhash-session "$root/tests/native/zhash-session.cpp"
 build_run zhash-session-hip -DMOM_SYCL_HAS_HIP "$root/tests/native/zhash-session.cpp"
+build_run zhash-core-intel -DMOM_SYCL_INTEL_LAYOUT -DMOM_ZHASH_INTEL_LATE_BUCKETS \
+  "$root/tests/native/zhash-core.cpp"
 build_run zhash-session-intel -D__INTEL_LLVM_COMPILER -DMOM_ZHASH_INTEL_LATE_BUCKETS \
   "$root/tests/native/zhash-session.cpp"
 extract_cpp local_memory_fits.inc sycl/lib-internal.h 'inline bool sycl_local_memory_fits('

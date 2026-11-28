@@ -86,8 +86,8 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | A770    | 17.78 I/s (57%*)    | -                   | best peer*                     |
 |                         | 5060 Ti | 26.04 I/s (84%)     | 24.70 I/s (80%)     | miniZ                          |
 |                         | 9060 XT | 19.76 I/s (98%)     | 19.31 I/s (96%)     | lolMiner                       |
-| `zhash` / BTG           | B580    | 61.68 Sol/s (57%*)  | 61.70 Sol/s (58%*)  | best peer*                     |
-|                         | A770    | 57.10 Sol/s (86%*)  | -                   | lolMiner*                      |
+| `zhash` / BTG           | B580    | 64.59 Sol/s (60%*)  | 61.70 Sol/s (58%*)  | best peer*                     |
+|                         | A770    | 66.41 Sol/s (100%*) | -                   | lolMiner*                      |
 |                         | 5060 Ti | 86.44 Sol/s (80%)   | 86.32 Sol/s (80%)   | miniZ                          |
 |                         | 9060 XT | 72.81 Sol/s (87%)   | 71.16 Sol/s (86%)   | lolMiner                       |
 | `autolykos2` / ERG / MO | B580    | 39.90 MH/s (98%)    | 39.85 MH/s (105%)   | BZMiner                        |

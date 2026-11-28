@@ -252,6 +252,19 @@ sycl::device get_dev(const std::string& dev_str) {
   return device->second;
 }
 
+// Arc A770 (Alchemist, Linux): ZHash runs faster with the 256-entry register file
+// (63.9 -> 66.4 Sol/s in alternating runs). A
+// worker process serves one algorithm and none of these algorithms' images carries build options
+// of its own, so the process-wide program option acts as a per-kernel property would. Etchash
+// showed no gain beyond that card's run-to-run spread; Octopus, FishHash and NexaPoW lose 5-15%
+// with it; BMG-G21 loses on ZHash and C29 and gains about 1% on C30. None of those is routed
+// here. An explicit SYCL_PROGRAM_COMPILE_OPTIONS wins.
+static const char* alchemist_large_grf_options(const sycl::device& device) {
+  return mom_is_linux_alchemist(device) && !std::getenv("SYCL_PROGRAM_COMPILE_OPTIONS")
+             ? "-ze-opt-large-register-file"
+             : nullptr;
+}
+
 // Publish the program build options of the algorithm a worker is about to run. DPC++ reads them
 // once, at the process's first program build, so the worker's first job decides. The native core
 // calls this on the loop thread before the compute thread starts; compute threads never write the
@@ -266,6 +279,9 @@ void sycl_set_compile_options(const std::string& algo, const std::string& dev_st
     case SyclCompileOptions::autolykos2: options = std::getenv("MOM_AUTOLYKOS2_COMPILE_OPTIONS"); break;
     case SyclCompileOptions::cnGpu: options = cn_gpu_compile_options(get_dev(dev_str)); break;
     case SyclCompileOptions::nexapow: options = mom_nexapow::nexapow_compile_options(get_dev(dev_str)); break;
+    case SyclCompileOptions::alchemistLargeGrf:
+      options = alchemist_large_grf_options(get_dev(dev_str));
+      break;
     case SyclCompileOptions::none: return;
     }
     mom_set_compile_options_env(options);

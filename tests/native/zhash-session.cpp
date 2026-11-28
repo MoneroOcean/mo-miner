@@ -13,13 +13,22 @@ using Tiny = mom_zhash::ZHashArenaLayout<512>;
 
 int test_footprint() {
 #ifdef MOM_ZHASH_INTEL_LATE_BUCKETS
+#ifdef __linux__
+  static_assert(mom_zhash::FastZHashArenaLayout::slot_count == 36634624);
+  static_assert(mom_zhash::FastZHashArenaLayout::LaterLayout::slot_count == 46071808);
+  static_assert(mom_zhash::FastZHashArenaLayout::device_bytes ==
+                (mom_equihash::compact_zhash_records ? 3315867900ull : 3684442364ull));
+  static_assert(mom_zhash::FastZHashArenaLayout::local_memory_bytes == 19440);
+#else
   static_assert(mom_zhash::FastZHashArenaLayout::slot_count == 36700160);
   static_assert(mom_zhash::FastZHashArenaLayout::LaterLayout::slot_count == 46137344);
   static_assert(mom_zhash::FastZHashArenaLayout::device_bytes == 3690209532ull);
   static_assert(mom_zhash::FastZHashArenaLayout::local_memory_bytes == 19456);
+#endif
   static_assert(mom_zhash::DefaultZHashArenaLayout::slot_count == 38273024);
   static_assert(mom_zhash::DefaultZHashArenaLayout::LaterLayout::slot_count == 46137344);
-  static_assert(mom_zhash::DefaultZHashArenaLayout::device_bytes == 3753124092ull);
+  static_assert(mom_zhash::DefaultZHashArenaLayout::device_bytes ==
+                (mom_equihash::compact_zhash_records ? 3384025340ull : 3753124092ull));
   static_assert(mom_zhash::DefaultZHashArenaLayout::local_memory_bytes == 19456);
 #elif defined(MOM_SYCL_HAS_HIP)
   static_assert(mom_zhash::FastZHashArenaLayout::slot_count == 35717120);
@@ -43,13 +52,9 @@ int test_footprint() {
   static_assert(sizeof(mom_zhash::DefaultZHashArenaLayout::Round1Record) == 20);
   static_assert(Tiny::round1_bytes == Tiny::slot_count * 20);
   static_assert(Tiny::round2_bytes == Tiny::LaterLayout::slot_count * 16);
-#if defined(MOM_SYCL_HAS_HIP)
-  static_assert(Tiny::round3_bytes == Tiny::LaterLayout::slot_count * 12);
-  static_assert(Tiny::round4_bytes == Tiny::LaterLayout::slot_count * 12);
-#else
-  static_assert(Tiny::round3_bytes == Tiny::LaterLayout::slot_count * 16);
-  static_assert(Tiny::round4_bytes == Tiny::LaterLayout::slot_count * 16);
-#endif
+  constexpr unsigned late_record_bytes = mom_equihash::compact_zhash_records ? 12 : 16;
+  static_assert(Tiny::round3_bytes == Tiny::LaterLayout::slot_count * late_record_bytes);
+  static_assert(Tiny::round4_bytes == Tiny::round3_bytes);
   constexpr std::size_t expected = Tiny::provenance_bytes + Tiny::bucket_counts_bytes +
                                    Tiny::candidate_root_bytes + Tiny::recovered_leaf_bytes +
                                    Tiny::recovered_valid_bytes + Tiny::verified_field_bytes +

@@ -5002,7 +5002,7 @@ int main(int argc, char** argv) {
       assert.equal(policy.selection("etchash", "intel", "linux").key, "oneapi");
       assert.equal(policy.selection("fishhash", "intel", "linux").key, "oneapi");
       assert.equal(policy.selection("karlsenhashv2", "intel", "linux").key, "oneapi");
-      assert.equal(policy.selection("zhash", "intel", "linux").key, "dpcpp");
+      assert.equal(policy.selection("zhash", "intel", "linux").key, "oneapi");
       assert.equal(policy.selection("zhash", "intel", "linux").backend, "sycl");
       assert.equal(policy.selection("zhash", "intel", "win32").key, "oneapi");
       assert.equal(policy.selection("xelishashv3", "intel", "linux").backend, "sycl-native");

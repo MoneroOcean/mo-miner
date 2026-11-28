@@ -156,7 +156,8 @@ test.describe("Native process environment", {concurrency: false}, () => {
     const publisher = extractCppBlock(fs.readFileSync(path.join(sycl, "algo-params.inc"), "utf8"), "void sycl_set_compile_options(");
     assert.match(publisher, /switch \(sycl_compile_options_for\(algo\)\)/);
     const routes = {etchash: ["etchash"], progpow: ["kawpow", "firopow", "evrprogpow", "meowpow"],
-      autolykos2: ["autolykos2"], cnGpu: ["cn/gpu"], nexapow: ["nexapow"], none: ["", "octopus", "pearlhash", "rx/0"]};
+      autolykos2: ["autolykos2"], cnGpu: ["cn/gpu"], nexapow: ["nexapow"],
+      alchemistLargeGrf: ["zhash"], none: ["", "octopus", "pearlhash", "rx/0", "equihash192_7", "c29", "c30"]};
     const checks = Object.entries(routes).flatMap(([route, names]) => names.map(name =>
       `static_assert(sycl_compile_options_for(${JSON.stringify(name)}) == SyclCompileOptions::${route});`));
     const result = spawnSync("c++", ["-std=c++17", "-I", sycl, "-x", "c++", "-fsyntax-only", "-"],
