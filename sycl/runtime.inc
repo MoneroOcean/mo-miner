@@ -88,6 +88,18 @@ uint32_t c29_seed_local_size();
 uint32_t c29_seed_blocks_per_item();
 void pearlhash_cleanup_states() noexcept;
 
+// Whether this worker runs a test or benchmark rather than mining (see lib.h). Written on the
+// worker's loop thread before its compute thread exists.
+static bool strict_device_checks = false;
+
+void sycl_set_strict_device_checks(const bool strict) {
+  strict_device_checks = strict;
+}
+
+bool mom_strict_device_checks() {
+  return strict_device_checks;
+}
+
 // The registry values are cleared explicitly on runtimes that support ordered destruction. The
 // heap-owned shell itself has no process-exit destructor, matching the per-algorithm registries.
 static std::map<std::string, sycl::device>& str2dev = *new std::map<std::string, sycl::device>;

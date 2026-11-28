@@ -33,11 +33,20 @@ void Core::prepare(const Message& first) {
     return;
   const auto algo = first.values.find("algo");
   const auto dev = first.values.find("dev");
-  if (algo == first.values.end() || dev == first.values.end() || !gpu_algos.contains(algo->second) ||
-      sycl_compile_options_for(algo->second) == SyclCompileOptions::none)
+  if (algo == first.values.end() || dev == first.values.end() || !gpu_algos.contains(algo->second))
+    return;
+  // Any call below delay-loads the optional Windows SYCL DLL, which CPU-only addons lack: a failed
+  // delay load is not a C++ exception, so jobs that need neither setting must not reach it.
+  const SyclCompileOptions options = sycl_compile_options_for(algo->second);
+  const bool strict_checks = algo->second == "c29"; // the only kernel with a strict device check
+  if (options == SyclCompileOptions::none && !strict_checks)
     return;
   try {
-    sycl_set_compile_options(algo->second, dev->second.substr(0, dev->second.find('*')));
+    // Tests and benchmarks fail on device states that only slow mining down (see sycl/lib.h).
+    if (strict_checks)
+      sycl_set_strict_device_checks(first.name != "job");
+    if (options != SyclCompileOptions::none)
+      sycl_set_compile_options(algo->second, dev->second.substr(0, dev->second.find('*')));
   } catch (...) {
     // The job itself reports an unusable device or missing GPU runtime.
   }

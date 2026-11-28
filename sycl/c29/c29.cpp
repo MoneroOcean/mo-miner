@@ -42,6 +42,9 @@
 
 #include "../lib-internal.h"
 #include "../../native/consts.h"
+#if defined(_WIN32) && defined(MOM_SYCL_HAS_HIP)
+#include "../windows-gpu-memory.h"
+#endif
 #include "crypto/randomx/blake2/blake2.h"
 #include "cycle.h"
 

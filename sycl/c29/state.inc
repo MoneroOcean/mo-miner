@@ -229,6 +229,34 @@ static sycl::async_handler c29_exception_handler() {
   };
 }
 
+#if defined(_WIN32) && defined(MOM_SYCL_HAS_HIP)
+// Windows can put part of the graph buffers into shared GPU memory (system RAM) when the commit
+// limit, RAM plus page file, is nearly reached. Nothing fails: on an RX 9060 XT one 2.7 GiB buffer
+// there turned 7.4 g/s into 0.10 g/s, with 2,669 MiB of this process in the shared segment against
+// 13 MiB in a normal run. Checked after the first graph, when every buffer has been used, and now
+// and then afterwards because Windows may demote a buffer later. A test or benchmark fails; mining
+// warns once.
+inline void c29_check_gpu_memory_placement() {
+  static std::atomic<uint32_t> graphs{0};
+  static std::atomic<bool> warned{false};
+  if (graphs.fetch_add(1, std::memory_order_relaxed) % 64 != 0)
+    return;
+  constexpr uint64_t tolerated = 256ull << 20; // drivers keep a few MiB there in normal runs
+  const MomGpuMemoryUse use = mom_windows_gpu_memory_use(0x1002);
+  if (!use.valid || use.shared < tolerated)
+    return;
+  const std::string message =
+      "c29: Windows placed " + std::to_string(use.shared >> 20) +
+      " MiB of the GPU buffers in shared (system) memory instead of video memory, so hashing runs "
+      "at a small fraction of the card's speed. This happens when the commit limit (RAM plus page "
+      "file) is nearly reached: free memory or enlarge the page file, then restart.";
+  if (mom_strict_device_checks())
+    throw message;
+  if (!warned.exchange(true))
+    std::fprintf(stderr, "WARNING: %s\n", message.c_str());
+}
+#endif
+
 struct C29State {
   sycl::device device;
   sycl::queue queue;

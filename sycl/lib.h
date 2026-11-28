@@ -37,6 +37,12 @@ MOM_SYCL_API std::map<std::string, std::string> algo_params(
   const std::set<std::string>& gpu_beamhash3_algos
 );
 
+// Tell the library whether a worker's first job is a test or benchmark rather than mining. A kernel
+// that detects a silently degraded device state (see sycl/windows-gpu-memory.h) then fails instead
+// of warning, so that no measurement reports the degraded rate as valid. Call on the loop thread
+// before the worker's compute thread starts.
+MOM_SYCL_API void sycl_set_strict_device_checks(bool strict);
+
 // GPU entry points reuse serialized per-device state. Internal event chains may overlap independent
 // stages, but caller-owned upload/readback memory must be retired before return or exception unwind.
 // C29 alone can leave host cycle searches pending: they own retired graph data, are drained by
@@ -237,7 +243,7 @@ inline constexpr SyclCompileOptions sycl_compile_options_for(std::string_view al
   if (algo == "autolykos2") return SyclCompileOptions::autolykos2;
   if (algo == "cn/gpu") return SyclCompileOptions::cnGpu;
   if (algo == "nexapow") return SyclCompileOptions::nexapow;
-  if (algo == "c30" || algo == "zhash") return SyclCompileOptions::alchemistLargeGrf;
+  if (algo == "c29" || algo == "c30" || algo == "zhash") return SyclCompileOptions::alchemistLargeGrf;
   return SyclCompileOptions::none;
 }
 

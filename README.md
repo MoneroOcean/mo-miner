@@ -43,7 +43,7 @@ the GPUs on adjacent rows; the last column names the comparison source.
 | Algo / coin / pool      | GPU     | Linux               | Windows             | Reference / evidence           |
 | ----------------------- | ------- | ------------------- | ------------------- | ------------------------------ |
 | `c29` / TARI / MO       | B580    | 6.37 g/s (240%)     | 6.33 g/s (248%)     | BZMiner                        |
-|                         | A770    | 4.63 g/s (63%*)     | -                   | best peer*                     |
+|                         | A770    | 5.12 g/s (69%*)     | -                   | best peer*                     |
 |                         | 5060 Ti | 9.15 g/s (119%)     | 9.07 g/s (146%)     | BZMiner                        |
 |                         | 9060 XT | 7.52 g/s (107%)     | 7.39 g/s (112%)     | BZMiner                        |
 | `c30` / CTXC            | B580    | 1.54 g/s (135%*)    | 1.49 g/s (135%*)    | MoM 12-GiB-limited peer*       |
@@ -180,6 +180,11 @@ headroom for the OS and display use; DAG- and table-based networks can grow over
 lack double-precision (FP64) support. On UHD 750, `c29`, `zelhash`, `equihash192_7`,
 and `zhash` are also unavailable: their solvers require 1,024 threads per GPU group,
 while this integrated GPU supports 512.
+
+On Windows, GPU buffers also count against the commit limit (RAM plus page file). When that
+limit is nearly reached, Windows places buffers in shared memory instead of video memory and
+the rate collapses without an error. `c29` on Radeon detects this: a test or benchmark stops
+with an error, and mining prints a warning. Enlarge the page file or free memory in that case.
 
 Use `./mom algos` to list supported algorithms and their automatic CPU/GPU settings.
 

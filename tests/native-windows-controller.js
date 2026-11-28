@@ -329,6 +329,16 @@ console.log("planner import stayed esbuild-free; bundle verification requested e
     assert.doesNotThrow(() => validateWindowsControllerConfig(selected));
     selected.windowsSdk.allowedImports.push("sycl.dll"); assert.throws(() => validateWindowsControllerConfig(selected), /ordinary system DLLs/);
   });
+  test("native sources request no link libraries beyond the pinned Windows SDK selection", () => {
+    // The application links only the prepared SDK's import libraries; a source-level `#pragma
+    // comment(lib, ...)` passes every per-DLL build and fails only the release application link.
+    /** @param {string} dir @returns {string[]} */
+    const sources = dir => fs.readdirSync(dir, {withFileTypes: true}).flatMap(entry => entry.isDirectory()
+      ? sources(path.join(dir, entry.name)) : /\.(c|cc|cpp|h|hpp|inc)$/.test(entry.name) ? [path.join(dir, entry.name)] : []);
+    const offenders = ["native", "runtime", "sycl", "xmrig"].flatMap(dir => sources(path.join(repo, dir)))
+      .filter(file => /#\s*pragma\s+comment\s*\(\s*lib\b/.test(fs.readFileSync(file, "utf8")));
+    assert.deepEqual(offenders.map(file => path.relative(repo, file)), []);
+  });
   test("compiler flags and SDK search paths cannot leak in through the parent environment", t => {
     const keys = ["CL", "_cl_", "LINK", "INCLUDE", "LIBPATH", "CXXFLAGS", "MOM_NATIVE_RUNTIME"], before = Object.fromEntries(keys.map(key => [key, process.env[key]]));
     t.after(() => {for (const key of keys) {if (before[key] === undefined) {delete process.env[key];} else {process.env[key] = before[key];}}});

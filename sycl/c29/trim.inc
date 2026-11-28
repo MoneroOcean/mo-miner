@@ -352,6 +352,9 @@ profile.mark("tail ready");
 
 c29_read_buffer(compute_queue, buffer_trimmed_edge_count, &trimmed_edge_count, 1);
 trimmed_edge_count = sycl::min(trimmed_edge_count, MAX_TRIMMED_EDGE_COUNT);
+#if defined(_WIN32) && defined(MOM_SYCL_HAS_HIP)
+c29_check_gpu_memory_placement();
+#endif
 
 profile.mark("trimmed count ready");
 profile.print_events();

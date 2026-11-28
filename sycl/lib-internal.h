@@ -210,6 +210,9 @@ inline void mom_set_compile_options_env(const char* const value) {
 #endif
 }
 
+// True while the worker runs a test or benchmark (sycl_set_strict_device_checks() in lib.h).
+bool mom_strict_device_checks();
+
 // Parse a base-10 unsigned long, requiring the variable to be present, non-empty, and fully numeric.
 inline bool mom_parse_env_ulong(const char* const name, unsigned long& out) {
   const char* const value = std::getenv(name);
