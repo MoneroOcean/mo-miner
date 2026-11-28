@@ -21,6 +21,7 @@ using NativeProduct = int32_t;
 // B580 retains its three-slot throughput with two slots while using one-third less scratch.
 constexpr unsigned NativeSlots = 2;
 #else
+// RTX 5060 Ti: 45.60 MH/s with three slots, 44.15 with two and 44.82 with four.
 constexpr unsigned NativeSlots = 3;
 #endif
 constexpr unsigned NativeSubgroup = 32;

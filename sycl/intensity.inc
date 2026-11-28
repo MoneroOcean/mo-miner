@@ -92,8 +92,14 @@ static unsigned etchash_intensity(const sycl::device& dev) {
                        {{64, 32768, 36}, {64, 65536, 36}, {64, 131072, 40}}, 4);
 }
 
-// Octopus shares the Etchash overrides and heuristic except on AMD's WMMA pipeline.
+// Keep Etchash's tuning overrides on each Octopus backend.
 static unsigned octopus_intensity(const sycl::device& dev) {
+  if (mom_is_linux_alchemist(dev)) {
+    // Two full XMX batches sustain 16.6 MH/s on A770 and return control every quarter second.
+    const unsigned local = sycl_env_workgroup(dev, "MOM_ETCHASH_WORKGROUP", {32, 64, 128, 256, 512}, 64);
+    const unsigned override = parse_pow_intensity_override(local, "MOM_ETCHASH_INTENSITY");
+    return override ? override : 4u * 1024 * 1024;
+  }
   if (!mom_is_hip(dev))
     return etchash_intensity(dev);
   // AMD's queue-native WMMA pipeline reaches its throughput plateau with a deeper dispatch. On the

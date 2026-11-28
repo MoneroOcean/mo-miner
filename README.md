@@ -109,7 +109,7 @@ the GPUs on adjacent rows; the last column names the comparison source.
 | `octopus` / CFX         | B580    | 31.27 MH/s (61%*)   | 31.24 MH/s (61%*)   | best peer*                     |
 |                         | A770    | 16.60 MH/s (32%*)   | -                   | best peer*                     |
 |                         | 5060 Ti | 45.62 MH/s (88%)    | 45.44 MH/s (89%)    | lolMiner                       |
-|                         | 9060 XT | 32.80 MH/s (86%)    | 24.89 MH/s (77%)    | lolMiner                       |
+|                         | 9060 XT | 32.56 MH/s (85%)    | 24.89 MH/s (77%)    | lolMiner                       |
 | `xelishashv3` / XEL     | B580    | 2.15 KH/s (31%*)    | 2.16 KH/s (31%*)    | best peer*                     |
 |                         | A770    | 4.94 KH/s (83%)     | -                   | SRBMiner                       |
 |                         | 5060 Ti | 6.11 KH/s (88%)     | 5.90 KH/s (85%)     | Rigel                          |

@@ -26,6 +26,7 @@ struct OctopusAmdWmma {
     std::string arch = properties.gcnArchName;
     if (const size_t colon = arch.find(':'); colon != std::string::npos)
       arch.resize(colon);
+    // WMMA lanes read aligned eight-byte operands: K is 1024, k advances by 16, and kh is 0 or 8.
     const std::string source = "#define OCTOPUS_M " + std::to_string(rows) + R"(
 typedef int v2i __attribute__((ext_vector_type(2)));
 typedef int v8i __attribute__((ext_vector_type(8)));
@@ -60,13 +61,13 @@ extern "C" __global__ void octopus_wmma(const signed char* A, const signed char*
       for (int i = 0; i < ER; ++i) {
         const unsigned long long w =
             ((unsigned long long)(row + i * 16 + rc) * K + k + kh) / 4;
-        a[i] = {aw[w], aw[w + 1]};
+        a[i] = *reinterpret_cast<const v2i*>(aw + w);
       }
       #pragma unroll
       for (int j = 0; j < EC; ++j) {
         const unsigned long long w =
             ((unsigned long long)(col + j * 16 + rc) * K + k + kh) / 4;
-        b[j] = {bw[w], bw[w + 1]};
+        b[j] = *reinterpret_cast<const v2i*>(bw + w);
       }
       #pragma unroll
       for (int i = 0; i < ER; ++i) {
