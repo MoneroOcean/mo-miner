@@ -1,10 +1,10 @@
-template <bool INLINE_PAIR> class EtchashSearchKernel; // distinct kernel name per instantiation
+template <bool INLINE_PAIR, unsigned WIDTH> class EtchashSearchKernel; // distinct kernel name per instantiation
 
 // GPU etchash search kernel, instantiated for the inlined (fast) and noinline (always-correct) pair
 // Keccak. Identical to the 0.7.0 kernel except the two per-nonce Keccaks select their permutation by
 // INLINE_PAIR. The caller picks the instantiation per device from State::use_inline_pair().
-template <bool INLINE_PAIR>
-static sycl::event submit_etchash_search_gpu(
+template <bool INLINE_PAIR, unsigned WIDTH>
+static sycl::event etchash_search_kernel(
     sycl::queue& q, const uint8_t* const d_input, const uint64_t start_nonce,
     const uint32_t* const __restrict__ d_dag, const FastModData dag_mod,
     const uint32_t intensity, const uint8_t* const d_target, EtchashResult* const d_result,
@@ -20,10 +20,10 @@ static sycl::event submit_etchash_search_gpu(
     // exchanges each four-lane team's page/mix words through work-group local memory instead.
     sycl::local_accessor<uint32_t, 1> exchange(sycl::range<1>(GROUP4_WORKGROUP * 2), h);
 #endif
-    h.parallel_for<EtchashSearchKernel<INLINE_PAIR>>(
+    h.parallel_for<EtchashSearchKernel<INLINE_PAIR, WIDTH>>(
         sycl::nd_range<1>(sycl::range<1>(mom_round_up_size(intensity, GROUP4_WORKGROUP)),
                           sycl::range<1>(GROUP4_WORKGROUP)),
-        [=](sycl::nd_item<1> item) MOM_REQD_SG_16 MOM_SYCL_KERNEL_ARGS_RESTRICT {
+        [=](sycl::nd_item<1> item) MOM_REQD_SG(WIDTH) MOM_SYCL_KERNEL_ARGS_RESTRICT {
           const uint32_t lid = static_cast<uint32_t>(item.get_local_id(0));
           const uint32_t group_hash_base =
               static_cast<uint32_t>(item.get_group(0)) * GROUP4_WORKGROUP;
@@ -136,4 +136,19 @@ static sycl::event submit_etchash_search_gpu(
           }
         });
   });
+}
+
+template <bool INLINE_PAIR>
+static sycl::event submit_etchash_search_gpu(
+    sycl::queue& q, const uint8_t* input, uint64_t start_nonce, const uint32_t* dag,
+    FastModData mod, uint32_t count, const uint8_t* target, EtchashResult* result, bool test) {
+  auto kernel = etchash_search_kernel<INLINE_PAIR, 16>;
+#if defined(__linux__) && defined(PEARLHASH_ESIMD)
+  // The startup self-test checks Alchemist's faster SIMD8 kernel against the original reference.
+  if constexpr (INLINE_PAIR) {
+    if (mom_is_linux_alchemist(q.get_device()))
+      kernel = etchash_search_kernel<true, 8>;
+  }
+#endif
+  return kernel(q, input, start_nonce, dag, mod, count, target, result, test);
 }

@@ -138,10 +138,11 @@ public:
 // no requirement in its nvptx image, so each device loads the image that fits it.
 #if defined(__NVPTX__) || defined(MOM_SYCL_ADAPTIVECPP) || \
     defined(MOM_SYCL_PORTABLE_OPENCL)
-  #define MOM_REQD_SG_16
+  #define MOM_REQD_SG(width)
 #else
-  #define MOM_REQD_SG_16 [[sycl::reqd_sub_group_size(16)]]
+  #define MOM_REQD_SG(width) [[sycl::reqd_sub_group_size(width)]]
 #endif
+#define MOM_REQD_SG_16 MOM_REQD_SG(16)
 
 #if defined(MOM_SYCL_ADAPTIVECPP) || defined(MOM_SYCL_PORTABLE_OPENCL)
 struct MomExecutableKernelBundle {};

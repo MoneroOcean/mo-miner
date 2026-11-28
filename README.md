@@ -123,7 +123,7 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | 5060 Ti | 873.49 MH/s (85%)   | 892.07 MH/s (87%)   | SRBMiner                       |
 |                         | 9060 XT | 679.50 MH/s (87%)   | 667.68 MH/s (85%)   | SRBMiner                       |
 | `etchash` / ETC / MO    | B580    | 21.13 MH/s (100%)   | 21.13 MH/s (100%)   | lolMiner                       |
-|                         | A770    | 20.43 MH/s (76%*)   | -                   | Nanominer*                     |
+|                         | A770    | 24.12 MH/s (90%*)   | -                   | Nanominer*                     |
 |                         | 5060 Ti | 51.99 MH/s (100%)   | 51.73 MH/s (100%)   | Rigel                          |
 |                         | 9060 XT | 19.60 MH/s (100%)   | 17.39 MH/s (89%)    | SRBMiner                       |
 | `nexapow` / NEXA        | B580    | 28.06 MH/s (37%*)   | 27.01 MH/s (35%*)   | best peer*                     |
@@ -144,9 +144,8 @@ A770 measurements are Linux-only, with an observed 190 W cap, except the communi
 PearlHash result below. Starred miner names use measured averages where available; thermal
 throttling, short benchmarks or different pool workloads make
 these approximate comparisons. When a matched A770 reference is unavailable, `best peer*` uses a
-measured reference from another GPU. The A770 Etchash rate uses an earlier MoM build. The A770
-FishHash rate is the scalar kernel's: the faster cooperative kernel computes nothing on that card
-and is rejected.
+measured reference from another GPU. The A770 FishHash rate is the scalar kernel's: the faster
+cooperative kernel computes nothing on that card and is rejected.
 
 The A770 Windows PearlHash rate is reported by [@friskens in discussion #8](https://github.com/MoneroOcean/mo-miner/discussions/8),
 who also reports a 91.1 TH/s 15-minute average with undervolting. These are community results, not
