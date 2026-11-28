@@ -145,9 +145,11 @@ MOM_DEV_HOST=1 MOM_PORTABLE_BUILD=1 MOM_GPU_BACKEND=opencl MOM_LINUX_BUILD_COMPI
 Hardware suites are explicit selectors: `gpu`, `gpu-discrete`, `gpu-integrated`, `gpu-multi`,
 `gpu-portable-cpu` and `gpu-fishhash-batch`. Run them only when the devices and drivers are
 available and not in use; they are not substitutes for one another (portable CPU coverage is not
-GPU coverage, and a skipped device is not a pass). No suite connects to a mining pool. For bounded
-integrated-GPU checks set `MOM_INTEGRATED_PORTABLE_TEST=1` with `gpu-integrated` (compact
-fixtures; some exercise generation or recovery substeps rather than full solvers), and
+GPU coverage, and a skipped device is not a pass). `gpu-fishhash-batch` mines short FishHash,
+KarlsenHashV2 and Autolykos2 batches with the production kernels and checks them against the
+one-nonce test path, which the vectors alone never compare. No suite connects to a mining pool.
+For bounded integrated-GPU checks set `MOM_INTEGRATED_PORTABLE_TEST=1` with `gpu-integrated`
+(compact fixtures; some exercise generation or recovery substeps rather than full solvers), and
 `MOM_REQUIRE_INTEGRATED_GPU_TESTS=1` to fail when no integrated GPU exists.
 
 `npm run test:perf -- <algorithm>` measures performance on the available hardware; it is not a

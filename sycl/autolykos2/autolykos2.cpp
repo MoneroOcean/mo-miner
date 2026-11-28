@@ -13,6 +13,14 @@
 #include <mutex>
 #include <vector>
 
+#if !defined(MOM_SYCL_HAS_CUDA) && !defined(MOM_SYCL_HAS_HIP) && !defined(__NVPTX__) && \
+    !defined(__AMDGCN__) && !defined(MOM_SYCL_ADAPTIVECPP) && \
+    !defined(MOM_SYCL_PORTABLE_OPENCL) && \
+    __has_include(<sycl/ext/intel/experimental/grf_size_properties.hpp>)
+#include <sycl/ext/intel/experimental/grf_size_properties.hpp>
+#define MOM_AUTOLYKOS2_INTEL_LARGE_GRF 1
+#endif
+
 #include "../lib-internal.h"
 #include "../pow-hits.h"
 #include "../pow-target.h"
@@ -36,6 +44,9 @@ inline uint32_t calc_n(const uint32_t height) {
 }
 
 #include "state.inc"
+
+class AutolykosSearchKernel;
+class AutolykosSearchLargeGrfKernel;
 
 // Release device state before the compiler runtime unloads without escaping exceptions.
 void autolykos2_cleanup_states() noexcept {
@@ -123,6 +134,10 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
     state.ensure_bhashes(effective_intensity);
     uint32_t* const d_bhashes = state.bhashes;
 
+    // The message bytes as the little-endian words autolykos_index_words_dev hashes.
+    uint64_t message_words[4];
+    std::memcpy(message_words, job.message, sizeof(message_words));
+
     const uint64_t profile_t0 = profile ? mom_now_us() : 0;
     sycl::event index_event = q.submit([&](sycl::handler& h) {
       h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
@@ -131,14 +146,13 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
                        if (gid >= effective_intensity)
                          return;
 
-                       uint8_t index_hash[32];
-                       autolykos_index_hash_dev(job.message, start_nonce + gid, d_table, height,
-                                                n_len, n_len_divM, index_hash);
-
+                       uint32_t words[8];
+                       autolykos_index_words_dev(message_words, start_nonce + gid, d_table, n_len,
+                                                 n_len_divM, words);
                        uint32_t* const out = d_bhashes + static_cast<uint64_t>(gid) * 8U;
 #pragma unroll
                        for (unsigned i = 0; i < 8; ++i)
-                         out[i] = load32_be_dev(index_hash + i * 4);
+                         out[i] = words[i];
                      });
     });
 
@@ -238,7 +252,8 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
       });
     } else {
       search_event = q.submit([&](sycl::handler& h) {
-        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
+        const sycl::nd_range<1> range{sycl::range<1>(global_size), sycl::range<1>(local_size)};
+        const auto search =
                        [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
                          const uint32_t gid = item.get_global_id(0);
                          if (gid >= effective_intensity)
@@ -290,7 +305,19 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
                          blake2b256_oneblock_dev(final_input, sizeof(final_input), final_hash);
                          if (mom_meets_target_be(final_hash, job.target))
                            mom_store_pow_hit(d_result, start_nonce + gid, final_hash);
-                       });
+                       };
+#if defined(MOM_AUTOLYKOS2_INTEL_LARGE_GRF)
+        // BMG-G21: with the 256-entry register file the 32 unrolled row reads and their carry
+        // chains stay in registers (Arc B580 39.26 -> 39.90 MH/s). The index kernel loses 0.7%
+        // with it and keeps the default file; an Arc A770 run on the large file showed no gain.
+        if (mom_is_bmg_g21(state.device))
+          return h.parallel_for<AutolykosSearchLargeGrfKernel>(
+              range,
+              sycl::ext::oneapi::experimental::properties{
+                  sycl::ext::intel::experimental::grf_size<256>},
+              search);
+#endif
+        h.parallel_for<AutolykosSearchKernel>(range, search);
       });
     }
     sycl_wait_and_throw(search_event, state.device);
@@ -309,11 +336,19 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
               const uint32_t gid = item.get_global_id(0);
               if (gid >= verify_count)
                 return;
+              // Recompute the index words with the byte-wise reference routine, so the check
+              // also covers the index kernel's register-only form of that hash.
+              uint8_t index_hash[32];
+              autolykos_index_hash_dev(job.message, start_nonce + gid, d_table, height, n_len,
+                                       n_len_divM, index_hash);
               const uint32_t* const hash_words = d_bhashes + static_cast<uint64_t>(gid) * 8U;
               uint32_t words[9];
+              bool differs = false;
 #pragma unroll
-              for (unsigned i = 0; i < 8; ++i)
-                words[i] = hash_words[i];
+              for (unsigned i = 0; i < 8; ++i) {
+                words[i] = load32_be_dev(index_hash + i * 4);
+                differs |= words[i] != hash_words[i];
+              }
               words[8] = words[0];
               uint32_t expected[8] = {};
               // Keep this overlapping-byte decode independent so debug mode also catches index
@@ -341,7 +376,6 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
                               d_table + static_cast<uint64_t>(idx) *
                                             (TABLE_ENTRY_BYTES / sizeof(uint32_t)));
               }
-              bool differs = false;
 #pragma unroll
               for (unsigned i = 0; i < 8; ++i)
                 differs |= expected[i] != verify_sums[static_cast<uint64_t>(gid) * 8U + i];
@@ -357,7 +391,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
       if (mismatch_count)
         throw std::string("Autolykos2 subgroup verification failed: ") +
             std::to_string(mismatch_count) + " of " + std::to_string(verify_count) +
-            " accumulator sums differ";
+            " index hashes or accumulator sums differ";
       state.subgroup_coop_verified = true;
       std::fprintf(stderr, "Autolykos2 subgroup sums verified for %u nonces\n", verify_count);
     }

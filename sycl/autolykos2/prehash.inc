@@ -307,6 +307,66 @@ autolykos_index_hash_dev(const uint8_t message[32], const uint64_t nonce,
   blake2b256_oneblock_dev(seed, sizeof(seed), index_hash);
 }
 
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
+// Register-only form of autolykos_index_hash_dev for the split search over a precomputed table.
+// The same two BLAKE2b blocks are assembled from message words instead of byte arrays, which the
+// device compilers keep on the thread stack: on SM 12.0 that traffic was 97% of the index kernel's
+// L1 sectors and a third of its time. `message` holds the 32 message bytes as four little-endian
+// words; `words` receives the hash as the eight big-endian words the search kernel reads.
+AUTOLYKOS_DEVICE_INLINE void
+autolykos_index_words_dev(const uint64_t message[4], const uint64_t nonce,
+                          const uint32_t* const table, const uint32_t n_len,
+                          const uint64_t n_len_divM, uint32_t* const words) {
+  // bswap32_dev keeps its bytes in volatile stack slots for the portable profile.
+  const auto swap32 = [](const uint32_t v) {
+    return (v >> 24) | ((v >> 8) & 0x0000FF00U) | ((v << 8) & 0x00FF0000U) | (v << 24);
+  };
+  // The big-endian nonce bytes, read as one little-endian message word.
+  const uint64_t nonce_word = bswap64_dev(nonce);
+  uint64_t h[8];
+  uint64_t m[16];
+#pragma unroll
+  for (unsigned i = 0; i < 4; ++i)
+    m[i] = message[i];
+  m[4] = nonce_word;
+#pragma unroll
+  for (unsigned i = 5; i < 16; ++i)
+    m[i] = 0;
+  blake2b256_init_dev(h);
+  blake2b_compress_dev(h, m, 40, true);
+  // Hash bytes 24..31, read big-endian, select the row.
+  const uint32_t h3 = mod_u64(bswap64_dev(h[3]), n_len, n_len_divM);
+  const uint32_t* const row =
+      table + static_cast<uint64_t>(h3) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
+
+  // stream = row (32 bytes) || message (32) || nonce (8) as little-endian words. The hashed seed
+  // is that stream without its first byte: each message word spans two neighbouring stream words.
+  uint64_t stream[9];
+#pragma unroll
+  for (unsigned i = 0; i < 4; ++i)
+    stream[i] = static_cast<uint64_t>(swap32(row[2 * i])) |
+                (static_cast<uint64_t>(swap32(row[2 * i + 1])) << 32);
+#pragma unroll
+  for (unsigned i = 0; i < 4; ++i)
+    stream[4 + i] = message[i];
+  stream[8] = nonce_word;
+#pragma unroll
+  for (unsigned i = 0; i < 8; ++i)
+    m[i] = (stream[i] >> 8) | (stream[i + 1] << 56);
+  m[8] = stream[8] >> 8;
+#pragma unroll
+  for (unsigned i = 9; i < 16; ++i)
+    m[i] = 0;
+  blake2b256_init_dev(h);
+  blake2b_compress_dev(h, m, 71, true);
+#pragma unroll
+  for (unsigned i = 0; i < 4; ++i) {
+    words[2 * i] = swap32(static_cast<uint32_t>(h[i]));
+    words[2 * i + 1] = swap32(static_cast<uint32_t>(h[i] >> 32));
+  }
+}
+#endif
+
 #if defined(MOM_SYCL_PORTABLE_OPENCL)
 // Derive the index hash without pointer-dependent table branches in the portable kernel.
 AUTOLYKOS_DEVICE_INLINE void

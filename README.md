@@ -90,10 +90,10 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | A770    | 57.10 Sol/s (86%*)  | -                   | lolMiner*                      |
 |                         | 5060 Ti | 86.44 Sol/s (80%)   | 86.32 Sol/s (80%)   | miniZ                          |
 |                         | 9060 XT | 72.81 Sol/s (87%)   | 71.16 Sol/s (86%)   | lolMiner                       |
-| `autolykos2` / ERG / MO | B580    | 39.02 MH/s (96%)    | 38.84 MH/s (102%)   | BZMiner                        |
-|                         | A770    | 27.09 MH/s (100%*)  | -                   | SRBMiner*                      |
-|                         | 5060 Ti | 104.30 MH/s (87%)   | 101.85 MH/s (85%)   | BZMiner                        |
-|                         | 9060 XT | 37.44 MH/s (100%)   | 31.44 MH/s (82%)    | lolMiner / BZMiner             |
+| `autolykos2` / ERG / MO | B580    | 39.90 MH/s (98%)    | 39.85 MH/s (105%)   | BZMiner                        |
+|                         | A770    | 26.93 MH/s (99%*)   | -                   | SRBMiner*                      |
+|                         | 5060 Ti | 107.26 MH/s (89%)   | 104.81 MH/s (87%)   | BZMiner                        |
+|                         | 9060 XT | 36.96 MH/s (99%)    | 31.44 MH/s (82%)    | lolMiner / BZMiner             |
 | `cn/gpu` / RYO / MO     | B580    | 2.94 KH/s (107%)    | 2.96 KH/s (108%)    | SRBMiner                       |
 |                         | A770    | 2.41 KH/s (106%*)   | -                   | SRBMiner*                      |
 |                         | 5060 Ti | 3.54 KH/s (92%)     | 3.61 KH/s (93%)     | XMR-Stak                       |

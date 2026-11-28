@@ -6888,6 +6888,26 @@ int main(int argc, char** argv) {
       }
     });
 
+    test("Autolykos register-only index hash equals the byte-wise reference", {
+      skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
+    }, () => {
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-autolykos-index-"));
+      try {
+        const executable = path.join(fixture, "index-words");
+        const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+          "-Wno-unknown-pragmas", "-pedantic", "-I" + path.join(__dirname, "../sycl/autolykos2"),
+          path.join(__dirname, "native/autolykos2-index-words.cpp"), "-o", executable], {encoding: "utf8"});
+        assert.equal(compiled.error, undefined);
+        assert.equal(compiled.status, 0, compiled.stderr);
+        const result = spawnSync(executable, [], {encoding: "utf8", timeout: 10000});
+        assert.equal(result.error, undefined);
+        assert.equal(result.signal, null);
+        assert.equal(result.status, 0, result.stderr);
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
+
     test("ZHash CUDA scheduling selection preserves canonical proofs, retries, and timing margins", {
       skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
     }, () => {

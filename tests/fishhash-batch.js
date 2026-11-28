@@ -18,6 +18,8 @@ const root = path.join(__dirname, "..");
 // Opt-in full-DAG test: run through development container with one vendor selected. One-nonce
 // vectors cannot
 // detect lanes overwriting the leader's nonce with the original header during a mining batch.
+// Autolykos2 runs the same check: a mined batch goes through the precomputed table and the split
+// index/search kernels, which its one-nonce vector (table-free test path) never executes.
 /** @param {Core} core @param {HashVectorDefinition} definition */
 async function checkBatch(core, definition) {
   const {algo, blob_hex, nonceoffset} = definition.job;
@@ -107,14 +109,17 @@ async function checkBatch(core, definition) {
 
 if (process.argv[2] === "--worker") {
   (async () => {
+    const autolykos = process.argv[3] === "autolykos2";
     assert.equal(process.env["MOM_FISHHASH_FULL_TEST"], undefined);
-    assert.equal(process.env["MOM_FISHHASH_COOP"], "1");
+    if (!autolykos) {assert.equal(process.env["MOM_FISHHASH_COOP"], "1");}
     const nativePath = process.env["MOM_NATIVE_PATH"];
-    assert.ok(nativePath, "No FishHash worker selected");
+    assert.ok(nativePath, "No worker selected");
     /** @type {Core} */
     const core = require(nativePath);
-    const vectors = hashTests.filter(({job}) => ["fishhash", "karlsenhashv2"].includes(job.algo));
-    assert.equal(vectors.length, 3, "Expected both FishHash headers and the Karlsen header");
+    const algos = autolykos ? ["autolykos2"] : ["fishhash", "karlsenhashv2"];
+    const vectors = hashTests.filter(({job}) => algos.includes(job.algo));
+    assert.equal(vectors.length, autolykos ? 1 : 3,
+      autolykos ? "Expected the Autolykos2 header" : "Expected both FishHash headers and the Karlsen header");
     for (const definition of vectors) {await checkBatch(core, definition);}
     console.log(`NONCE_BATCH_COMPLETE layouts=${vectors.length}`);
   })().catch((error) => {
@@ -122,8 +127,8 @@ if (process.argv[2] === "--worker") {
     process.exitCode = 1;
   });
 } else {
-  test.describe("FishHash/Karlsen mining batches", {concurrency: false}, () => {
-    test("FishHash/Karlsen mining batches match the independent scalar path", () => {
+  test.describe("FishHash/Karlsen/Autolykos2 mining batches", {concurrency: false}, () => {
+    test("FishHash/Karlsen/Autolykos2 mining batches match the independent scalar path", () => {
       assert.ok(["intel", "nvidia", "amd"].includes(vendor), "Set MOM_GPU_BACKEND to one GPU vendor");
       /** @type {NodeJS.ProcessEnv} */
       const base = {...process.env, MOM_COMPILER_POLICY_STRICT: "1", MOM_FISHHASH_COOP: "1"};
@@ -133,12 +138,14 @@ if (process.argv[2] === "--worker") {
       // Mining uses the full DAG; test mode uses its independent scalar/light-cache oracle.
       // Set flags before loading the addon, including on Windows where CRT getenv is separate.
       delete base["MOM_FISHHASH_FULL_TEST"];
-      const env = {...base, ...policy.workerEnv("fishhash", base)};
-      assert.ok(env["MOM_NATIVE_PATH"] && fs.existsSync(env["MOM_NATIVE_PATH"]), "FishHash worker is missing");
-      const result = spawnSync(process.execPath, [__filename, "--worker"], {cwd: root, env, stdio: "inherit"});
-      if (result.error) {throw result.error;}
-      assert.equal(result.signal, null, "Nonce-batch child did not exit naturally");
-      assert.equal(result.status, 0, "Nonce-batch scalar comparison failed");
+      for (const algo of ["fishhash", "autolykos2"]) {
+        const env = {...base, ...policy.workerEnv(algo, base)};
+        assert.ok(env["MOM_NATIVE_PATH"] && fs.existsSync(env["MOM_NATIVE_PATH"]), algo + " worker is missing");
+        const result = spawnSync(process.execPath, [__filename, "--worker", algo], {cwd: root, env, stdio: "inherit"});
+        if (result.error) {throw result.error;}
+        assert.equal(result.signal, null, "Nonce-batch child did not exit naturally");
+        assert.equal(result.status, 0, algo + " nonce-batch scalar comparison failed");
+      }
     });
   });
 }
