@@ -122,12 +122,15 @@ void KAWPOW_JIT_KERNEL_NAME(const uint8_t* d_input, const DagLoad* __restrict__ 
   // The per-algo keccak seal is baked into the JIT source as JIT_SEAL/JIT_MAGIC (kawpow_emit_seal),
   // injected after kawpow_device_src() (which defines SealMode) and before this WRAPPER. KawPoW and
   // EvrProgPow use SealMode::KAWPOW with different magic; FiroPow uses SealMode::FIRO.
-  uint32_t state2[8];
+  uint32_t seed[8];
   kawpow_initial_dev(d_input, static_cast<uint32_t>(full_nonce),
                      static_cast<uint32_t>(full_nonce >> 32),
-                     JIT_SEAL, JIT_MAGIC, state2);
-
-  uint32_t digest[8];
+                     JIT_SEAL, JIT_MAGIC, seed);
+  // See MO_KAW_COLD: the mix loop must not carry these sixteen words in registers.
+  volatile uint32_t state2[8];
+  volatile uint32_t digest[8];
+  for (unsigned i = 0; i < 8; ++i)
+    state2[i] = seed[i];
   const KawpowSgExchange ex{sg, static_cast<uint32_t>(sg.get_local_id()[0]) & ~(KAWPOW_LANES - 1u)};
   uint32_t* const c_dag_ptr = &c_dag[0];
   // JIT_REGS/JIT_CNT_CACHE/JIT_CNT_MATH are baked per-variant (kawpow_emit_shape), injected after the
@@ -135,10 +138,15 @@ void KAWPOW_JIT_KERNEL_NAME(const uint8_t* d_input, const DagLoad* __restrict__ 
   kawpow_search_dev<KawpowSgExchange, uint32_t*, JIT_REGS, JIT_CNT_CACHE, JIT_CNT_MATH>(
     ex, lane_id, state2, c_dag_ptr, d_dag_load, BAKED_PROGRAM, BAKED_DAGMOD, digest);
 
+  uint32_t mix_digest[8];
+  for (unsigned i = 0; i < 8; ++i) {
+    seed[i] = state2[i];
+    mix_digest[i] = digest[i];
+  }
   uint32_t final_state[25];
-  kawpow_final_dev(state2, digest, JIT_SEAL, JIT_MAGIC, final_state);
+  kawpow_final_dev(seed, mix_digest, JIT_SEAL, JIT_MAGIC, final_state);
   if ((is_test && gid == 0) || (active && target && kawpow_meets_target_words(final_state, target))) {
-    store_kawpow_result(d_result, full_nonce, final_state, digest);
+    store_kawpow_result(d_result, full_nonce, final_state, mix_digest);
   }
 }
 )KJW";

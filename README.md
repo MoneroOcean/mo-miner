@@ -52,15 +52,15 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | 9060 XT | 1.59 g/s (100%*)    | 1.35 g/s (84%*)     | Hashrate.no/cross-GPU*         |
 | `kawpow` / RVN / MO     | B580    | 20.97 MH/s (110%)   | 20.93 MH/s (110%)   | SRBMiner                       |
 |                         | A770    | 13.96 MH/s (148%*)  | -                   | WildRig*                       |
-|                         | 5060 Ti | 21.98 MH/s (85%)    | 21.75 MH/s (82%)    | Rigel                          |
+|                         | 5060 Ti | 25.16 MH/s (97%)    | 25.12 MH/s (95%)    | Rigel                          |
 |                         | 9060 XT | 19.45 MH/s (99%)    | 16.74 MH/s (84%)    | SRBMiner                       |
 | `evrprogpow` / EVR      | B580    | 21.03 MH/s (110%)   | 21.02 MH/s (110%)   | SRBMiner                       |
 |                         | A770    | 21.67 MH/s (122%)   | -                   | WildRig                        |
-|                         | 5060 Ti | 21.32 MH/s (81%)    | 21.12 MH/s (81%)    | SRBMiner                       |
+|                         | 5060 Ti | 25.21 MH/s (96%)    | 25.17 MH/s (97%)    | SRBMiner                       |
 |                         | 9060 XT | 19.49 MH/s (99%)    | 17.35 MH/s (88%)    | SRBMiner                       |
 | `firopow` / FIRO        | B580    | 20.96 MH/s (112%)   | 20.97 MH/s (112%)   | SRBMiner                       |
 |                         | A770    | 15.33 MH/s (165%)   | -                   | WildRig                        |
-|                         | 5060 Ti | 21.13 MH/s (80%)    | 21.13 MH/s (80%)    | SRBMiner                       |
+|                         | 5060 Ti | 25.17 MH/s (95%)    | 25.14 MH/s (95%)    | SRBMiner                       |
 |                         | 9060 XT | 19.46 MH/s (99%)    | 16.91 MH/s (85%)    | SRBMiner                       |
 | `meowpow` / MEWC        | B580    | 21.09 MH/s (112%)   | 21.09 MH/s (112%)   | SRBMiner                       |
 |                         | A770    | 17.79 MH/s (99%)    | -                   | WildRig                        |
@@ -134,8 +134,9 @@ the GPUs on adjacent rows; the last column names the comparison source.
 Rates are steady-state measurements from the listed local GPUs on Ubuntu 26.04 LTS and Windows 11
 24H2, one GPU per process. The RTX 5060 Ti and RX 9060 XT used 150 W and 145 W limits; the B580 was
 not power-limited. Actual speed varies with drivers, clocks, power limits, and pool workload.
-The RTX 5060 Ti Windows rate for `karlsenhashv2` comes from a source-built worker, whose device
-compiler differs from the release executable's; it is re-measured with each release.
+The RTX 5060 Ti Windows rates for `kawpow`, `evrprogpow`, `firopow` and `karlsenhashv2` come from
+source-built workers, whose device compilers differ from the release executable's; they are
+re-measured with each release.
 
 Linux rates are measured with release executables. The Intel Arc rates use Intel's current
 compute runtime (26.31 with the B580, 26.22 with the A770); with Ubuntu 26.04's packaged 26.05

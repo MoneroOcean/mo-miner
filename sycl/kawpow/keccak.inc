@@ -168,7 +168,7 @@ inline void keccak_512_words_dev(uint32_t words[NODE_WORDS]) {
 }
 
 // Apply one 32-bit Keccak-f800 round used by the seal.
-inline void keccak_f800_round_dev(uint32_t st[25], const unsigned round) {
+MO_KAW_AINLINE void keccak_f800_round_dev(uint32_t st[25], const unsigned round) {
   static constexpr uint32_t rndc[22] = {0x00000001, 0x00008082, 0x0000808a, 0x80008000, 0x0000808b,
                                         0x80000001, 0x80008081, 0x00008009, 0x0000008a, 0x00000088,
                                         0x80008009, 0x8000000a, 0x8000808b, 0x0000008b, 0x00008089,
@@ -180,16 +180,20 @@ inline void keccak_f800_round_dev(uint32_t st[25], const unsigned round) {
                                         15, 23, 19, 13, 12, 2, 20, 14, 22, 9,  6,  1};
 
   uint32_t bc[5];
+  MO_KAW_UNROLL
   for (unsigned i = 0; i < 5; ++i) {
     bc[i] = st[i] ^ st[i + 5] ^ st[i + 10] ^ st[i + 15] ^ st[i + 20];
   }
+  MO_KAW_UNROLL
   for (unsigned i = 0; i < 5; ++i) {
     const uint32_t t = bc[(i + 4) % 5] ^ rotl32_dev(bc[(i + 1) % 5], 1);
+    MO_KAW_UNROLL
     for (unsigned j = 0; j < 25; j += 5)
       st[j + i] ^= t;
   }
 
   uint32_t t = st[1];
+  MO_KAW_UNROLL
   for (unsigned i = 0; i < 24; ++i) {
     const uint32_t j = piln[i];
     bc[0] = st[j];
@@ -197,9 +201,12 @@ inline void keccak_f800_round_dev(uint32_t st[25], const unsigned round) {
     t = bc[0];
   }
 
+  MO_KAW_UNROLL
   for (unsigned j = 0; j < 25; j += 5) {
+    MO_KAW_UNROLL
     for (unsigned i = 0; i < 5; ++i)
       bc[i] = st[j + i];
+    MO_KAW_UNROLL
     for (unsigned i = 0; i < 5; ++i)
       st[j + i] ^= (~bc[(i + 1) % 5]) & bc[(i + 2) % 5];
   }
@@ -207,7 +214,8 @@ inline void keccak_f800_round_dev(uint32_t st[25], const unsigned round) {
 }
 
 // Run the 22-round seal permutation, distinct from 24-round Keccak-f1600.
-inline void keccak_f800_dev(uint32_t st[25]) {
+MO_KAW_AINLINE void keccak_f800_dev(uint32_t st[25]) {
+  MO_KAW_UNROLL
   for (unsigned round = 0; round < 22; ++round)
     keccak_f800_round_dev(st, round);
 }
@@ -225,6 +233,7 @@ MO_KAW_AINLINE void fill_mix_dev(const uint32_t seed0, const uint32_t seed1, con
   st.jsr = fnv1a(fnv_hash, lane);
   st.jcong = fnv1a(fnv_hash, lane);
 
+  MO_KAW_UNROLL
   for (unsigned i = 0; i < REGS; ++i)
     mix[i] = kiss99(st);
 }

@@ -14,13 +14,26 @@
 #define MO_KAW_AINLINE inline
 #endif
 
+// Seed and digest words are read or written once per lane hash, never inside the 64-step mix loop.
+// The CUDA source-JIT keeps them in thread-local memory (volatile) so they do not occupy registers
+// across that loop: the kernel's register count sets how many threads an SM keeps resident.
+#if defined(MO_KAW_JIT_FOLD)
+#define MO_KAW_COLD volatile
+// Fully unroll the fixed-count seal, mix-fill and digest loops there as well: their tables fold to
+// constants and their arrays stay in registers instead of the thread stack.
+#define MO_KAW_UNROLL _Pragma("unroll")
+#else
+#define MO_KAW_COLD
+#define MO_KAW_UNROLL
+#endif
+
 MO_KAW_AINLINE uint32_t fnv1a(uint32_t& h, const uint32_t d) {
   h = (h ^ d) * FNV_PRIME;
   return h;
 }
 
 // Advance the consensus PRNG; draw order determines the generated program.
-inline uint32_t kiss99(Kiss99& st) {
+MO_KAW_AINLINE uint32_t kiss99(Kiss99& st) {
   st.z = 36969 * (st.z & 65535) + (st.z >> 16);
   st.w = 18000 * (st.w & 65535) + (st.w >> 16);
   const uint32_t mwc = (st.z << 16) + st.w;
@@ -53,6 +66,30 @@ MO_KAW_AINLINE uint32_t mul_hi_dev(const uint32_t a, const uint32_t b) {
   return static_cast<uint32_t>((static_cast<uint64_t>(a) * b) >> 32);
 }
 
+// The CUDA source-JIT links the SYCL builtins only after optimization, so sycl::clz, popcount and min
+// would each stay a call inside the unrolled program. The compiler builtins lower to one instruction.
+#if defined(MO_KAW_JIT_FOLD)
+MO_KAW_AINLINE uint32_t clz_dev(const uint32_t x) {
+  return x ? static_cast<uint32_t>(__builtin_clz(x)) : 32U;
+}
+MO_KAW_AINLINE uint32_t popcount_dev(const uint32_t x) {
+  return static_cast<uint32_t>(__builtin_popcount(x));
+}
+MO_KAW_AINLINE uint32_t min_dev(const uint32_t a, const uint32_t b) {
+  return a < b ? a : b;
+}
+#else
+inline uint32_t clz_dev(const uint32_t x) {
+  return sycl::clz(x);
+}
+inline uint32_t popcount_dev(const uint32_t x) {
+  return sycl::popcount(x);
+}
+inline uint32_t min_dev(const uint32_t a, const uint32_t b) {
+  return sycl::min(a, b);
+}
+#endif
+
 // Interpret the consensus math selector; the final selector maps to population count.
 MO_KAW_AINLINE uint32_t random_math_dev(const uint32_t a, const uint32_t b,
                                         const uint32_t selector) {
@@ -64,7 +101,7 @@ MO_KAW_AINLINE uint32_t random_math_dev(const uint32_t a, const uint32_t b,
   case 2:
     return mul_hi_dev(a, b);
   case 3:
-    return sycl::min(a, b);
+    return min_dev(a, b);
   case 4:
     return rotl32_dev(a, b);
   case 5:
@@ -76,9 +113,9 @@ MO_KAW_AINLINE uint32_t random_math_dev(const uint32_t a, const uint32_t b,
   case 8:
     return a ^ b;
   case 9:
-    return sycl::clz(a) + sycl::clz(b);
+    return clz_dev(a) + clz_dev(b);
   default:
-    return sycl::popcount(a) + sycl::popcount(b);
+    return popcount_dev(a) + popcount_dev(b);
   }
 }
 
@@ -137,7 +174,7 @@ MO_KAW_AINLINE void apply_progpow_data_dev(uint32_t* mix, const DagLoad data_dag
 }
 
 #include "keccak.inc"
-inline uint32_t bswap32_dev(const uint32_t value) {
+MO_KAW_AINLINE uint32_t bswap32_dev(const uint32_t value) {
   return ((value & 0x000000FFU) << 24) | ((value & 0x0000FF00U) << 8) |
          ((value & 0x00FF0000U) >> 8) | ((value & 0xFF000000U) >> 24);
 }
@@ -159,7 +196,8 @@ struct KawpowSgExchange {
   }
 
   // Broadcast the selected nonce seed without crossing the 16-lane team boundary.
-  inline void seed(uint32_t& s0, uint32_t& s1, const uint32_t state2[8], const uint32_t h0) const {
+  inline void seed(uint32_t& s0, uint32_t& s1, const MO_KAW_COLD uint32_t* const state2,
+                   const uint32_t h0) const {
     s0 = mom_select_from_group(sg, state2[0], lane(h0));
     s1 = mom_select_from_group(sg, state2[1], lane(h0));
   }
@@ -170,7 +208,8 @@ struct KawpowSgExchange {
   }
 
   // Fold team lane hashes and retain only this work-item's nonce digest.
-  inline void digest(uint32_t digest_out[8], const uint32_t lane_hash, const bool keep) const {
+  inline void digest(MO_KAW_COLD uint32_t* const digest_out, const uint32_t lane_hash,
+                     const bool keep) const {
     // Each lane j folds fnv1a(fnv1a(basis, lane_hash[j]), lane_hash[j + 8]); lanes
     // 0..7 hold the eight results, which are then distributed to every lane.
     // shift_group_left by 8 stays within each 16-lane group on a 32-wide warp
@@ -196,7 +235,8 @@ struct KawpowSlmExchange {
   bool cpu_offset_barrier;
 
   // Publish the selected seed through local memory before all lanes consume it.
-  inline void seed(uint32_t& s0, uint32_t& s1, const uint32_t state2[8], const uint32_t h0) const {
+  inline void seed(uint32_t& s0, uint32_t& s1, const MO_KAW_COLD uint32_t* const state2,
+                   const uint32_t h0) const {
     if (lane_id == h0) {
       share[0] = state2[0];
       share[1] = state2[1];
@@ -218,7 +258,8 @@ struct KawpowSlmExchange {
   }
 
   // Fold published lane hashes, then fence before the shared slots are reused.
-  inline void digest(uint32_t digest_out[8], const uint32_t lane_hash, const bool keep) const {
+  inline void digest(MO_KAW_COLD uint32_t* const digest_out, const uint32_t lane_hash,
+                     const bool keep) const {
     share[lane_id] = lane_hash;
     item.barrier(sycl::access::fence_space::local_space);
 
@@ -243,9 +284,11 @@ struct KawpowSlmExchange {
 template <typename Exchange, typename LocalDag, unsigned REGS = KAWPOW_REGS,
           unsigned CNT_CACHE = KAWPOW_CNT_CACHE, unsigned CNT_MATH = KAWPOW_CNT_MATH>
 MO_KAW_AINLINE void
-kawpow_search_dev(const Exchange& ex, const uint32_t lane_id, const uint32_t state2[8],
+kawpow_search_dev(const Exchange& ex, const uint32_t lane_id,
+                  const MO_KAW_COLD uint32_t* const state2,
                   const LocalDag& c_dag, const DagLoad* const __restrict__ dag,
-                  const KawpowProgram& program, const FastModData dag_mod, uint32_t digest[8]) {
+                  const KawpowProgram& program, const FastModData dag_mod,
+                  MO_KAW_COLD uint32_t* const digest) {
   for (uint32_t h0 = 0; h0 < KAWPOW_LANES; ++h0) {
     uint32_t mix[KAWPOW_REGS];
     uint32_t s0, s1;
@@ -256,13 +299,22 @@ kawpow_search_dev(const Exchange& ex, const uint32_t lane_id, const uint32_t sta
       const uint32_t selected_offset = ex.offset(mix[0], loop & (KAWPOW_LANES - 1));
       uint32_t offset = fast_mod_dev(selected_offset, dag_mod);
       offset = offset * KAWPOW_LANES + ((lane_id ^ loop) & (KAWPOW_LANES - 1));
+#if defined(MO_KAW_JIT_FOLD)
+      // One 128-bit load of the 16-byte-aligned entry; the struct copy lowers to two 64-bit loads.
+      typedef uint32_t DagWords __attribute__((ext_vector_type(4)));
+      DagWords dag_words;
+      __builtin_memcpy(&dag_words, dag + offset, sizeof(dag_words));
+      const DagLoad data_dag{{dag_words[0], dag_words[1], dag_words[2], dag_words[3]}};
+#else
       const DagLoad data_dag = dag[offset];
+#endif
 
       apply_progpow_ops_dev<0, LocalDag, CNT_CACHE, CNT_MATH>(mix, c_dag, program);
       apply_progpow_data_dev<0>(mix, data_dag, program);
     }
 
     uint32_t lane_hash = FNV_OFFSET_BASIS;
+    MO_KAW_UNROLL
     for (unsigned i = 0; i < REGS; ++i)
       lane_hash = fnv1a(lane_hash, mix[i]);
 
@@ -283,9 +335,9 @@ enum class SealMode : uint32_t {
 // Initial keccak-f800 absorb of header+nonce. KAWPOW/EVR: st[10..24] = the 15-word magic array.
 // FIRO: st[10]=0x00000001, st[18]=0x80008081, all other high words zero (keccak padding, no magic).
 // `magic` is read only in KAWPOW mode (FIRO ignores it).
-inline void kawpow_initial_dev(const uint8_t* const input, const uint32_t nonce_low,
-                               const uint32_t nonce_high, const SealMode seal,
-                               const uint32_t* const magic, uint32_t state2[8]) {
+MO_KAW_AINLINE void kawpow_initial_dev(const uint8_t* const input, const uint32_t nonce_low,
+                                       const uint32_t nonce_high, const SealMode seal,
+                                       const uint32_t* const magic, uint32_t state2[8]) {
   uint32_t st[25];
   const uint32_t* const job_words = reinterpret_cast<const uint32_t*>(input);
   for (unsigned i = 0; i < 8; ++i)
@@ -308,9 +360,9 @@ inline void kawpow_initial_dev(const uint8_t* const input, const uint32_t nonce_
 
 // Final keccak-f800 absorb of seed-hash (state2) + digest (mix). KAWPOW/EVR: st[16..24] = magic[0..8].
 // FIRO: st[17]=0x00000001, st[24]=0x80008081, all other high words (st[16], st[18..23]) zero.
-inline void kawpow_final_dev(const uint32_t state2[8], const uint32_t digest[8],
-                             const SealMode seal, const uint32_t* const magic,
-                             uint32_t final_state[25]) {
+MO_KAW_AINLINE void kawpow_final_dev(const uint32_t state2[8], const uint32_t digest[8],
+                                     const SealMode seal, const uint32_t* const magic,
+                                     uint32_t final_state[25]) {
   for (unsigned i = 0; i < 8; ++i) {
     final_state[i] = state2[i];
     final_state[i + 8] = digest[i];
@@ -328,7 +380,7 @@ inline void kawpow_final_dev(const uint32_t state2[8], const uint32_t digest[8],
 }
 
 // Compare the leading big-endian 64 bits against the compact pool target.
-inline bool kawpow_meets_target_words(const uint32_t output[8], const uint64_t target) {
+MO_KAW_AINLINE bool kawpow_meets_target_words(const uint32_t output[8], const uint64_t target) {
   const uint32_t hash_hi = bswap32_dev(output[0]);
   const uint32_t hash_lo = bswap32_dev(output[1]);
   const uint32_t target_hi = static_cast<uint32_t>(target >> 32);
