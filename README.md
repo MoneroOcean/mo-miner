@@ -114,7 +114,7 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | A770    | 4.94 KH/s (83%)     | -                   | SRBMiner                       |
 |                         | 5060 Ti | 6.11 KH/s (88%)     | 5.90 KH/s (85%)     | Rigel                          |
 |                         | 9060 XT | 2.62 KH/s (99%)     | 2.61 KH/s (110%)    | SRBMiner / BZMiner             |
-| `verthash` / VTC        | B580    | 299.83 KH/s (95%)   | 298.59 KH/s (94%)   | SRBMiner                       |
+| `verthash` / VTC        | B580    | 323.55 KH/s (103%)  | 323.63 KH/s (102%)  | SRBMiner                       |
 |                         | A770    | 959.49 KH/s (98%)   | -                   | SRBMiner                       |
 |                         | 5060 Ti | 908.06 KH/s (98%)   | 873.84 KH/s (94%)   | TBMiner                        |
 |                         | 9060 XT | 293.48 KH/s (101%)  | 292.17 KH/s (100%)  | TBMiner                        |

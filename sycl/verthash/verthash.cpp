@@ -25,6 +25,13 @@
 #include "../pow-hits.h"
 #include "data-file.h"
 
+#if !defined(MOM_SYCL_HAS_CUDA) && !defined(MOM_SYCL_HAS_HIP) && !defined(__NVPTX__) && \
+    !defined(__AMDGCN__) && !defined(MOM_SYCL_ADAPTIVECPP) && !defined(MOM_SYCL_PORTABLE_OPENCL) && \
+    __has_include(<sycl/ext/intel/experimental/grf_size_properties.hpp>)
+#include <sycl/ext/intel/experimental/grf_size_properties.hpp>
+#define MOM_VERTHASH_INTEL_LARGE_GRF 1
+#endif
+
 namespace mom_verthash {
 
 struct Uint2 {
@@ -73,6 +80,8 @@ inline uint32_t fnv1a(uint32_t a, uint32_t b) {
 
 template <bool Compact> class SeedKernel;
 template <bool Compact> class SearchKernel;
+template <bool Compact> class SeedLargeGrfKernel;
+template <bool Compact> class SearchLargeGrfKernel;
 
 class State {
 public:
@@ -204,9 +213,12 @@ static sycl::event submit_search(State& s, uint32_t start_nonce, unsigned count,
   uint32_t* const target = s.target;
   PowHits<uint32_t>* const result = s.result;
   constexpr uint32_t data_mdiv = Compact ? TEST_MDIV : MDIV;
+  // One padding word spreads the four-lane teams' simultaneous seed reads across BMG SLM banks.
+  const bool bmg_g21 = mom_is_bmg_g21(s.device);
+  const unsigned seed_stride = bmg_g21 ? 129 : 128;
+  [[maybe_unused]] const bool large_grf = bmg_g21;
   s.queue.submit([&](sycl::handler& h) {
-    h.parallel_for<SeedKernel<Compact>>(
-        sycl::range<1>(count), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+    const auto seed = [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
       const size_t hash = id[0];
       const uint32_t nonce = start_nonce + static_cast<uint32_t>(hash);
       uint64_t st[25]{};
@@ -219,18 +231,27 @@ static sycl::event submit_search(State& s, uint32_t start_nonce, unsigned count,
       data_file::keccak(st);
       for (unsigned i = 0; i < 4; ++i)
         hashes[hash * 4 + i] = {static_cast<uint32_t>(st[i]), static_cast<uint32_t>(st[i] >> 32)};
-    });
+    };
+#if defined(MOM_VERTHASH_INTEL_LARGE_GRF)
+    if (large_grf)
+      return h.parallel_for<SeedLargeGrfKernel<Compact>>(
+          sycl::range<1>(count),
+          sycl::ext::oneapi::experimental::properties{
+              sycl::ext::intel::experimental::grf_size<256>},
+          seed);
+#endif
+    h.parallel_for<SeedKernel<Compact>>(sycl::range<1>(count), seed);
   });
   return s.queue.submit([&](sycl::handler& h) {
-    sycl::local_accessor<uint32_t, 1> sha3(WG / 4 * 128, h);
+    sycl::local_accessor<uint32_t, 1> sha3(WG / 4 * seed_stride, h);
 #if defined(MOM_SYCL_PORTABLE_OPENCL)
     // Standards-only OpenCL lacks the required subgroup shuffle extension.
     // Exchange each hash's four lanes through local memory instead.
     sycl::local_accessor<uint32_t, 1> exchange(WG * 2, h);
 #endif
-    h.parallel_for<SearchKernel<Compact>>(
-        sycl::nd_range<1>(sycl::range<1>(static_cast<size_t>(count) * 4), sycl::range<1>(WG)),
-        [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+    const sycl::nd_range<1> search_range{sycl::range<1>(static_cast<size_t>(count) * 4),
+                                         sycl::range<1>(WG)};
+    const auto search = [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
           const size_t gid = it.get_global_id(0);
           const unsigned lid = static_cast<unsigned>(it.get_local_id(0)), lane = lid & 3u;
 #if defined(MOM_SYCL_PORTABLE_OPENCL)
@@ -241,7 +262,7 @@ static sycl::event submit_search(State& s, uint32_t start_nonce, unsigned count,
 #endif
           const size_t hash = gid >> 2;
           const uint32_t nonce = start_nonce + static_cast<uint32_t>(hash);
-          uint32_t* combined = &sha3[(lid >> 2) * 128];
+          uint32_t* combined = &sha3[(lid >> 2) * seed_stride];
 
           for (unsigned pass = 0; pass < 2; ++pass) {
             uint64_t st[25];
@@ -313,7 +334,18 @@ static sycl::event submit_search(State& s, uint32_t start_nonce, unsigned count,
             }
           if ((is_test && hash == 0) || hit)
             mom_store_pow_hit(result, nonce, words);
-        });
+        };
+#if defined(MOM_VERTHASH_INTEL_LARGE_GRF)
+    // BMG-G21 runs the seed Keccak and the 4096 dependent rounds faster with the 256-entry
+    // register file, at half the EU threads: 309.4 -> 323.6 KH/s on Arc B580.
+    if (large_grf)
+      return h.parallel_for<SearchLargeGrfKernel<Compact>>(
+          search_range,
+          sycl::ext::oneapi::experimental::properties{
+              sycl::ext::intel::experimental::grf_size<256>},
+          search);
+#endif
+    h.parallel_for<SearchKernel<Compact>>(search_range, search);
   });
 }
 
