@@ -9,7 +9,9 @@ public:
   UsmPtr<uint64_t> dag;
   UsmPtr<FishResult> result;
   unsigned input_cap = 0;
-  unsigned coop_workgroup;
+  const unsigned fish_team;
+  const unsigned karlsen_workgroup;
+  const unsigned fish_workgroup;
   bool cache_built = false;
   bool dag_built = false;
   // A cached choice is unset (-1), scalar (0), or cooperative (1).
@@ -22,28 +24,38 @@ public:
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
         shared_io(device.is_cpu() || !mom_has_usm_device(device)),
-        coop_workgroup(cooperative_workgroup(device)) {
+        fish_team(mom_is_linux_alchemist(device) ? 8 : FISH_TEAM),
+        karlsen_workgroup(cooperative_workgroup(device)),
+        fish_workgroup(cooperative_workgroup(device, fish_team, true)) {
     if (!mom_has_usm_shared(device) || (!device.is_cpu() && !mom_has_usm_device(device)))
       throw std::string("fishhash SYCL device does not support required allocations");
   }
   // Zero keeps scalar search available when cooperative geometry cannot fit the device.
-  static unsigned cooperative_workgroup(const sycl::device& dev) {
+  static unsigned cooperative_workgroup(const sycl::device& dev, unsigned team = FISH_TEAM,
+                                        [[maybe_unused]] bool fishhash = false) {
     if constexpr (mom_sycl_portable_opencl)
       return 0;
-    if (!dev.is_gpu() || !sycl_reqd_subgroup_16_supported(dev) ||
-        !sycl_workgroup_fits(dev, 64, 0, 0, FISH_STAGE_BYTES, FISH_TEAM))
+    if (!dev.is_gpu() || !sycl_workgroup_fits(dev, 64, 0, 0, FISH_STAGE_BYTES, team))
       return 0;
-    // Both CUDA compiler paths peak at 512 on the RTX 5060 Ti (3.2% over 128 for AdaptiveCpp and
-    // 5.1% for DPC++); wide pre-sm80 CUDA peaks at 256 (V100S: +2.7%). Intel and AMD are
-    // flat-to-slower above 128. Clamp against the device limit.
+    if (team == FISH_TEAM ? !sycl_reqd_subgroup_16_supported(dev) : !sycl_supports_subgroup_size(dev, team))
+      return 0;
+    // CUDA defaults to 512 except on wide AdaptiveCpp devices and on SM 12.0 FIP-9 jobs.
     unsigned preferred = mom_is_cuda(dev) ? 512 : 128;
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
     if (mom_is_cuda(dev) && dev.get_info<sycl::info::device::max_compute_units>() >= 64)
       preferred = 256;
 #endif
+#if defined(__linux__) && defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+    if (fishhash && mom::nvidia::compute_capability(dev) == 120)
+      preferred = 256;
+#endif
+    // On BMG-G21 a 64-thread group improves FishHash FIP9. KarlsenHashV2 gains from it only with
+    // the 256-entry register file (13.95 against 12.68 MH/s at 128 threads; 11.69 at 64 without).
+    if ((fishhash || fishhash_large_grf) && mom_is_bmg_g21(dev))
+      preferred = 64;
     // intensity.inc admits the same override set when it sizes the batch.
     return sycl_env_workgroup(dev, "MOM_FISHHASH_WORKGROUP", {64, 128, 256, 512}, preferred,
-                              0, 0, FISH_STAGE_BYTES, FISH_TEAM);
+                              0, 0, FISH_STAGE_BYTES, team);
   }
   // Drain kernels before releasing cache, DAG, and job buffers.
   ~State() {
@@ -136,8 +148,8 @@ public:
 // without publishing a result on Arc A770, which would otherwise appear to win the timing probe.
 template <class Search>
 static bool selectCooperative(State& state, int& choice, const char* algorithm,
-                              bool openclDefault, const Search& search) {
-  if (!state.coop_workgroup)
+                              bool fishhash, const Search& search) {
+  if (!(fishhash ? state.fish_workgroup : state.karlsen_workgroup))
     return false;
   // gpu-tuning.js search_mode writes MOM_FISHHASH_COOP; an explicit value skips the probe.
   if (const std::optional<bool> forced = mom_env_flag("MOM_FISHHASH_COOP"))
@@ -147,7 +159,7 @@ static bool selectCooperative(State& state, int& choice, const char* algorithm,
   if (mom_is_cuda(state.device) || mom_is_hip(state.device))
     return true;
   if (!sycl_is_level_zero_gpu(state.device))
-    return openclDefault;
+    return fishhash;
   const auto run = [&](bool cooperative, uint32_t count, bool test = false) {
     std::memset(state.result, 0, sizeof(*state.result));
     const auto begin = std::chrono::steady_clock::now();

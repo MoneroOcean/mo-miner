@@ -11,20 +11,25 @@
 #include <string>
 #include "../../sycl/workgroup-limits.h"
 
-constexpr unsigned FISH_TEAM = 16, FISH_STAGE_BYTES = 180, HASH_LEN = 32;
+constexpr unsigned FISH_TEAM = 16, FISH_STAGE_BYTES = 96, HASH_LEN = 32;
 constexpr bool mom_sycl_portable_opencl = false;
+constexpr bool fishhash_large_grf = true;
 struct Device {
   unsigned local_bytes = 8192;
   bool subgroup16 = true;
   bool gpu = true;
+  bool subgroup8 = true;
+  bool bmg_g21 = false;
   bool is_gpu() const { return gpu; }
 };
 namespace sycl { using device = Device; }
 struct Result { unsigned count; uint8_t hash[1][HASH_LEN]; };
-struct State { Device device; Result* result; unsigned coop_workgroup; };
+struct State { Device device; Result* result; unsigned fish_workgroup; unsigned karlsen_workgroup = 0; };
 bool mom_is_cuda(Device) { return false; }
 bool mom_is_hip(Device) { return false; }
+bool mom_is_bmg_g21(Device dev) { return dev.bmg_g21; }
 bool sycl_is_level_zero_gpu(Device) { return true; }
+bool sycl_supports_subgroup_size(Device device, unsigned width) { return width == 8 && device.subgroup8; }
 bool sycl_reqd_subgroup_16_supported(Device device) { return device.subgroup16; }
 bool sycl_workgroup_fits(Device device, unsigned size, size_t fixed_bytes,
                         size_t item_bytes, size_t team_bytes, unsigned team_size) {
@@ -38,13 +43,23 @@ void sycl_wait_and_throw(int, Device) {}
 int main() {
   unsetenv("MOM_FISHHASH_WORKGROUP");
   assert(cooperative_workgroup(Device{}) == 128);
-  assert(cooperative_workgroup(Device{720}) == 64);
-  assert(cooperative_workgroup(Device{719}) == 0);
+  Device bmg;
+  bmg.bmg_g21 = true;
+  assert(cooperative_workgroup(bmg, FISH_TEAM, true) == 64);
+  // KarlsenHashV2 follows FishHash to 64 threads where the large register file is compiled in.
+  assert(cooperative_workgroup(bmg) == 64);
+  // Four sixteen-lane teams, or eight eight-lane teams, of FISH_STAGE_BYTES each must fit.
+  assert(cooperative_workgroup(Device{384}) == 64);
+  assert(cooperative_workgroup(Device{383}) == 0);
+  assert(cooperative_workgroup(Device{767}, 8) == 0);
+  assert(cooperative_workgroup(Device{768}, 8) == 64);
   assert(cooperative_workgroup(Device{8192, false}) == 0);
+  assert(cooperative_workgroup(Device{8192, false}, 8) == 128);
+  assert(cooperative_workgroup(Device{8192, true, true, false}, 8) == 0);
   assert(cooperative_workgroup(Device{8192, true, false}) == 0);
   setenv("MOM_FISHHASH_WORKGROUP", "512", 1);
   assert(cooperative_workgroup(Device{}) == 512);
-  assert(cooperative_workgroup(Device{1440}) == 128);
+  assert(cooperative_workgroup(Device{768}) == 128);
   unsetenv("MOM_FISHHASH_WORKGROUP");
   setenv("MOM_FISHHASH_COOP", "1", 1);
   State unsupported{{}, nullptr, 0};
@@ -56,6 +71,7 @@ int main() {
   State forced{{}, nullptr, 128};
   int forcedChoice = -1;
   assert(selectCooperative(forced, forcedChoice, "fixture", true, unprobed));
+  assert(!selectCooperative(forced, forcedChoice, "fixture", false, unprobed));
   setenv("MOM_FISHHASH_COOP", "false", 1);
   assert(!selectCooperative(forced, forcedChoice, "fixture", true, unprobed));
   unsetenv("MOM_FISHHASH_COOP");

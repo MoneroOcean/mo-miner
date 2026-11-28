@@ -277,6 +277,20 @@ inline bool sycl_supports_subgroup_size(const sycl::device& device, unsigned wid
   return std::find(sizes.begin(), sizes.end(), width) != sizes.end();
 }
 
+// Arc B580 class (Battlemage G21) on the oneAPI worker. Its tuning is measured on Linux and Windows.
+inline bool mom_is_bmg_g21([[maybe_unused]] const sycl::device& device) {
+#if defined(PEARLHASH_ESIMD) && defined(SYCL_EXT_ONEAPI_DEVICE_ARCHITECTURE)
+  namespace exp = sycl::ext::oneapi::experimental;
+  try {
+    return sycl_is_level_zero_gpu(device) &&
+           device.get_info<exp::info::device::architecture>() == exp::architecture::intel_gpu_bmg_g21;
+  } catch (const sycl::exception&) {
+    // Older drivers can lack architecture information.
+  }
+#endif
+  return false;
+}
+
 // Linux Alchemist uses SIMD8 EUs and lacks native FP64.
 inline bool mom_is_linux_alchemist(const sycl::device& device) {
 #if defined(__linux__) && defined(PEARLHASH_ESIMD) && !defined(MOM_SYCL_ADAPTIVECPP)

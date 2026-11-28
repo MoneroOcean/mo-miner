@@ -66,13 +66,13 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | A770    | 17.79 MH/s (99%)    | -                   | WildRig                        |
 |                         | 5060 Ti | 25.09 MH/s (99%)    | 25.04 MH/s (94%)    | SRBMiner                       |
 |                         | 9060 XT | 19.56 MH/s (100%)   | 17.29 MH/s (86%)    | SRBMiner                       |
-| `fishhash` / IRON       | B580    | 12.76 MH/s (99%)    | 13.07 MH/s (102%)   | SRBMiner                       |
-|                         | A770    | 7.79 MH/s (49%*)    | -                   | SRBMiner*                      |
-|                         | 5060 Ti | 31.20 MH/s (88%)    | 31.32 MH/s (91%)    | miniZ                          |
+| `fishhash` / IRON       | B580    | 14.09 MH/s (109%)   | 14.09 MH/s (110%)   | SRBMiner                       |
+|                         | A770    | 15.79 MH/s (99%*)   | -                   | SRBMiner*                      |
+|                         | 5060 Ti | 34.73 MH/s (98%)    | 34.55 MH/s (100%)   | miniZ                          |
 |                         | 9060 XT | 13.07 MH/s (100%)   | 11.57 MH/s (100%)   | lolMiner                       |
-| `karlsenhashv2` / KLS   | B580    | 12.75 MH/s (102%)   | 12.44 MH/s (100%)   | SRBMiner                       |
-|                         | A770    | 14.54 MH/s (96%)    | -                   | SRBMiner                       |
-|                         | 5060 Ti | 31.52 MH/s (89%)    | 32.98 MH/s (95%)    | miniZ                          |
+| `karlsenhashv2` / KLS   | B580    | 14.04 MH/s (112%)   | 14.04 MH/s (113%)   | SRBMiner                       |
+|                         | A770    | 15.29 MH/s (101%)   | -                   | SRBMiner                       |
+|                         | 5060 Ti | 34.74 MH/s (98%)    | 34.58 MH/s (100%)   | miniZ                          |
 |                         | 9060 XT | 13.09 MH/s (100%)   | 11.58 MH/s (100%)   | SRBMiner                       |
 | `beamhash3` / BEAM      | B580    | 23.02 Sol/s (56%*)  | 23.78 Sol/s (58%*)  | best peer*                     |
 |                         | A770    | 26.77 Sol/s (116%*) | -                   | lolMiner*                      |
@@ -134,6 +134,8 @@ the GPUs on adjacent rows; the last column names the comparison source.
 Rates are steady-state measurements from the listed local GPUs on Ubuntu 26.04 LTS and Windows 11
 24H2, one GPU per process. The RTX 5060 Ti and RX 9060 XT used 150 W and 145 W limits; the B580 was
 not power-limited. Actual speed varies with drivers, clocks, power limits, and pool workload.
+The RTX 5060 Ti Windows rate for `karlsenhashv2` comes from a source-built worker, whose device
+compiler differs from the release executable's; it is re-measured with each release.
 
 Linux rates are measured with release executables. The Intel Arc rates use Intel's current
 compute runtime (26.31 with the B580, 26.22 with the A770); with Ubuntu 26.04's packaged 26.05
@@ -144,8 +146,7 @@ A770 measurements are Linux-only, with an observed 190 W cap, except the communi
 PearlHash result below. Starred miner names use measured averages where available; thermal
 throttling, short benchmarks or different pool workloads make
 these approximate comparisons. When a matched A770 reference is unavailable, `best peer*` uses a
-measured reference from another GPU. The A770 FishHash rate is the scalar kernel's: the faster
-cooperative kernel computes nothing on that card and is rejected.
+measured reference from another GPU.
 
 The A770 Windows PearlHash rate is reported by [@friskens in discussion #8](https://github.com/MoneroOcean/mo-miner/discussions/8),
 who also reports a 91.1 TH/s 15-minute average with undervolting. These are community results, not

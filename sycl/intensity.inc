@@ -39,7 +39,7 @@ static bool pow_has_dataset_memory(const sycl::device& dev, const uint64_t datas
 // `allowed` must be the set the search kernel accepts for `workgroup_env`, or an override only one
 // side admits would scale the batch by a workgroup the kernel never launches. The kernels' extra
 // local-memory budgets need not be repeated here: at the largest override, 512, KawPow reserves
-// 18,560 bytes and FishHash's cooperative search 5,760, both below the 32 KiB local_mem_size SYCL
+// 18,560 bytes and FishHash at most 6,144, both below the 32 KiB local_mem_size SYCL
 // 2020 guarantees for non-custom devices, so only the device work-group limits, which both sides
 // check, can reject a listed size. FishHash's scalar fallback has a fixed launch size, like Etchash.
 static unsigned pow_intensity(const sycl::device& dev, const char* const workgroup_env,

@@ -1,4 +1,9 @@
 // Single-chunk BLAKE3 (input <= 1024 bytes, output <= 64 bytes), ported from blake3_portable.c.
+// An including algorithm may define MOM_BLAKE3_UNROLL as an unroll pragma for the short fixed-count
+// loops below (see fishhash/device.inc); by default each compiler keeps its own choice.
+#ifndef MOM_BLAKE3_UNROLL
+#define MOM_BLAKE3_UNROLL
+#endif
 static constexpr uint32_t B3_IV[8] = {0x6A09E667u, 0xBB67AE85u, 0x3C6EF372u, 0xA54FF53Au,
                                       0x510E527Fu, 0x9B05688Cu, 0x1F83D9ABu, 0x5BE0CD19u};
 static constexpr uint8_t B3_MSG[7][16] = {{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
@@ -48,6 +53,7 @@ inline void b3_round(uint32_t st[16], const uint32_t* m, unsigned r) {
 inline void b3_compress_xof(const uint32_t cv[8], const uint8_t block[64], uint8_t block_len,
                             uint64_t counter, uint8_t flags, uint8_t out[64]) {
   uint32_t m[16];
+  MOM_BLAKE3_UNROLL
   for (unsigned i = 0; i < 16; ++i)
     m[i] = load32_le_dev(block + 4 * i);
   uint32_t st[16] = {cv[0],
@@ -66,11 +72,29 @@ inline void b3_compress_xof(const uint32_t cv[8], const uint8_t block[64], uint8
                      (uint32_t)(counter >> 32),
                      (uint32_t)block_len,
                      (uint32_t)flags};
+  MOM_BLAKE3_UNROLL
   for (unsigned r = 0; r < 7; ++r)
     b3_round(st, m, r);
+  MOM_BLAKE3_UNROLL
   for (unsigned i = 0; i < 8; ++i) {
     store32_le_dev(out + i * 4, st[i] ^ st[i + 8]);
     store32_le_dev(out + (i + 8) * 4, st[i + 8] ^ cv[i]);
+  }
+}
+// The same compression for a caller that holds its block as sixteen little-endian words, such as a
+// cached chaining value plus a nonce: no byte buffers, single-chunk counter 0. `out` receives all
+// sixteen output words; the first eight are the next chaining value or the root hash.
+inline void b3_compress_words(const uint32_t cv[8], const uint32_t m[16], uint32_t block_len,
+                              uint32_t flags, uint32_t out[16]) {
+  uint32_t st[16] = {cv[0],    cv[1],    cv[2],    cv[3],    cv[4], cv[5], cv[6],     cv[7],
+                     B3_IV[0], B3_IV[1], B3_IV[2], B3_IV[3], 0,     0,     block_len, flags};
+  MOM_BLAKE3_UNROLL
+  for (unsigned r = 0; r < 7; ++r)
+    b3_round(st, m, r);
+  MOM_BLAKE3_UNROLL
+  for (unsigned i = 0; i < 8; ++i) {
+    out[i] = st[i] ^ st[i + 8];
+    out[i + 8] = st[i + 8] ^ cv[i];
   }
 }
 // Advance the chaining value without retaining the extended-output half.
@@ -78,6 +102,7 @@ inline void b3_compress_inplace(uint32_t cv[8], const uint8_t block[64], uint8_t
                                 uint64_t counter, uint8_t flags) {
   uint8_t out[64];
   b3_compress_xof(cv, block, block_len, counter, flags, out);
+  MOM_BLAKE3_UNROLL
   for (unsigned i = 0; i < 8; ++i)
     cv[i] = load32_le_dev(out + i * 4);
 }

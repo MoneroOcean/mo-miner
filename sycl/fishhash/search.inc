@@ -255,4 +255,4 @@ static sycl::event submit_karlsenhashv2_search(
 // two teams per native 32-lane warp/wave; Intel requests a native 16-lane subgroup. Only the three
 // data-dependent record indices cross lanes, through native shuffle/select operations.
 constexpr unsigned FISH_TEAM = 16;
-constexpr unsigned FISH_STAGE_BYTES = 180; // header first, then reused as seed||collapsed mix
+constexpr unsigned FISH_STAGE_BYTES = 96; // a team's 64-byte seed, then its 32-byte collapsed mix

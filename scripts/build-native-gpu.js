@@ -15,6 +15,7 @@ const {compileNativeObjects} = require("./native-object-cache");
 
 const oneapiMixedFrontendSources = Object.freeze([
   "sycl/beamhash3/beamhash3.cpp", "sycl/c29/c29.cpp", "sycl/c30/c30.cpp", "sycl/etchash/etchash.cpp",
+  "sycl/fishhash/fishhash.cpp",
   "sycl/kawpow/kawpow.cpp", "sycl/nexapow/nexapow.cpp", "sycl/nexapow/validation.cpp", "sycl/octopus/octopus.cpp", pearlhashSource,
   "sycl/xelishashv3/xelishashv3.cpp", "sycl/zelhash/zelhash.cpp",
 ]);
@@ -29,6 +30,9 @@ const oneapiCompilerEnv = "MOM_AOT_ONEAPI_CXX";
  * needs the same selection as its main TU. Xelis ESIMD also needs Intel's original
  * wide-product lowering. Keep compiler workarounds here, not in consensus
  * arithmetic or GPU-name-specific kernel branches.
+ * FishHash's eight-lane DG2 team kernel disagrees with its scalar path under the nightly
+ * frontend, so the release fell back to scalar search there (7.97 against 15.79 MH/s); its
+ * BMG-G21 kernels also run 4.7% faster with Intel's (13.45 -> 14.08 MH/s).
  * @param {NodeJS.ProcessEnv} env @param {string} profile */
 function oneapiCompilerPath(env, profile) {
   const value = env[oneapiCompilerEnv];

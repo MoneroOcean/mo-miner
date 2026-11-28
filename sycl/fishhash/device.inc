@@ -12,6 +12,12 @@ static constexpr uint8_t FISH_SEED[32] = {
 using FishResult = PowHits<>;
 
 // ---- LE load/store ----
+// The NVPTX pipelines leave BLAKE3's rounds rolled: each then reads its message schedule from a table
+// and its words from the thread stack. In the memory-bound cooperative kernels that traffic competes
+// with the DAG reads (RTX 5060 Ti: FishHash 32.47 -> 33.55 MH/s, KarlsenHashV2 31.51 -> 33.80).
+#if (defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)) && defined(__clang__)
+#define MOM_BLAKE3_UNROLL _Pragma("unroll")
+#endif
 #include "../blake3-device.inc"
 inline uint64_t load64_le_dev(const uint8_t* p) {
   return (uint64_t)load32_le_dev(p) | ((uint64_t)load32_le_dev(p + 4) << 32);

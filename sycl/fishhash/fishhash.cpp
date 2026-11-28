@@ -25,12 +25,27 @@
 #include <vector>
 
 #include "../lib-internal.h"
+#include "../nvidia-features.h"
 #include "../pow-hits.h"
 #include "../pow-target.h"
 #include "../../native/job-boundary.h"
 #include "../../native/consts.h"
 
+#if !defined(MOM_SYCL_HAS_CUDA) && !defined(MOM_SYCL_HAS_HIP) && !defined(__NVPTX__) && \
+    !defined(__AMDGCN__) && !defined(MOM_SYCL_ADAPTIVECPP) && !defined(MOM_SYCL_PORTABLE_OPENCL) && \
+    __has_include(<sycl/ext/intel/experimental/grf_size_properties.hpp>)
+#include <sycl/ext/intel/experimental/grf_size_properties.hpp>
+#define MOM_FISHHASH_INTEL_LARGE_GRF 1
+#endif
+
 namespace mom_fishhash {
+
+// Whether this worker can compile kernels for the 256-entry Intel register file.
+#if defined(MOM_FISHHASH_INTEL_LARGE_GRF)
+constexpr bool fishhash_large_grf = true;
+#else
+constexpr bool fishhash_large_grf = false;
+#endif
 
 #include "device.inc"
 #include "search.inc"
@@ -76,6 +91,13 @@ static int searchFixedDag(const uint8_t* input, unsigned input_size, uint8_t* ou
     std::memcpy(&start_nonce, input + nonce_off, sizeof(start_nonce));
   }
 
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
+  // The cooperative kernels take the header as a cached BLAKE3 state and the nonce's block. Host
+  // work only, done before any device copy borrows the caller's buffers.
+  const FishSeedJob seed = fish_seed_job(input, input_size, static_cast<unsigned>(nonce_off),
+                                         Karlsen ? 2 : bigEndian ? 11 : 8, target, bigEndian);
+#endif
+
   State& state = persistentDeviceState<State>(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   const bool lightTest = state.prepareJob(input_size, is_test, is_benchmark);
@@ -92,9 +114,10 @@ static int searchFixedDag(const uint8_t* input, unsigned input_size, uint8_t* ou
     if constexpr (Karlsen) {
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
       if (cooperative)
-        return submit_karlsenhashv2_search_coop(state.queue, state.input, input_size, start_nonce,
-                                               state.dag, count, state.target, state.result,
-                                               test, state.coop_workgroup);
+        return submit_karlsenhashv2_search_coop(state.queue, seed, start_nonce, state.dag, count,
+                                               state.target, state.result, test,
+                                               state.karlsen_workgroup,
+                                               fishhash_large_grf && mom_is_bmg_g21(state.device));
 #endif
       if (lightTest)
         return submit_karlsenhashv2_search<false>(state.queue, state.input, input_size, start_nonce,
@@ -103,10 +126,21 @@ static int searchFixedDag(const uint8_t* input, unsigned input_size, uint8_t* ou
                                               nullptr, state.dag, count, state.target, state.result, test);
     } else {
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
-      if (cooperative)
-        return submit_fishhash_search_coop(state.queue, state.input, input_size, start_nonce, state.dag,
-                                          count, state.target, state.result, test, nonce_off, bigEndian,
-                                          state.coop_workgroup);
+      if (cooperative) {
+        auto kernel = submit_fishhash_search_coop<16>;
+#if defined(__linux__) && defined(PEARLHASH_ESIMD)
+        if (state.fish_team == 8)
+          kernel = submit_fishhash_search_coop<8>;
+#endif
+        unsigned workgroup = state.fish_workgroup;
+#if defined(__linux__) && defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+        // The 40-byte header peaks at the original CUDA geometry used by Karlsen.
+        if (!bigEndian)
+          workgroup = state.karlsen_workgroup;
+#endif
+        return kernel(state.queue, seed, start_nonce, state.dag, count, state.target,
+                      state.result, test, bigEndian, workgroup);
+      }
 #endif
       if (lightTest)
         return submit_fishhash_search<false>(state.queue, state.input, input_size, start_nonce,
