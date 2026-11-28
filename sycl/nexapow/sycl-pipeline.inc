@@ -1309,10 +1309,10 @@ public:
     using namespace sycl_pipeline;
     // Diagnostic: time each stage of the second search (the first one includes setup).
     const bool stats = mom_env_flag("MOM_NEXAPOW_STATS").value_or(false) && searches_++ == 1u;
-    // Diagnostic overrides of the kernel split; Level Zero defaults to the fused hash stage.
-    const std::optional<bool> split_hash_override = mom_env_flag("MOM_NEXAPOW_SPLIT_HASH");
-    const bool split_hash = split_hash_override ? *split_hash_override
-                                                : !sycl_is_level_zero_gpu(queue.get_device());
+    // Linux Alchemist runs SHA256d and RFC6979 faster in separate kernels.
+    const auto device = queue.get_device();
+    const bool split_hash = mom_env_flag("MOM_NEXAPOW_SPLIT_HASH").value_or(
+        !sycl_is_level_zero_gpu(device) || mom_is_linux_alchemist(device));
     const bool split_curve = mom_env_flag("MOM_NEXAPOW_SPLIT_CURVE_PRODUCTS").value_or(true);
     auto last = std::chrono::steady_clock::now();
     const auto mark = [&](const char* stage) {

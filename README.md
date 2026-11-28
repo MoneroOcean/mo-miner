@@ -127,7 +127,7 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | 5060 Ti | 51.99 MH/s (100%)   | 51.73 MH/s (100%)   | Rigel                          |
 |                         | 9060 XT | 19.60 MH/s (100%)   | 17.39 MH/s (89%)    | SRBMiner                       |
 | `nexapow` / NEXA        | B580    | 28.06 MH/s (37%*)   | 27.01 MH/s (35%*)   | best peer*                     |
-|                         | A770    | 25.04 MH/s (86%*)   | -                   | WildRig*                       |
+|                         | A770    | 28.07 MH/s (96%*)   | -                   | WildRig*                       |
 |                         | 5060 Ti | 77.24 MH/s (81%)    | 77.97 MH/s (82%)    | lolMiner                       |
 |                         | 9060 XT | 28.21 MH/s (87%)    | 26.79 MH/s (86%)    | WildRig                        |
 
