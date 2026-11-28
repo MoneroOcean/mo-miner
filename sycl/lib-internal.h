@@ -271,6 +271,23 @@ inline bool sycl_is_level_zero_gpu(const sycl::device& device) {
     device.get_platform().get_info<sycl::info::platform::name>().find("Level-Zero") != std::string::npos;
 }
 
+inline bool sycl_supports_subgroup_size(const sycl::device& device, unsigned width) {
+  const auto sizes = device.get_info<sycl::info::device::sub_group_sizes>();
+  return std::find(sizes.begin(), sizes.end(), width) != sizes.end();
+}
+
+// Linux Alchemist uses SIMD8 EUs and lacks native FP64.
+inline bool mom_is_linux_alchemist(const sycl::device& device) {
+#if defined(__linux__) && defined(PEARLHASH_ESIMD) && !defined(MOM_SYCL_ADAPTIVECPP)
+  return sycl_is_level_zero_gpu(device) && device.has(sycl::aspect::ext_intel_matrix) &&
+         !device.has(sycl::aspect::fp64) && mom_intel_eu_simd_width(device) == 8 &&
+         sycl_supports_subgroup_size(device, 8);
+#else
+  (void)device;
+  return false;
+#endif
+}
+
 // Identify physically shared GPU memory, not the separate capability to allocate shared USM.
 inline bool is_integrated_gpu(const sycl::device& device) {
   if (!device.is_gpu())
@@ -447,8 +464,7 @@ inline bool sycl_reqd_subgroup_16_supported(const sycl::device& device) {
     return true;
   if (mom_is_cuda(device) || mom_is_hip(device))
     return true;
-  const auto sizes = device.get_info<sycl::info::device::sub_group_sizes>();
-  return std::find(sizes.begin(), sizes.end(), 16u) != sizes.end();
+  return sycl_supports_subgroup_size(device, 16);
 }
 
 // Prefer the largest admissible size at or below the request, then the smallest legal fallback.

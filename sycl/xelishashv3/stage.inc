@@ -106,7 +106,8 @@ inline void chacha_block(uint32_t out[16], const uint8_t key[32], const uint8_t 
     out[i] = v[i] + x[i];
 }
 // Stage 1 derives one nonce's scratchpad with BLAKE3-keyed ChaCha blocks.
-inline void stage1(const uint8_t source[112], uint64_t* scratch, uint64_t nonce) {
+template <unsigned Lanes>
+inline void stage1(const uint8_t source[112], uint64_t* scratch, uint64_t nonce, unsigned lane) {
   uint8_t input[112], buffer[64], key[32], chain_nonce[12];
   for (unsigned i = 0; i < 112; ++i)
     input[i] = source[i];
@@ -124,14 +125,18 @@ inline void stage1(const uint8_t source[112], uint64_t* scratch, uint64_t nonce)
     for (unsigned i = 0; i < 32; ++i)
       buffer[32 + i] = chunk * 32 + i < 112 ? input[chunk * 32 + i] : 0;
     blake3_dev(key, 32, buffer, 64);
-    for (unsigned block = 0; block < blocks; ++block) {
-      uint32_t words[16];
-      chacha_block(words, key, chain_nonce, block);
-      for (unsigned i = 0; i < 16; ++i)
-        *dst++ = words[i];
-      if (block + 1 == blocks)
-        for (unsigned i = 0; i < 12; ++i)
-          chain_nonce[i] = static_cast<uint8_t>(words[13 + i / 4] >> (8 * (i & 3)));
+    uint32_t* const chunk_words = dst + chunk * blocks * 16;
+    for (unsigned block = lane; block < blocks - 1; block += Lanes)
+      chacha_block(chunk_words + block * 16, key, chain_nonce, block);
+    // All lanes need the final block to seed the next chunk. Only its owning lane writes it.
+    if (chunk + 1 < 4 || lane == (blocks - 1) % Lanes) {
+      uint32_t last[16];
+      chacha_block(last, key, chain_nonce, blocks - 1);
+      if (lane == (blocks - 1) % Lanes)
+        for (unsigned i = 0; i < 16; ++i)
+          chunk_words[(blocks - 1) * 16 + i] = last[i];
+      for (unsigned i = 0; i < 12; ++i)
+        chain_nonce[i] = static_cast<uint8_t>(last[13 + i / 4] >> (8 * (i & 3)));
     }
   }
 }
@@ -260,35 +265,58 @@ inline void b3_parent(const uint32_t left[8], const uint32_t right[8], uint32_t 
   for (unsigned i = 0; i < 8; ++i)
     out[i] = cv[i];
 }
+inline void b3_scratch_chunk(const uint32_t* words, unsigned chunk, uint32_t cv[8]) {
+  for (unsigned i = 0; i < 8; ++i)
+    cv[i] = B3_IV[i];
+  for (unsigned block = 0; block < 16; ++block)
+    b3_compress_words(cv, words + chunk * 256 + block * 16, chunk,
+                      (block == 0 ? 1u : 0u) | (block == 15 ? 2u : 0u));
+}
+
+#ifdef MOM_XELISHASHV3_PARALLEL_SCRATCH
+// Each group reduces one scratchpad. Lane zero emits the root after the last merge.
+inline bool stage4_parallel(sycl::nd_item<1> it, const uint64_t* scratch, uint32_t* nodes,
+                            uint8_t hash[32]) {
+  const unsigned lane = it.get_local_linear_id();
+  const auto* words = reinterpret_cast<const uint32_t*>(scratch);
+  for (unsigned chunk = lane; chunk < ScratchChunks; chunk += ScratchLanes) {
+    uint32_t cv[8];
+    b3_scratch_chunk(words, chunk, cv);
+    for (unsigned i = 0; i < 8; ++i)
+      nodes[chunk * 8 + i] = cv[i];
+  }
+  // An unpaired subtree stays in place until its sibling is ready at a larger stride.
+  for (unsigned stride = 1; stride < ScratchChunks; stride *= 2) {
+    sycl::group_barrier(it.get_group());
+    for (unsigned left = 2 * stride * lane; left + stride < ScratchChunks;
+         left += 2 * stride * ScratchLanes)
+      b3_parent(nodes + 8 * left, nodes + 8 * (left + stride), nodes + 8 * left,
+                2 * stride >= ScratchChunks);
+  }
+  if (lane != 0)
+    return false;
+  for (unsigned i = 0; i < 8; ++i)
+    store32_le_dev(hash + 4 * i, nodes[i]);
+  return true;
+}
+#endif
+
 // Stage 4 reduces the scratchpad through the algorithm's BLAKE3 tree and emits the final hash.
 inline void stage4(const uint64_t* scratch, uint8_t hash[32]) {
   const uint32_t* words = reinterpret_cast<const uint32_t*>(scratch);
   uint32_t stack[10][8];
   unsigned n = 0;
-  for (uint64_t chunk = 0; chunk < 531; ++chunk) {
-    uint32_t cv[8];
-    for (unsigned i = 0; i < 8; ++i)
-      cv[i] = B3_IV[i];
-    for (unsigned block = 0; block < 16; ++block)
-      b3_compress_words(cv, words + chunk * 256 + block * 16, chunk,
-                        (block == 0 ? 1u : 0u) | (block == 15 ? 2u : 0u));
-    for (unsigned i = 0; i < 8; ++i)
-      stack[n][i] = cv[i];
+  for (unsigned chunk = 0; chunk < ScratchChunks; ++chunk) {
+    b3_scratch_chunk(words, chunk, stack[n]);
     ++n;
     for (uint64_t merges = chunk + 1; !(merges & 1) && n > 1; merges >>= 1) {
-      uint32_t parent[8];
-      b3_parent(stack[n - 2], stack[n - 1], parent, false);
+      b3_parent(stack[n - 2], stack[n - 1], stack[n - 2], false);
       --n;
-      for (unsigned i = 0; i < 8; ++i)
-        stack[n - 1][i] = parent[i];
     }
   }
   while (n > 2) {
-    uint32_t parent[8];
-    b3_parent(stack[n - 2], stack[n - 1], parent, false);
+    b3_parent(stack[n - 2], stack[n - 1], stack[n - 2], false);
     --n;
-    for (unsigned i = 0; i < 8; ++i)
-      stack[n - 1][i] = parent[i];
   }
   uint32_t root[8];
   b3_parent(stack[0], stack[1], root, true);

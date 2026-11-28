@@ -279,6 +279,8 @@ static unsigned xelishashv3_intensity(const sycl::device& dev) {
   const unsigned override = parse_pow_intensity_override(1, "MOM_XELISHASHV3_INTENSITY");
   if (override)
     return static_cast<unsigned>(std::min<uint64_t>(override, memory_limit));
+  if (mom_is_linux_alchemist(dev))
+    return static_cast<unsigned>(std::min<uint64_t>(memory_limit, 7680));
   const uint64_t compute_limit =
       static_cast<uint64_t>(dev.get_info<sycl::info::device::max_compute_units>()) * 384ULL;
   const uint64_t automatic_limit = std::min(

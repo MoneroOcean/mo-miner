@@ -1,6 +1,7 @@
 // Submit the dependent scratch initialization, mixing, and final-hash stages.
 template <bool Native>
-static void search(State& s, uint64_t first, unsigned count, bool test, bool use_esimd = false) {
+static void search(State& s, uint64_t first, unsigned count, bool test, bool use_esimd = false,
+                   bool parallel_scratch = false) {
   const uint8_t* input = s.input;
   uint64_t* scratch = s.scratch;
   const uint8_t* target = s.target;
@@ -33,10 +34,20 @@ static void search(State& s, uint64_t first, unsigned count, bool test, bool use
   // in AdaptiveCpp's HIP event pool without adding barriers; it does not establish a stall cause.
   [[maybe_unused]] const auto stage1_event = run_stage("stage 1", false, [&] {
     return s.queue.submit([&](sycl::handler& h) {
-      h.parallel_for<Stage1Kernel<Native>>(
-          sycl::range<1>(count), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
-        stage1(input, scratch + id[0] * WORDS, first + id[0]);
-      });
+      const auto submit = [&]<unsigned Lanes>() {
+        h.parallel_for<Stage1Kernel<Native, Lanes>>(
+            sycl::range<1>(static_cast<size_t>(count) * Lanes),
+            [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+              const size_t nonce = id[0] / Lanes;
+              stage1<Lanes>(input, scratch + nonce * WORDS, first + nonce, id[0] % Lanes);
+            });
+      };
+#ifdef MOM_XELISHASHV3_PARALLEL_SCRATCH
+      // Eight lanes fill independent ChaCha blocks per nonce on Alchemist and SM 12.0 CUDA.
+      if (parallel_scratch)
+        return submit.template operator()<8>();
+#endif
+      submit.template operator()<1>();
     });
   });
   const auto stage1_end = s.profile ? Clock::now() : Clock::time_point{};
@@ -73,6 +84,21 @@ static void search(State& s, uint64_t first, unsigned count, bool test, bool use
   const auto stage4_start = s.profile ? Clock::now() : Clock::time_point{};
   run_stage("stage 4", true, [&] {
     return s.queue.submit([&](sycl::handler& h) {
+#ifdef MOM_XELISHASHV3_PARALLEL_SCRATCH
+      if (parallel_scratch) {
+        sycl::local_accessor<uint32_t, 1> tree(ScratchChunks * 8, h);
+        const sycl::nd_range<1> range{static_cast<size_t>(count) * ScratchLanes, ScratchLanes};
+        return h.parallel_for<ParallelStage4Kernel<Native>>(
+            range, [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+          const size_t nonce = it.get_group_linear_id();
+          auto* nodes = tree.template get_multi_ptr<sycl::access::decorated::no>().get();
+          uint8_t hash[32];
+          if (stage4_parallel(it, scratch + nonce * WORDS, nodes, hash) &&
+              (test ? nonce == 0 : mom_meets_target_be(hash, target)))
+            mom_store_pow_hit(result, first + nonce, hash);
+        });
+      }
+#endif
       h.parallel_for<Stage4Kernel<Native>>(
           sycl::range<1>(count), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
         uint8_t hash[32];

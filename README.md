@@ -111,8 +111,8 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | 5060 Ti | 45.62 MH/s (88%)    | 45.44 MH/s (89%)    | lolMiner                       |
 |                         | 9060 XT | 32.80 MH/s (86%)    | 24.89 MH/s (77%)    | lolMiner                       |
 | `xelishashv3` / XEL     | B580    | 2.15 KH/s (31%*)    | 2.16 KH/s (31%*)    | best peer*                     |
-|                         | A770    | 1.91 KH/s (32%)     | -                   | SRBMiner                       |
-|                         | 5060 Ti | 5.88 KH/s (85%)     | 5.90 KH/s (85%)     | Rigel                          |
+|                         | A770    | 4.94 KH/s (83%)     | -                   | SRBMiner                       |
+|                         | 5060 Ti | 6.11 KH/s (88%)     | 5.90 KH/s (85%)     | Rigel                          |
 |                         | 9060 XT | 2.62 KH/s (99%)     | 2.61 KH/s (110%)    | SRBMiner / BZMiner             |
 | `verthash` / VTC        | B580    | 299.83 KH/s (95%)   | 298.59 KH/s (94%)   | SRBMiner                       |
 |                         | A770    | 959.49 KH/s (98%)   | -                   | SRBMiner                       |

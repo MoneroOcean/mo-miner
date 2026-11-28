@@ -54,6 +54,13 @@ inline uint64_t mom_rotate(uint64_t x, uint64_t n) {
 #define MOM_XELISHASHV3_ESIMD
 #include <sycl/ext/intel/esimd.hpp>
 #endif
+#if defined(MOM_SYCL_HAS_CUDA) && defined(__linux__) && !defined(MOM_SYCL_ADAPTIVECPP)
+#include "../nvidia-features.h"
+#endif
+#if defined(MOM_XELISHASHV3_ESIMD) || \
+    (defined(MOM_SYCL_HAS_CUDA) && defined(__linux__) && !defined(MOM_SYCL_ADAPTIVECPP))
+#define MOM_XELISHASHV3_PARALLEL_SCRATCH
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -106,13 +113,23 @@ int xelishashv3(unsigned, uint32_t, const uint8_t* input, unsigned input_size, u
 #ifdef MOM_XELISHASHV3_ESIMD
   // The cached ESIMD gathers require newer Intel hardware; XeLP lacks those LSC instructions.
   // The matrix capability keeps these older devices on the ordinary kernel without a SKU list.
+  const bool alchemist = mom_is_linux_alchemist(s.device);
   const bool use_esimd = native && sycl_is_level_zero_gpu(s.device) &&
-                         s.device.has(sycl::aspect::ext_intel_matrix);
+                         s.device.has(sycl::aspect::ext_intel_matrix) && !alchemist;
 #else
+  const bool alchemist = false;
   const bool use_esimd = false;
 #endif
+  bool parallel_device = alchemist;
+#if defined(MOM_SYCL_HAS_CUDA) && defined(__linux__) && !defined(MOM_SYCL_ADAPTIVECPP)
+  // Capability query returns zero for non-CUDA devices and uses the selected native device.
+  parallel_device = parallel_device || mom::nvidia::compute_capability(s.device) == 120;
+#endif
+  const bool parallel_scratch =
+      native && parallel_device &&
+      sycl_workgroup_fits(s.device, ScratchLanes, ScratchChunks * 8 * sizeof(uint32_t));
   if (native)
-    search<true>(s, *nonce, intensity, is_test, use_esimd);
+    search<true>(s, *nonce, intensity, is_test, use_esimd, parallel_scratch);
   else
     search<false>(s, *nonce, intensity, is_test);
   PowHits<> hits;

@@ -2,7 +2,9 @@
 #include "../blake3-device.inc"
 
 constexpr size_t WORDS = 531 * 128, HALF = WORDS / 2, BYTES = WORDS * 8;
-template <bool> class Stage1Kernel;
+constexpr unsigned ScratchChunks = BYTES / 1024, ScratchLanes = 64;
+template <bool, unsigned> class Stage1Kernel;
+template <bool> class ParallelStage4Kernel;
 template <bool, bool> class Stage3Kernel;
 #ifdef MOM_XELISHASHV3_ESIMD
 template <bool, bool> class Stage3EsimdKernel;
