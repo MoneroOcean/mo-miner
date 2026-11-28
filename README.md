@@ -98,7 +98,7 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | A770    | 2.41 KH/s (106%*)   | -                   | SRBMiner*                      |
 |                         | 5060 Ti | 3.54 KH/s (92%)     | 3.61 KH/s (93%)     | XMR-Stak                       |
 |                         | 9060 XT | 3.21 KH/s (119%)    | 2.81 KH/s (96%)     | SRBMiner / BZMiner             |
-| `pearlhash` / PRL       | B580    | 88.45 TH/s (104%)   | 86.87 TH/s (102%)   | BZMiner                        |
+| `pearlhash` / PRL       | B580    | 88.67 TH/s (104%)   | 86.87 TH/s (102%)   | BZMiner                        |
 |                         | A770    | 88.56 TH/s (104%*)  | 89.00 TH/s (105%*)  | best peer*                     |
 |                         | 5060 Ti | 94.93 TH/s (106%)   | 94.95 TH/s (104%)   | BZMiner                        |
 |                         | 9060 XT | 72.41 TH/s (101%)   | 69.54 TH/s (98%)    | BZMiner                        |

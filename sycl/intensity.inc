@@ -178,14 +178,14 @@ static pearlhash_profile_t pearlhash_profile(const sycl::device& dev) {
       const bool level_zero_discrete = sycl_is_level_zero_gpu(dev) && !is_integrated_gpu(dev);
       if (level_zero_discrete) {
         unsigned execution_units = 0;
-#ifndef _WIN32
+#if defined(__linux__)
         // Keep WDDM dispatches conservative; large DG2 searches are qualified on Linux.
         execution_units = dev.get_info<sycl::info::device::max_compute_units>();
 #endif
+        const auto capacity = pow_device_profile(dev);
         const auto candidate = pearlhash_intel_capability_profile(
-            mom_intel_eu_simd_width(dev), true, true,
-            dev.get_info<sycl::info::device::global_mem_size>(), execution_units);
-        if (pearlhash_required_memory_fits(pow_device_profile(dev), candidate))
+            capacity, mom_intel_eu_simd_width(dev), true, true, execution_units);
+        if (pearlhash_required_memory_fits(capacity, candidate))
           profile = candidate;
       }
     } catch (...) {

@@ -179,36 +179,63 @@ void test_pearlhash_amd_native_profile() {
 void test_pearlhash_intel_capability_profile() {
   const pearlhash_profile_t ordinary = {131072, 131072, 2048, 128};
   const pearlhash_profile_t wide = {131072, 131072, 4096, 128};
+  const pearlhash_profile_t b580 = {262144, 131072, 4096, 128};
   const uint64_t eight_gib = 8 * kGiB;
+  const PowDeviceProfile roomy = {0, eight_gib, UINT64_MAX};
 
   expect_pearl_profile("Pearl Intel width16 Level Zero profile",
-                       pearlhash_intel_capability_profile(16, true, true, eight_gib), wide);
+      pearlhash_intel_capability_profile(roomy, 16, true, true), wide);
   expect_pearl_profile("Pearl Intel width16 larger memory profile",
-                       pearlhash_intel_capability_profile(16, true, true, 12 * kGiB), wide);
+      pearlhash_intel_capability_profile({0, 12 * kGiB, UINT64_MAX}, 16, true, true), wide);
+  expect_pearl_profile("Pearl Linux Intel width16 160-EU profile",
+      pearlhash_intel_capability_profile(roomy, 16, true, true, 160), b580);
+  for (const unsigned units : {159u, 161u})
+    expect_pearl_profile("Pearl Linux Intel width16 other EU counts",
+        pearlhash_intel_capability_profile(roomy, 16, true, true, units), wide);
+  expect_pearl_profile("Pearl Linux Intel width8 160-EU profile",
+      pearlhash_intel_capability_profile(roomy, 8, true, true, 160), ordinary);
   for (const unsigned width : {0u, 8u, 32u})
     expect_pearl_profile("Pearl Intel unsupported width fallback",
-                         pearlhash_intel_capability_profile(width, true, true, eight_gib), ordinary);
+        pearlhash_intel_capability_profile(roomy, width, true, true), ordinary);
   expect_pearl_profile("Pearl Intel width16 low memory fallback",
-                       pearlhash_intel_capability_profile(16, true, true, eight_gib - 1), ordinary);
+      pearlhash_intel_capability_profile({0, eight_gib - 1, UINT64_MAX}, 16, true, true), ordinary);
   expect_pearl_profile("Pearl Intel width16 non-Level-Zero fallback",
-                       pearlhash_intel_capability_profile(16, false, true, eight_gib), ordinary);
+      pearlhash_intel_capability_profile(roomy, 16, false, true), ordinary);
   expect_pearl_profile("Pearl integrated width16 fallback",
-                       pearlhash_intel_capability_profile(16, true, false, eight_gib), ordinary);
+      pearlhash_intel_capability_profile(roomy, 16, true, false), ordinary);
   expect_pearl_profile("Pearl Intel narrow larger device",
-      pearlhash_intel_capability_profile(8, true, true, eight_gib, 512),
+      pearlhash_intel_capability_profile(roomy, 8, true, true, 512),
       {524288, 131072, 2048, 128});
   expect_pearl_profile("Pearl Intel narrow intermediate device",
-      pearlhash_intel_capability_profile(8, true, true, eight_gib, 511),
+      pearlhash_intel_capability_profile(roomy, 8, true, true, 511),
       {262144, 131072, 2048, 128});
   expect_pearl_profile("Pearl Intel narrow smaller device",
-      pearlhash_intel_capability_profile(8, true, true, eight_gib, 255), ordinary);
+      pearlhash_intel_capability_profile(roomy, 8, true, true, 255), ordinary);
   expect_pearl_profile("Pearl Intel narrow low memory fallback",
-      pearlhash_intel_capability_profile(8, true, true, eight_gib - 1, 512), ordinary);
+      pearlhash_intel_capability_profile({0, eight_gib - 1, UINT64_MAX}, 8, true, true, 512), ordinary);
   expect_pearl_profile("Pearl Intel narrow row count capped",
-      pearlhash_intel_capability_profile(8, true, true, eight_gib,
+      pearlhash_intel_capability_profile(roomy, 8, true, true,
           std::numeric_limits<unsigned>::max()), {524288, 131072, 2048, 128});
   expect_pearl_profile("Pearl Intel wide profile does not inherit narrow scaling",
-      pearlhash_intel_capability_profile(16, true, true, eight_gib, 512), wide);
+      pearlhash_intel_capability_profile(roomy, 16, true, true, 512), wide);
+
+  PearlHashAllocationCounts b580_counts{}, wide_counts{};
+  expect_true("Pearl B580 profile allocation counts",
+      pearlhash_allocation_counts(b580, b580_counts));
+  expect_true("Pearl previous Intel width16 allocation counts",
+      pearlhash_allocation_counts(wide, wide_counts));
+  expect_pearl_profile("Pearl Linux B580 exact allocation fit",
+      pearlhash_intel_capability_profile(
+          {160, eight_gib, b580_counts.max_alloc}, 16, true, true, 160), b580);
+  expect_pearl_profile("Pearl Linux B580 max-allocation fallback",
+      pearlhash_intel_capability_profile(
+          {160, eight_gib, b580_counts.max_alloc - 1}, 16, true, true, 160), wide);
+  const PowDeviceProfile previous_fails = {160, eight_gib, wide_counts.max_alloc - 1};
+  const auto fallback =
+      pearlhash_intel_capability_profile(previous_fails, 16, true, true, 160);
+  expect_pearl_profile("Pearl Linux B580 previous profile allocation fallback", fallback, wide);
+  expect_true("Pearl Linux B580 outer admission still rejects previous profile",
+      !pearlhash_required_memory_fits(previous_fails, fallback));
 }
 
 // Exercise the real policy across hardware sizes and exact allocation limits;
