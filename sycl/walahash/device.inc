@@ -1,7 +1,7 @@
 // WalaHash consensus math and packed hash primitives; included inside mom_walahash.
 #include "../blake3-device.inc"
 
-template <bool, bool> class SearchKernel;
+template <bool, bool, bool> class SearchKernel;
 #ifdef WALAHASH_ESIMD
 class PrehashKernel;
 class FinalKernel;

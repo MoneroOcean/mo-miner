@@ -118,9 +118,9 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | A770    | 959.49 KH/s (98%)   | -                   | SRBMiner                       |
 |                         | 5060 Ti | 908.06 KH/s (98%)   | 873.84 KH/s (94%)   | TBMiner                        |
 |                         | 9060 XT | 293.48 KH/s (101%)  | 292.17 KH/s (100%)  | TBMiner                        |
-| `walahash` / WALA       | B580    | 623.38 MH/s (172%)  | 566.97 MH/s (140%)  | SRBMiner                       |
-|                         | A770    | 748.48 MH/s (116%*) | -                   | SRBMiner*                      |
-|                         | 5060 Ti | 873.49 MH/s (85%)   | 892.07 MH/s (87%)   | SRBMiner                       |
+| `walahash` / WALA       | B580    | 634.61 MH/s (175%)  | 572.58 MH/s (141%)  | SRBMiner                       |
+|                         | A770    | 762.52 MH/s (118%*) | -                   | SRBMiner*                      |
+|                         | 5060 Ti | 885.13 MH/s (86%)   | 892.07 MH/s (87%)   | SRBMiner                       |
 |                         | 9060 XT | 679.50 MH/s (87%)   | 667.68 MH/s (85%)   | SRBMiner                       |
 | `etchash` / ETC / MO    | B580    | 21.13 MH/s (100%)   | 21.13 MH/s (100%)   | lolMiner                       |
 |                         | A770    | 24.12 MH/s (90%*)   | -                   | Nanominer*                     |

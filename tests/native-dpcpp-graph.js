@@ -427,6 +427,7 @@ test.describe("Native oneAPI mixed frontend admission", () => {
   const mixedSources = ["sycl/beamhash3/beamhash3.cpp", "sycl/c29/c29.cpp", "sycl/c30/c30.cpp", "sycl/etchash/etchash.cpp",
     "sycl/fishhash/fishhash.cpp",
     "sycl/kawpow/kawpow.cpp", "sycl/nexapow/nexapow.cpp", "sycl/nexapow/validation.cpp", "sycl/octopus/octopus.cpp", "sycl/pearlhash/pearlhash.cpp",
+    "sycl/walahash/walahash.cpp",
     "sycl/xelishashv3/xelishashv3.cpp", "sycl/zelhash/zelhash.cpp"];
   test("selects the vendor frontend for exactly the qualified TUs including A770 correctness fixes", () => {
     const allSources = [...sources, "sycl/hoohash/host-math.c"];

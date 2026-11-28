@@ -1,5 +1,5 @@
 // Portable and accelerated search submissions; in-order queues connect the staged routes.
-template <bool Native, bool FixedHashes>
+template <bool Native, bool FixedHashes, bool SplitKeccak = false>
 static sycl::event search(State& s, uint64_t first, unsigned count, bool is_test,
                           const unsigned work_group) {
   const size_t global = mom_round_up_size(count, work_group);
@@ -11,7 +11,7 @@ static sycl::event search(State& s, uint64_t first, unsigned count, bool is_test
   const uint8_t* target = s.target;
   PowHits<>* result = s.result;
   return s.queue.submit([&](sycl::handler& h) {
-    h.parallel_for<SearchKernel<Native, FixedHashes>>(
+    h.parallel_for<SearchKernel<Native, FixedHashes, SplitKeccak>>(
         sycl::nd_range<1>(global, work_group),
 #ifdef MOM_SYCL_HAS_CUDA
         [=](sycl::nd_item<1> it) [[sycl::work_group_size_hint(128)]] MOM_SYCL_KERNEL_ARGS_RESTRICT {
@@ -27,7 +27,10 @@ static sycl::event search(State& s, uint64_t first, unsigned count, bool is_test
 #if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
           if constexpr (FixedHashes) {
             b3_80_from_cv(pow_words, prehash_cv, input + 64, nonce);
-            sha3_words64(pow_words);
+            if constexpr (SplitKeccak)
+              sha3_words(pow_words);
+            else
+              sha3_words64(pow_words);
           } else
 #endif
           {
@@ -91,7 +94,7 @@ static sycl::event prehash(State& s, uint64_t first, unsigned count) {
   const uint8_t* input = s.input;
   const Blake3Cv prehash_cv = s.prehash_cv;
   uint8_t* hashes = s.hashes;
-  uint8_t* vectors = s.vectors;
+  auto* vectors = reinterpret_cast<uint32_t*>(s.vectors.get());
   return s.queue.submit([&](sycl::handler& h) {
     h.parallel_for<PrehashKernel>(
         sycl::range<1>(count), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
@@ -102,10 +105,12 @@ static sycl::event prehash(State& s, uint64_t first, unsigned count) {
       auto hash32 = reinterpret_cast<uint32_t*>(hashes);
       for (unsigned i = 0; i < 8; ++i)
         hash32[(size_t)gid * 8 + i] = pow[i];
-      for (unsigned k = 0; k < 64; ++k) {
-        const uint8_t byte = pow[k >> 3] >> (8 * ((k >> 1) & 3)),
-                      v = (k & 1) ? byte & 15 : byte >> 4;
-        vectors[(size_t)tile * 1024 + (k >> 2) * 64 + lane * 4 + (k & 3)] = v;
+      // Each DPAS lane consumes four consecutive nibble values as one word.
+      for (unsigned k = 0; k < 16; ++k) {
+        const uint32_t bytes = pow[k >> 1] >> (16 * (k & 1));
+        vectors[static_cast<size_t>(tile) * 256 + k * 16 + lane] =
+            ((bytes >> 4) & 15u) | ((bytes & 15u) << 8) |
+            (((bytes >> 12) & 15u) << 16) | (((bytes >> 8) & 15u) << 24);
       }
     });
   });

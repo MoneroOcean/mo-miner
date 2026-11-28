@@ -147,7 +147,13 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
 #endif
 #if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
   if (!dispatched && cuda_fast) {
-    search_event = search<true, true>(state, *pnonce, intensity, is_test, 128);
+#if defined(__linux__) && defined(MOM_SYCL_HAS_CUDA)
+    // SM 12.0 executes the split 32-bit Keccak lanes faster on this fixed header.
+    if (state.cuda_sm == 120)
+      search_event = search<true, true, true>(state, *pnonce, intensity, is_test, 128);
+    else
+#endif
+      search_event = search<true, true>(state, *pnonce, intensity, is_test, 128);
     dispatched = true;
   }
 #endif
